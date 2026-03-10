@@ -9,7 +9,7 @@ from langchain_core.messages import HumanMessage
 
 from aug.api.schemas.chat import ChatRequest, ChatResponse
 from aug.api.security import require_api_key
-from aug.core.graph import get_agent, list_agents
+from aug.core.registry import get_agent, list_agents
 
 logger = logging.getLogger(__name__)
 

@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from aug.api.routers import chat, files, threads
-from aug.config import settings
+from aug.config import get_settings
 from aug.utils.db import create_pool
 from aug.utils.logging import configure_logging
 from aug.utils.storage import LocalFileStorage
@@ -43,16 +43,16 @@ async def _checkpointer_context(dsn: str):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage startup and shutdown of shared resources."""
-    configure_logging(debug=settings.DEBUG)
-    logger.info("AUG %s starting up…", settings.APP_VERSION)
+    configure_logging(debug=get_settings().DEBUG)
+    logger.info("AUG %s starting up…", get_settings().APP_VERSION)
 
     # Database pool
-    pool = await create_pool(settings.DATABASE_URL)
+    pool = await create_pool(get_settings().DATABASE_URL)
     app.state.db_pool = pool
 
     # LangGraph Postgres checkpointer
     # Strip the +asyncpg driver suffix — psycopg expects a plain postgres:// URI.
-    dsn = re.sub(r"^postgresql\+asyncpg://", "postgresql://", settings.DATABASE_URL)
+    dsn = re.sub(r"^postgresql\+asyncpg://", "postgresql://", get_settings().DATABASE_URL)
     async with _checkpointer_context(dsn) as checkpointer:
         app.state.checkpointer = checkpointer
 
@@ -77,13 +77,13 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(
         title="AUG — Agent Using Graph",
-        version=settings.APP_VERSION,
+        version=get_settings().APP_VERSION,
         lifespan=lifespan,
     )
 
     @app.get("/health", tags=["health"])
     async def health():
-        return {"status": "ok", "version": settings.APP_VERSION}
+        return {"status": "ok", "version": get_settings().APP_VERSION}
 
     app.include_router(chat.router)
     app.include_router(threads.router)

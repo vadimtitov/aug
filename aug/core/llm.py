@@ -8,7 +8,7 @@ LiteLLM handles routing to the real provider (OpenAI, Anthropic, etc.).
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
-from aug.config import settings
+from aug.config import get_settings
 
 
 def build_chat_model(
@@ -49,6 +49,6 @@ def build_chat_model(
         frequency_penalty=frequency_penalty,
         presence_penalty=presence_penalty,
         top_p=top_p,
-        api_key=settings.LLM_API_KEY,  # type: ignore[arg-type]
-        base_url=settings.LLM_BASE_URL,
+        api_key=get_settings().LLM_API_KEY,  # type: ignore[arg-type]
+        base_url=get_settings().LLM_BASE_URL,
     )

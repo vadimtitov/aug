@@ -9,7 +9,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
 from langgraph.pregel import Pregel as CompiledGraph
 
-from aug.core.agents.base import BaseAgent
+from aug.core.agents.base_agent import BaseAgent
 from aug.core.state import AgentState, AgentStateUpdate
 
 _FAKE_RESPONSE = "[AUG] Hello from the fake agent. No LLM connected."
@@ -17,7 +17,7 @@ _FAKE_RESPONSE = "[AUG] Hello from the fake agent. No LLM connected."
 
 class FakeAgent(BaseAgent):
     def respond(self, state: AgentState) -> AgentStateUpdate:
-        return {"messages": [AIMessage(content=_FAKE_RESPONSE)]}
+        return AgentStateUpdate(messages=[AIMessage(content=_FAKE_RESPONSE)])
 
     def build(self, checkpointer: BaseCheckpointSaver) -> CompiledGraph:
         graph = StateGraph(AgentState)

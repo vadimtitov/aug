@@ -1,5 +1,7 @@
 """Application settings loaded from environment variables / .env file."""
 
+from functools import lru_cache
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,7 +23,13 @@ class Settings(BaseSettings):
     # Telegram (all optional — bot is disabled if token is absent)
     TELEGRAM_BOT_TOKEN: str | None = None
 
+    # Brave Search (optional — tool is disabled if key is absent)
+    BRAVE_API_KEY: str | None = None
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
-settings = Settings()  # type: ignore[call-arg]
+@lru_cache
+def get_settings() -> Settings:
+    """Return the application settings, loaded lazily and cached."""
+    return Settings()  # type: ignore[call-arg]

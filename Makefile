@@ -1,16 +1,17 @@
-.PHONY: dev run down test lint format logs shell
+.PHONY: run down test lint format check logs shell
 
-# Build and start locally via Docker Compose (includes Postgres)
-dev:
-	docker compose up --build
-
-# Run in detached mode
+# Build and start — logs stream to terminal, Ctrl+C stops gracefully
 run:
-	docker compose up --build -d
+	docker compose up --build
 
 # Stop and remove containers
 down:
 	docker compose down
+
+# Run lint, format check, and tests
+check: lint
+	.venv/bin/ruff format --check .
+	.venv/bin/pytest
 
 # Run the test suite
 test:

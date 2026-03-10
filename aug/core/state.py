@@ -4,28 +4,31 @@ from typing import Annotated
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
-from typing_extensions import TypedDict
+from pydantic import BaseModel
 
 
-class AgentState(TypedDict):
+class AgentState(BaseModel):
     """State that flows through every node in the graph.
 
-    messages: the full conversation history, managed by LangGraph's
-              add_messages reducer (appends rather than replaces).
-    thread_id: opaque identifier propagated from the API layer so nodes
-               can use it for memory lookups, logging, etc.
+    messages:      Full conversation history, managed by LangGraph's
+                   add_messages reducer (appends rather than replaces).
+    thread_id:     Opaque identifier propagated from the API layer.
+    system_prompt: Built dynamically by preprocess(); read by respond().
+                   Empty by default — respond() skips it if not set.
     """
 
-    messages: Annotated[list[AnyMessage], add_messages]
-    thread_id: str
+    messages: Annotated[list[AnyMessage], add_messages] = []
+    thread_id: str = ""
+    system_prompt: str = ""
+
+    def model_dump(self, **kwargs):
+        kwargs.setdefault("exclude_unset", True)
+        return super().model_dump(**kwargs)
 
 
-class AgentStateUpdate(TypedDict, total=False):
-    """Partial state returned by a node — only the fields being updated.
+class AgentStateUpdate(AgentState):
+    """Partial state returned by a node.
 
-    ``total=False`` makes all keys optional so nodes can return just
-    ``{"messages": [...]}`` without having to supply ``thread_id``.
+    Identical to AgentState but semantically signals that only the fields
+    explicitly set will be merged into the graph state.
     """
-
-    messages: Annotated[list[AnyMessage], add_messages]
-    thread_id: str

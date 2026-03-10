@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from aug.api.schemas.threads import CreateThreadRequest, ThreadDetail, ThreadMetadata
 from aug.api.security import require_api_key
-from aug.core.graph import list_agents
+from aug.core.registry import list_agents
 
 logger = logging.getLogger(__name__)
 
