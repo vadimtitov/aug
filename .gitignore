@@ -211,6 +211,4 @@ marimo/_lsp/
 __marimo__/
 
 # User data — volume-mounted at runtime, not committed
-/data/memories.json
-/data/user_profile.md
-/data/custom_instructions.md
+/data/*

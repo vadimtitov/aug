@@ -16,12 +16,23 @@ Message UX:
 import asyncio
 import logging
 import re
+import subprocess
+from urllib.parse import urlparse
 
 import markdown as md
 from langchain_core.messages import HumanMessage
-from telegram import Update
+from openai import RateLimitError
+from telegram import LinkPreviewOptions, Update
 from telegram.constants import ChatAction
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.error import RetryAfter
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
 
 from aug.config import get_settings
 from aug.core.registry import get_agent
@@ -32,6 +43,119 @@ logger = logging.getLogger(__name__)
 
 # Tags supported by Telegram's HTML parse mode.
 _TELEGRAM_TAGS = {"b", "strong", "i", "em", "code", "pre", "a", "s", "u", "span"}
+
+_SPINNER = ["🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚", "🕛"]
+
+_TOOL_NAMES = {
+    "brave_search": "Search",
+    "fetch_page": "Fetch",
+    "run_bash": "Bash",
+    "remember": "Remember",
+    "recall": "Recall",
+    "update_memory": "Memory",
+    "forget": "Forget",
+}
+_ARG_TRUNCATE = 50
+_NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
+
+
+def build_bot(checkpointer) -> Application:
+    bot_app = Application.builder().token(get_settings().TELEGRAM_BOT_TOKEN).build()  # type: ignore[arg-type]
+    bot_app.bot_data["checkpointer"] = checkpointer
+    bot_app.add_handler(
+        ConversationHandler(
+            entry_points=[CommandHandler("secret", _secret_start)],
+            states={
+                _SECRET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, _secret_got_name)],
+                _SECRET_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, _secret_got_value)],
+            },
+            fallbacks=[],
+        )
+    )
+    bot_app.add_handler(CommandHandler("clear", _handle_clear))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
+    return bot_app
+
+
+async def start_polling(app) -> None:
+    """Start the bot and begin polling. Called from FastAPI lifespan."""
+    if not get_settings().TELEGRAM_BOT_TOKEN:
+        logger.info("TELEGRAM_BOT_TOKEN not set — Telegram bot disabled.")
+        return
+
+    bot_app = build_bot(app.state.checkpointer)
+    app.state.telegram = bot_app
+
+    await bot_app.initialize()
+    await bot_app.bot.set_my_commands(
+        [
+            ("secret", "Store a secret"),
+            ("clear", "Start a new conversation"),
+        ]
+    )
+    await bot_app.start()
+    await bot_app.updater.start_polling()
+    logger.info("Telegram bot started (polling).")
+
+
+async def stop_polling(app) -> None:
+    """Gracefully stop the bot. Called from FastAPI lifespan shutdown."""
+    bot_app = getattr(app.state, "telegram", None)
+    if bot_app is None:
+        return
+    await bot_app.updater.stop()
+    await bot_app.stop()
+    await bot_app.shutdown()
+    logger.info("Telegram bot stopped.")
+
+
+def _format_tool_call(tool_name: str, args: dict, done: bool, spin: int = 0) -> str:
+    icon = "✅" if done else _SPINNER[spin % len(_SPINNER)]
+    display = _TOOL_NAMES.get(tool_name, tool_name)
+
+    if tool_name == "fetch_page":
+        urls = args.get("urls", [])
+        if isinstance(urls, str):
+            urls = [urls]
+        links = ", ".join(
+            f'<a href="{_escape(url)}">{_escape(urlparse(url).netloc or url)}</a>' for url in urls
+        )
+        return f"{icon} <code>{_escape(display)}(</code>{links}<code>)</code>"
+
+    inner = _format_args(args)
+    call = f"{display}({inner})" if inner else f"{display}()"
+    return f"{icon} <code>{_escape(call)}</code>"
+
+
+def _format_args(args: dict) -> str:
+    if not args:
+        return ""
+    value = next(iter(args.values()))
+    if isinstance(value, list):
+        value = ", ".join(str(v) for v in value)
+    text = str(value)
+    if len(text) > _ARG_TRUNCATE:
+        text = text[:_ARG_TRUNCATE] + "…"
+    return text
+
+
+async def _spinner_task(msg, tool_name: str, args: dict) -> None:
+    i = 0
+    while True:
+        await asyncio.sleep(1.0)
+        i += 1
+        try:
+            await msg.edit_text(
+                _format_tool_call(tool_name, args, done=False, spin=i),
+                parse_mode="HTML",
+                link_preview_options=_NO_PREVIEW,
+            )
+        except Exception:
+            return
+
+
+def _escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _table_to_pre(match: re.Match) -> str:
@@ -92,6 +216,50 @@ def _thread_id(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> str:
     return f"tg-{chat_id}-{session}"
 
 
+_SECRET_NAME, _SECRET_VALUE = range(2)
+
+
+async def _secret_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    msg = await update.message.reply_text("Enter secret name:")  # type: ignore[union-attr]
+    context.user_data["secret_msgs"] = [update.message.message_id, msg.message_id]  # type: ignore[union-attr]
+    return _SECRET_NAME
+
+
+async def _secret_got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["secret_name"] = update.message.text  # type: ignore[union-attr]
+    context.user_data["secret_msgs"].append(update.message.message_id)  # type: ignore[union-attr]
+    msg = await update.message.reply_text("Enter secret value:")  # type: ignore[union-attr]
+    context.user_data["secret_msgs"].append(msg.message_id)
+    return _SECRET_VALUE
+
+
+async def _secret_got_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["secret_msgs"].append(update.message.message_id)  # type: ignore[union-attr]
+    name = context.user_data["secret_name"]
+    value = update.message.text  # type: ignore[union-attr]
+
+    result = subprocess.run(
+        ["hushed", "add", name, value],
+        capture_output=True,
+        text=True,
+    )
+
+    chat_id = update.effective_chat.id  # type: ignore[union-attr]
+    for msg_id in context.user_data.pop("secret_msgs", []):
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+        except Exception:
+            pass
+
+    if result.returncode == 0:
+        await update.effective_chat.send_message(f"Secret {name} stored.")  # type: ignore[union-attr]
+    else:
+        logger.error("hushed add failed: %s", result.stderr)
+        await update.effective_chat.send_message(f"Failed to store secret {name}.")  # type: ignore[union-attr]
+
+    return ConversationHandler.END
+
+
 async def _handle_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Start a new conversation thread, discarding the current context."""
     chat_id = update.effective_chat.id  # type: ignore[union-attr]
@@ -123,7 +291,9 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     typing_task = asyncio.create_task(_typing_loop(update, stop_typing))
 
     accumulated_text = ""
-    tool_msgs: dict[str, list] = {}
+    stream_msg = None
+    last_stream_edit = 0.0
+    tool_msgs: dict[str, tuple] = {}
 
     try:
         config = {"configurable": {"thread_id": thread_id}}
@@ -133,31 +303,66 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 delta = event["data"]["chunk"].content
                 if delta:
                     accumulated_text += delta
-            elif kind == "on_chat_model_end":
-                output = event["data"].get("output")
-                if output and getattr(output, "tool_calls", None):
-                    for tc in output.tool_calls:
-                        msg = await update.message.reply_text(f"🔧 {tc['name']}...")
-                        tool_msgs.setdefault(tc["name"], []).append(msg)
-                    accumulated_text = ""
+                    now = asyncio.get_running_loop().time()
+                    if stream_msg is None:
+                        stream_msg = await update.message.reply_text(
+                            accumulated_text, link_preview_options=_NO_PREVIEW
+                        )
+                        last_stream_edit = now
+                    elif now - last_stream_edit >= 0.1:
+                        try:
+                            await stream_msg.edit_text(
+                                accumulated_text, link_preview_options=_NO_PREVIEW
+                            )
+                            last_stream_edit = now
+                        except RetryAfter as e:
+                            last_stream_edit = now + e.retry_after
+                        except Exception:
+                            pass
+            elif kind == "on_tool_start":
+                args = event["data"].get("input") or {}
+                text = _format_tool_call(event["name"], args, done=False)
+                msg = await update.message.reply_text(
+                    text, parse_mode="HTML", link_preview_options=_NO_PREVIEW
+                )
+                spin = asyncio.create_task(_spinner_task(msg, event["name"], args))
+                tool_msgs[event["run_id"]] = (args, msg, spin)
+                accumulated_text = ""
+                stream_msg = None
             elif kind == "on_tool_end":
-                pending = tool_msgs.get(event["name"], [])
-                if pending:
+                entry = tool_msgs.pop(event["run_id"], None)
+                if entry:
+                    args, msg, spin = entry
+                    spin.cancel()
                     try:
-                        await pending.pop(0).edit_text(f"✅ {event['name']} done")
+                        await msg.edit_text(
+                            _format_tool_call(event["name"], args, done=True),
+                            parse_mode="HTML",
+                            link_preview_options=_NO_PREVIEW,
+                        )
                     except Exception:
                         pass
 
-        text = accumulated_text or "..."
-        html = _to_html(text)
-        logger.info("raw llm text: %r", text[:300])
-        logger.info("converted html: %r", html[:300])
-        try:
-            await update.message.reply_text(html, parse_mode="HTML")
-        except Exception:
-            logger.warning("HTML parse failed, sending as plain text. html=%r", html[:500])
-            await update.message.reply_text(text)
+        if accumulated_text:
+            html = _to_html(accumulated_text)
+            try:
+                if stream_msg is not None:
+                    await stream_msg.edit_text(
+                        html, parse_mode="HTML", link_preview_options=_NO_PREVIEW
+                    )
+                else:
+                    await update.message.reply_text(
+                        html, parse_mode="HTML", link_preview_options=_NO_PREVIEW
+                    )
+            except Exception:
+                target = stream_msg or update.message
+                await target.reply_text(accumulated_text, link_preview_options=_NO_PREVIEW)
 
+    except RateLimitError:
+        logger.warning("Rate limit / context too large")
+        await update.message.reply_text(
+            "Context window is full. Use /clear to start a fresh conversation."
+        )
     except Exception as e:
         logger.exception("Error handling Telegram message")
         await update.message.reply_text(f"Sorry, something went wrong: {e}")
@@ -165,37 +370,3 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     finally:
         stop_typing.set()
         typing_task.cancel()
-
-
-def build_bot(checkpointer) -> Application:
-    bot_app = Application.builder().token(get_settings().TELEGRAM_BOT_TOKEN).build()  # type: ignore[arg-type]
-    bot_app.bot_data["checkpointer"] = checkpointer
-    bot_app.add_handler(CommandHandler("clear", _handle_clear))
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
-    return bot_app
-
-
-async def start_polling(app) -> None:
-    """Start the bot and begin polling. Called from FastAPI lifespan."""
-    if not get_settings().TELEGRAM_BOT_TOKEN:
-        logger.info("TELEGRAM_BOT_TOKEN not set — Telegram bot disabled.")
-        return
-
-    bot_app = build_bot(app.state.checkpointer)
-    app.state.telegram = bot_app
-
-    await bot_app.initialize()
-    await bot_app.start()
-    await bot_app.updater.start_polling()
-    logger.info("Telegram bot started (polling).")
-
-
-async def stop_polling(app) -> None:
-    """Gracefully stop the bot. Called from FastAPI lifespan shutdown."""
-    bot_app = getattr(app.state, "telegram", None)
-    if bot_app is None:
-        return
-    await bot_app.updater.stop()
-    await bot_app.stop()
-    await bot_app.shutdown()
-    logger.info("Telegram bot stopped.")

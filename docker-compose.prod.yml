@@ -11,6 +11,7 @@ services:
   aug:
     build: .
     restart: unless-stopped
-    # No ports exposed — traffic arrives via reverse proxy / Cloudflare Tunnel.
+    environment:
+      HUSHED_DIR: /app/data/hushed
     volumes:
       - /opt/aug/data:/app/data

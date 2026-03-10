@@ -3,6 +3,12 @@ FROM python:3.12-slim
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
+# System tools + hushed
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl git jq procps \
+    && curl -fsSL https://raw.githubusercontent.com/vadimtitov/hushed/main/install.sh | bash \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Non-root user created early so we can chown correctly
 RUN useradd --create-home appuser
 
