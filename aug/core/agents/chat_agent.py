@@ -49,8 +49,12 @@ class ChatAgent(BaseAgent):
             seed=seed,
         ).bind_tools(self.tools)
 
+    def _build_system_prompt(self, state: AgentState) -> str:
+        parts = [self._system_prompt, state.interface_context]
+        return "\n\n".join(p for p in parts if p)
+
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
-        return AgentStateUpdate(system_prompt=self._system_prompt)
+        return AgentStateUpdate(system_prompt=self._build_system_prompt(state))
 
     def respond(self, state: AgentState) -> AgentStateUpdate:
         messages = state.messages
@@ -66,8 +70,9 @@ class TimeAwareChatAgent(ChatAgent):
 
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
         now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+        prompt = self._build_system_prompt(state)
         last = state.messages[-1] if state.messages else None
         if isinstance(last, HumanMessage):
             stamped = HumanMessage(content=f"[{now}] {last.content}", id=last.id)
-            return AgentStateUpdate(system_prompt=self._system_prompt, messages=[stamped])
-        return AgentStateUpdate(system_prompt=self._system_prompt)
+            return AgentStateUpdate(system_prompt=prompt, messages=[stamped])
+        return AgentStateUpdate(system_prompt=prompt)

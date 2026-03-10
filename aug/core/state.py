@@ -20,6 +20,7 @@ class AgentState(BaseModel):
     messages: Annotated[list[AnyMessage], add_messages] = []
     thread_id: str = ""
     system_prompt: str = ""
+    interface_context: str = ""  # injected by the frontend; appended to system prompt
 
     def model_dump(self, **kwargs):
         kwargs.setdefault("exclude_unset", True)

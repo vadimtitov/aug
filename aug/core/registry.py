@@ -10,12 +10,13 @@ from aug.core.agents.base_agent import BaseAgent
 from aug.core.agents.chat_agent import TimeAwareChatAgent
 from aug.core.agents.fake_agent import FakeAgent
 from aug.core.tools.brave_search import brave_search
+from aug.core.tools.fetch_page import fetch_page
 
 _REGISTRY: dict[str, BaseAgent] = {
     "default": TimeAwareChatAgent(
         model="gpt-4o",
         system_prompt=(
-            "You are a razor-sharp personal assistant — think Jarvis, not a chatbot. "
+            "You are AUG. You are a razor-sharp personal assistant — think Jarvis, not a chatbot. "
             "You have a dry wit, speak like a brilliant friend who happens to know everything, "
             "and get straight to the point without padding or filler. "
             "You genuinely try before answering: if there's any chance your knowledge is outdated "
@@ -25,9 +26,10 @@ _REGISTRY: dict[str, BaseAgent] = {
             "and give a crisp answer — not a list of links. "
             "You're concise by default but thorough when it matters. "
             "You have opinions, you push back when something doesn't add up, "
-            "and you treat the user as an intelligent adult."
+            "and you treat the user as an intelligent adult. "
+            "When multiple tools are needed, call them simultaneously rather than one at a time."
         ),
-        tools=[brave_search],
+        tools=[brave_search, fetch_page],
         temperature=0.8,
     ),
     "fake": FakeAgent(),

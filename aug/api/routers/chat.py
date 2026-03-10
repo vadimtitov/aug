@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage
 from aug.api.schemas.chat import ChatRequest, ChatResponse
 from aug.api.security import require_api_key
 from aug.core.registry import get_agent, list_agents
+from aug.core.state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -41,16 +42,16 @@ async def invoke(body: ChatRequest, request: Request) -> ChatResponse:
     graph = get_agent(body.agent, checkpointer)
 
     config = {"configurable": {"thread_id": body.thread_id}}
-    input_state = {
-        "messages": [HumanMessage(content=body.message)],
-        "thread_id": body.thread_id,
-    }
+    input_state = AgentState(
+        messages=[HumanMessage(content=body.message)],
+        thread_id=body.thread_id,
+    )
 
     logger.info("invoke thread=%s agent=%s", body.thread_id, body.agent)
-    result = await graph.ainvoke(input_state, config=config)
+    result: AgentState = await graph.ainvoke(input_state, config=config)
 
     last_ai = next(
-        (m for m in reversed(result["messages"]) if m.type == "ai"),
+        (m for m in reversed(result.messages) if m.type == "ai"),
         None,
     )
     response_text = last_ai.content if last_ai else ""
@@ -71,10 +72,10 @@ async def stream(body: ChatRequest, request: Request) -> StreamingResponse:
     graph = get_agent(body.agent, checkpointer)
 
     config = {"configurable": {"thread_id": body.thread_id}}
-    input_state = {
-        "messages": [HumanMessage(content=body.message)],
-        "thread_id": body.thread_id,
-    }
+    input_state = AgentState(
+        messages=[HumanMessage(content=body.message)],
+        thread_id=body.thread_id,
+    )
 
     async def event_generator():
         logger.info("stream thread=%s agent=%s", body.thread_id, body.agent)

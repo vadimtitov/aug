@@ -15,7 +15,9 @@ Message UX:
 
 import asyncio
 import logging
+import re
 
+import markdown as md
 from langchain_core.messages import HumanMessage
 from telegram import Update
 from telegram.constants import ChatAction
@@ -23,8 +25,52 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 from aug.config import get_settings
 from aug.core.registry import get_agent
+from aug.core.state import AgentState
 
 logger = logging.getLogger(__name__)
+
+
+# Tags supported by Telegram's HTML parse mode.
+_TELEGRAM_TAGS = {"b", "strong", "i", "em", "code", "pre", "a", "s", "u", "span"}
+
+
+def _table_to_pre(match: re.Match) -> str:
+    """Convert an HTML table to a monospaced <pre> block."""
+    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", match.group(0), re.DOTALL)
+    parsed = []
+    for row in rows:
+        cells = re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row, re.DOTALL)
+        parsed.append([re.sub(r"<[^>]+>", "", c).strip() for c in cells])
+
+    if not parsed:
+        return ""
+
+    widths = [max(len(r[i]) for r in parsed if i < len(r)) for i in range(len(parsed[0]))]
+    lines = []
+    for i, row in enumerate(parsed):
+        lines.append("  ".join(cell.ljust(widths[j]) for j, cell in enumerate(row)))
+        if i == 0:
+            lines.append("  ".join("-" * w for w in widths))
+
+    return "<pre>" + "\n".join(lines) + "</pre>"
+
+
+def _to_html(text: str) -> str:
+    """Convert markdown to Telegram-compatible HTML.
+
+    Converts to HTML then strips any tags Telegram doesn't support,
+    keeping their inner content. Tables are rendered as monospaced <pre> blocks.
+    """
+    html = md.markdown(text, extensions=["fenced_code", "tables"])
+    # Convert tables to <pre> blocks before stripping.
+    html = re.sub(r"<table[^>]*>.*?</table>", _table_to_pre, html, flags=re.DOTALL)
+    # Replace unsupported block tags with newlines to preserve structure.
+    html = re.sub(r"<(p|li|tr|th|td|h[1-6]|blockquote)([^>]*)>", "\n", html)
+    # Strip all remaining unsupported tags, keeping content.
+    html = re.sub(r"</?(?!(?:" + "|".join(_TELEGRAM_TAGS) + r")\b)[a-zA-Z][^>]*>", "", html)
+    # Collapse excessive blank lines.
+    html = re.sub(r"\n{3,}", "\n\n", html).strip()
+    return html
 
 
 async def _typing_loop(update: Update, stop_event: asyncio.Event) -> None:
@@ -62,10 +108,16 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     thread_id = _thread_id(context, update.effective_chat.id)  # type: ignore[union-attr]
     checkpointer = context.application.bot_data["checkpointer"]
     graph = get_agent("default", checkpointer)
-    input_state = {
-        "messages": [HumanMessage(content=update.message.text)],
-        "thread_id": thread_id,
-    }
+    input_state = AgentState(
+        messages=[HumanMessage(content=update.message.text)],
+        thread_id=thread_id,
+        interface_context=(
+            "Interface: Telegram.\n"
+            "Formatting: bold and italic are supported. "
+            "Do not use markdown tables — present tabular data as bullet lists instead. "
+            "Keep responses concise; this is a mobile messaging app."
+        ),
+    )
 
     stop_typing = asyncio.Event()
     typing_task = asyncio.create_task(_typing_loop(update, stop_typing))
@@ -88,7 +140,13 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await status_msg.edit_text(f"✅ {event['name']} done")
                 accumulated_text = ""
 
-        await update.message.reply_text(accumulated_text or "...")
+        text = accumulated_text or "..."
+        html = _to_html(text)
+        try:
+            await update.message.reply_text(html, parse_mode="HTML")
+        except Exception:
+            logger.warning("HTML parse failed, sending as plain text. html=%r", html[:500])
+            await update.message.reply_text(text)
 
     except Exception as e:
         logger.exception("Error handling Telegram message")
