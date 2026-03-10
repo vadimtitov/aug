@@ -1,0 +1,14 @@
+# Production compose file — no Postgres service (uses external DB).
+# Intended for Portainer "Repository" deployment: Portainer clones the repo
+# and runs docker compose up --build, so no pre-built image or registry needed.
+#
+# Assumes:
+#   - An external Docker network named "backend" where Postgres already lives.
+#   - Environment variables supplied via Portainer's "Environment variables" UI
+#     (or a .env file if running manually).
+
+services:
+  aug:
+    build: .
+    restart: unless-stopped
+    # No ports exposed — traffic arrives via reverse proxy / Cloudflare Tunnel.

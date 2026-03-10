@@ -1,3 +1,7 @@
+# AUG-specific
+/tmp/aug_files/
+.env.local
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
