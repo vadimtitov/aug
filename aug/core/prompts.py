@@ -1,20 +1,37 @@
-"""System prompts for each agent.
+"""System prompt utilities.
 
-Keeping prompts in one place makes it easy to iterate on behaviour without
-touching graph/agent logic.
+Anything that contributes to the system prompt lives here.
 """
 
-DEFAULT_SYSTEM_PROMPT = """\
-You are AUG, a personal AI assistant. You are helpful, concise, and honest.
-When you don't know something, say so rather than making things up.
-"""
-
-# Add new agent prompts here as the roster grows.
-PROMPTS: dict[str, str] = {
-    "default": DEFAULT_SYSTEM_PROMPT,
-}
+from aug.core.tools.memory import get_memory_index
+from aug.utils.data import read_data_file
 
 
-def get_prompt(agent: str) -> str:
-    """Return the system prompt for *agent*, falling back to the default."""
-    return PROMPTS.get(agent, DEFAULT_SYSTEM_PROMPT)
+def get_user_context() -> str:
+    """Return combined user context for injection into the system prompt.
+
+    Sources (all optional, silently skipped if missing):
+      - data/user_profile.md
+      - data/custom_instructions.md
+      - data/memories.json  (via memory index)
+    """
+    parts = []
+
+    if profile := _read_md("user_profile.md"):
+        parts.append(f"## User Profile\n{profile}")
+
+    if instructions := _read_md("custom_instructions.md"):
+        parts.append(f"## Custom Instructions\n{instructions}")
+
+    if index := get_memory_index():
+        parts.append(index)
+
+    return "\n\n".join(parts)
+
+
+def _read_md(name: str) -> str:
+    """Read a markdown data file, stripping everything from '## Example' onwards."""
+    text = read_data_file(name)
+    if "## Example" in text:
+        text = text[: text.index("## Example")].strip()
+    return text

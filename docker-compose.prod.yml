@@ -12,3 +12,5 @@ services:
     build: .
     restart: unless-stopped
     # No ports exposed — traffic arrives via reverse proxy / Cloudflare Tunnel.
+    volumes:
+      - /opt/aug/data:/app/data

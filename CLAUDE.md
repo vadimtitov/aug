@@ -19,6 +19,7 @@ aug/
 │   ├── core/
 │   │   ├── llm.py              ← build_chat_model() factory — always ChatOpenAI → LiteLLM proxy
 │   │   ├── state.py            ← AgentState + AgentStateUpdate (Pydantic models)
+│   │   ├── prompts.py          ← get_user_context() — assembles runtime system prompt context
 │   │   ├── registry.py         ← Agent registry + compiled-graph cache
 │   │   └── agents/
 │   │       ├── base_agent.py   ← BaseAgent ABC with agentic loop in build()
@@ -32,7 +33,8 @@ aug/
 │   └── utils/
 │       ├── db.py               ← asyncpg pool + schema bootstrap
 │       ├── storage.py          ← File storage abstraction
-│       └── logging.py          ← JSON (prod) / human-readable (dev) structured logging
+│       ├── logging.py          ← JSON (prod) / human-readable (dev) structured logging
+│       └── data.py             ← read_data_file() / write_data_file() — /app/data volume access
 ├── tests/
 ├── Makefile
 ├── pyproject.toml
@@ -133,6 +135,12 @@ def my_tool(query: str) -> str:
 - **Async everywhere** — `async def` throughout.
 - **ruff only** — no black, flake8, isort.
 - **uv only** — no `requirements.txt`.
+
+## Code style
+
+- **All imports at the top of the file** — no inline imports inside functions. Solve circular imports by restructuring modules, not by deferring imports.
+- **Private functions at the bottom** — public API first, helpers (`_prefixed`) last.
+- **No unnecessary abstractions** — three similar lines beat a premature helper.
 
 ---
 

@@ -2,11 +2,12 @@
 
 from datetime import UTC, datetime
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.llm import build_chat_model
+from aug.core.prompts import get_user_context
 from aug.core.state import AgentState, AgentStateUpdate
 
 
@@ -50,14 +51,14 @@ class ChatAgent(BaseAgent):
         ).bind_tools(self.tools)
 
     def _build_system_prompt(self, state: AgentState) -> str:
-        parts = [self._system_prompt, state.interface_context]
+        parts = [self._system_prompt, get_user_context(), state.interface_context]
         return "\n\n".join(p for p in parts if p)
 
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
         return AgentStateUpdate(system_prompt=self._build_system_prompt(state))
 
     def respond(self, state: AgentState) -> AgentStateUpdate:
-        messages = state.messages
+        messages = _drop_orphaned_tool_calls(state.messages)
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
         response: AIMessage = self._llm.invoke(messages)
@@ -76,3 +77,20 @@ class TimeAwareChatAgent(ChatAgent):
             stamped = HumanMessage(content=f"[{now}] {last.content}", id=last.id)
             return AgentStateUpdate(system_prompt=prompt, messages=[stamped])
         return AgentStateUpdate(system_prompt=prompt)
+
+
+def _drop_orphaned_tool_calls(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """Remove AIMessages whose tool calls were never answered.
+
+    If a tool raises an unhandled exception the graph aborts before writing
+    the ToolMessages, leaving the state with a dangling tool_calls entry that
+    causes every subsequent LLM call to fail with a 400.
+    """
+    answered = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
+    result = []
+    for msg in messages:
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            if not all(tc["id"] in answered for tc in msg.tool_calls):
+                continue
+        result.append(msg)
+    return result

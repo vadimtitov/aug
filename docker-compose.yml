@@ -8,6 +8,7 @@ services:
     env_file: .env
     volumes:
       - ./aug:/app/aug
+      - ./data:/app/data
     command: ["/app/.venv/bin/uvicorn", "aug.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     depends_on:
       postgres:

@@ -11,6 +11,7 @@ from aug.core.agents.chat_agent import TimeAwareChatAgent
 from aug.core.agents.fake_agent import FakeAgent
 from aug.core.tools.brave_search import brave_search
 from aug.core.tools.fetch_page import fetch_page
+from aug.core.tools.memory import forget, recall, remember, update_memory
 
 _REGISTRY: dict[str, BaseAgent] = {
     "default": TimeAwareChatAgent(
@@ -29,7 +30,7 @@ _REGISTRY: dict[str, BaseAgent] = {
             "and you treat the user as an intelligent adult. "
             "When multiple tools are needed, call them simultaneously rather than one at a time."
         ),
-        tools=[brave_search, fetch_page],
+        tools=[brave_search, fetch_page, remember, recall, update_memory, forget],
         temperature=0.8,
     ),
     "fake": FakeAgent(),

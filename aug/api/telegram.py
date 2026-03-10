@@ -123,7 +123,7 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     typing_task = asyncio.create_task(_typing_loop(update, stop_typing))
 
     accumulated_text = ""
-    status_msg = None
+    tool_msgs: dict[str, list] = {}
 
     try:
         config = {"configurable": {"thread_id": thread_id}}
@@ -133,15 +133,25 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 delta = event["data"]["chunk"].content
                 if delta:
                     accumulated_text += delta
-            elif kind == "on_tool_start":
-                status_msg = await update.message.reply_text(f"🔧 {event['name']}...")
+            elif kind == "on_chat_model_end":
+                output = event["data"].get("output")
+                if output and getattr(output, "tool_calls", None):
+                    for tc in output.tool_calls:
+                        msg = await update.message.reply_text(f"🔧 {tc['name']}...")
+                        tool_msgs.setdefault(tc["name"], []).append(msg)
+                    accumulated_text = ""
             elif kind == "on_tool_end":
-                if status_msg:
-                    await status_msg.edit_text(f"✅ {event['name']} done")
-                accumulated_text = ""
+                pending = tool_msgs.get(event["name"], [])
+                if pending:
+                    try:
+                        await pending.pop(0).edit_text(f"✅ {event['name']} done")
+                    except Exception:
+                        pass
 
         text = accumulated_text or "..."
         html = _to_html(text)
+        logger.info("raw llm text: %r", text[:300])
+        logger.info("converted html: %r", html[:300])
         try:
             await update.message.reply_text(html, parse_mode="HTML")
         except Exception:
