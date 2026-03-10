@@ -1,0 +1,36 @@
+services:
+  aug:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aug:password@postgres:5432/aug
+      HUSHED_DIR: /app/data/hushed
+    env_file: .env
+    volumes:
+      - ./aug:/app/aug
+      - ./data:/app/data
+    command: ["/app/.venv/bin/uvicorn", "aug.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aug
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: aug
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aug -d aug"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
