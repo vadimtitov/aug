@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 
+from pydantic import computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +23,20 @@ class Settings(BaseSettings):
 
     # Telegram (all optional — bot is disabled if token is absent)
     TELEGRAM_BOT_TOKEN: str | None = None
+    # Comma-separated chat IDs allowed to use the bot. If empty, all chats are allowed.
+    TELEGRAM_ALLOWED_CHAT_IDS: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def allowed_chat_ids(self) -> set[int]:
+        if not self.TELEGRAM_ALLOWED_CHAT_IDS:
+            return set()
+        try:
+            return {int(s.strip()) for s in self.TELEGRAM_ALLOWED_CHAT_IDS.split(",") if s.strip()}
+        except ValueError as e:
+            raise ValueError(
+                f"TELEGRAM_ALLOWED_CHAT_IDS must be comma-separated integers: {e}"
+            ) from e
 
     # Brave Search (optional — tool is disabled if key is absent)
     BRAVE_API_KEY: str | None = None
