@@ -153,5 +153,6 @@ def my_tool(query: str) -> str:
 | `LLM_BASE_URL` | Yes | LiteLLM proxy URL, e.g. `http://litellm:4000` |
 | `DATABASE_URL` | Yes | `postgresql+asyncpg://user:password@host:5432/dbname` |
 | `TELEGRAM_BOT_TOKEN` | No | Bot disabled if absent |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | No | Comma-separated chat IDs allowed to use the bot. If unset, all chats are allowed. Get your ID from `@userinfobot` |
 | `BRAVE_API_KEY` | No | Web search tool disabled if absent |
 | `DEBUG` | No | `true` → human-readable logs; `false` (default) → JSON |

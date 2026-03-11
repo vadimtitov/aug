@@ -6,6 +6,8 @@
 #   - An external Docker network named "backend" where Postgres already lives.
 #   - Environment variables supplied via Portainer's "Environment variables" UI
 #     (or a .env file if running manually).
+#   - Host data directory owned by UID 1000 (the container's appuser):
+#       sudo mkdir -p /opt/aug/data && sudo chown -R 1000:1000 /opt/aug/data
 
 services:
   aug:
@@ -18,6 +20,7 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL}
       DATABASE_URL: ${DATABASE_URL}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ALLOWED_CHAT_IDS: ${TELEGRAM_ALLOWED_CHAT_IDS:-}
       BRAVE_API_KEY: ${BRAVE_API_KEY:-}
       DEBUG: ${DEBUG:-false}
     volumes:

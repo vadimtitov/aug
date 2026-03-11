@@ -211,6 +211,11 @@ async def _typing_loop(update: Update, stop_event: asyncio.Event) -> None:
             pass
 
 
+def _is_allowed(chat_id: int) -> bool:
+    allowed = get_settings().allowed_chat_ids
+    return not allowed or chat_id in allowed
+
+
 def _thread_id(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> str:
     session = context.application.bot_data.get(f"session:{chat_id}", 0)
     return f"tg-{chat_id}-{session}"
@@ -220,6 +225,8 @@ _SECRET_NAME, _SECRET_VALUE = range(2)
 
 
 async def _secret_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _is_allowed(update.effective_chat.id):  # type: ignore[union-attr]
+        return ConversationHandler.END
     msg = await update.message.reply_text("Enter secret name:")  # type: ignore[union-attr]
     context.user_data["secret_msgs"] = [update.message.message_id, msg.message_id]  # type: ignore[union-attr]
     return _SECRET_NAME
@@ -263,6 +270,8 @@ async def _secret_got_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def _handle_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Start a new conversation thread, discarding the current context."""
     chat_id = update.effective_chat.id  # type: ignore[union-attr]
+    if not _is_allowed(chat_id):
+        return
     current = context.application.bot_data.get(f"session:{chat_id}", 0)
     context.application.bot_data[f"session:{chat_id}"] = current + 1
     await update.message.reply_text("Context cleared. Starting fresh.")  # type: ignore[union-attr]
@@ -271,6 +280,8 @@ async def _handle_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Route a Telegram message through the default agent."""
     if not update.message or not update.message.text:
+        return
+    if not _is_allowed(update.effective_chat.id):  # type: ignore[union-attr]
         return
 
     thread_id = _thread_id(context, update.effective_chat.id)  # type: ignore[union-attr]
