@@ -10,7 +10,7 @@ services:
     volumes:
       - ./aug:/app/aug
       - ./data:/app/data
-    command: ["/app/.venv/bin/uvicorn", "aug.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    command: ["uvicorn", "aug.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     depends_on:
       postgres:
         condition: service_healthy
