@@ -17,6 +17,7 @@ import asyncio
 import logging
 import re
 import subprocess
+import textwrap
 from urllib.parse import urlparse
 
 import markdown as md
@@ -42,9 +43,6 @@ from aug.utils.user_settings import get_setting, set_setting
 
 logger = logging.getLogger(__name__)
 
-
-# Tags supported by Telegram's HTML parse mode.
-_TELEGRAM_TAGS = {"b", "strong", "i", "em", "code", "pre", "a", "s", "u", "span"}
 
 _SPINNER = ["🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚", "🕛"]
 
@@ -159,8 +157,7 @@ async def _spinner_task(msg, tool_name: str, args: dict) -> None:
             return
 
 
-def _escape(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+_TELEGRAM_TAGS = {"b", "strong", "i", "em", "code", "pre", "a", "s", "u", "span"}
 
 
 def _table_to_pre(match: re.Match) -> str:
@@ -202,6 +199,10 @@ def _to_html(text: str) -> str:
     return html
 
 
+def _escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 async def _typing_loop(update: Update, stop_event: asyncio.Event) -> None:
     """Send 'typing' chat action every 4s until stop_event is set.
 
@@ -221,8 +222,8 @@ def _is_allowed(chat_id: int) -> bool:
     return not allowed or chat_id in allowed
 
 
-def _thread_id(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> str:
-    session = context.application.bot_data.get(f"session:{chat_id}", 0)
+def _thread_id(chat_id: int) -> str:
+    session = get_setting("telegram", "chats", str(chat_id), "session", default=0)
     return f"tg-{chat_id}-{session}"
 
 
@@ -277,8 +278,8 @@ async def _handle_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     chat_id = update.effective_chat.id  # type: ignore[union-attr]
     if not _is_allowed(chat_id):
         return
-    current = context.application.bot_data.get(f"session:{chat_id}", 0)
-    context.application.bot_data[f"session:{chat_id}"] = current + 1
+    current = get_setting("telegram", "chats", str(chat_id), "session", default=0)
+    set_setting("telegram", "chats", str(chat_id), "session", value=current + 1)
     await update.message.reply_text("Context cleared. Starting fresh.")  # type: ignore[union-attr]
 
 
@@ -327,21 +328,39 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     chat_id = update.effective_chat.id  # type: ignore[union-attr]
-    thread_id = _thread_id(context, chat_id)
+    thread_id = _thread_id(chat_id)
     checkpointer = context.application.bot_data["checkpointer"]
     agent_name = get_setting("telegram", "chats", str(chat_id), "agent", default="default")
     graph = get_agent(agent_name, checkpointer)
     input_state = AgentState(
         messages=[HumanMessage(content=update.message.text)],
         thread_id=thread_id,
-        interface_context=(
-            "Interface: Telegram.\n"
-            "Formatting: bold and italic are supported. "
-            "Do not use markdown tables — present tabular data as bullet lists instead. "
-            "Keep responses concise; this is a mobile messaging app."
-        ),
-    )
+        interface_context=textwrap.dedent("""
+            You are communicating through Telegram. Telegram renders HTML formatting, not Markdown.
 
+            IMPORTANT: Do NOT use Markdown syntax. This means no *asterisks*, no _underscores_,
+            no **double asterisks**, no # headers, no --- dividers. None of it. It will appear
+            as raw symbols to the user.
+
+            Use only these HTML tags for formatting:
+            - <b>bold</b>
+            - <i>italic</i>
+            - <u>underline</u>
+            - <s>strikethrough</s>
+            - <code>inline code</code>
+            - <pre>code block</pre>
+            - <a href="URL">link text</a>
+            - <span class="tg-spoiler">spoiler</span>
+            - <blockquote>quote</blockquote>
+
+            In plain text, escape: & → &amp;  < → &lt;  > → &gt;
+
+            Keep messages concise and chat-appropriate.
+
+            NO MARKDOWN SYNTAX WHATSOEVER. NO TABLES. NO HEADERS. NO DIVIDERS.
+            ONLY THE ABOVE HTML TAGS FOR FORMATTING.
+        """).strip(),
+    )
     stop_typing = asyncio.Event()
     typing_task = asyncio.create_task(_typing_loop(update, stop_typing))
 
@@ -399,23 +418,32 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         pass
 
         if accumulated_text:
-            html = _to_html(accumulated_text)
+            final_text, final_parse_mode = _to_html(accumulated_text), "HTML"
             try:
                 if stream_msg is not None:
                     await stream_msg.edit_text(
-                        html, parse_mode="HTML", link_preview_options=_NO_PREVIEW
+                        final_text,
+                        parse_mode=final_parse_mode,
+                        link_preview_options=_NO_PREVIEW,
                     )
                 else:
                     await update.message.reply_text(
-                        html, parse_mode="HTML", link_preview_options=_NO_PREVIEW
+                        final_text,
+                        parse_mode=final_parse_mode,
+                        link_preview_options=_NO_PREVIEW,
                     )
             except RetryAfter as e:
                 # Flood control hit on final send — wait it out and deliver as a fresh message.
                 await asyncio.sleep(e.retry_after)
                 await update.message.reply_text(
-                    html, parse_mode="HTML", link_preview_options=_NO_PREVIEW
+                    final_text, parse_mode=final_parse_mode, link_preview_options=_NO_PREVIEW
                 )
             except Exception:
+                logger.warning(
+                    "Failed to send with %s, falling back to plain text",
+                    final_parse_mode,
+                    exc_info=True,
+                )
                 await update.message.reply_text(accumulated_text, link_preview_options=_NO_PREVIEW)
 
     except RateLimitError:
