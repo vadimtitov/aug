@@ -364,7 +364,7 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                             accumulated_text, link_preview_options=_NO_PREVIEW
                         )
                         last_stream_edit = now
-                    elif now - last_stream_edit >= 0.1:
+                    elif now - last_stream_edit >= 0.3:
                         try:
                             await stream_msg.edit_text(
                                 accumulated_text, link_preview_options=_NO_PREVIEW
@@ -409,9 +409,14 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await update.message.reply_text(
                         html, parse_mode="HTML", link_preview_options=_NO_PREVIEW
                     )
+            except RetryAfter as e:
+                # Flood control hit on final send — wait it out and deliver as a fresh message.
+                await asyncio.sleep(e.retry_after)
+                await update.message.reply_text(
+                    html, parse_mode="HTML", link_preview_options=_NO_PREVIEW
+                )
             except Exception:
-                target = stream_msg or update.message
-                await target.reply_text(accumulated_text, link_preview_options=_NO_PREVIEW)
+                await update.message.reply_text(accumulated_text, link_preview_options=_NO_PREVIEW)
 
     except RateLimitError:
         logger.warning("Rate limit / context too large")
