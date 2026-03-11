@@ -13,5 +13,12 @@ services:
     restart: unless-stopped
     environment:
       HUSHED_DIR: /app/data/hushed
+      API_KEY: ${API_KEY}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_BASE_URL: ${LLM_BASE_URL}
+      DATABASE_URL: ${DATABASE_URL}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      BRAVE_API_KEY: ${BRAVE_API_KEY:-}
+      DEBUG: ${DEBUG:-false}
     volumes:
       - /opt/aug/data:/app/data
