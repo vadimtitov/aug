@@ -1,6 +1,8 @@
 """Web search tool powered by Brave Search API."""
 
 import logging
+import threading
+import time
 
 import httpx
 from langchain_core.tools import tool
@@ -11,6 +13,10 @@ logger = logging.getLogger(__name__)
 
 _API_URL = "https://api.search.brave.com/res/v1/web/search"
 _MAX_RESULTS = 5
+_MIN_INTERVAL = 1.0  # seconds between requests (free tier: 1 req/s)
+
+_lock = threading.Lock()
+_last_request_at: float = 0.0
 
 
 @tool
@@ -26,25 +32,34 @@ def brave_search(query: str) -> str:
         logger.warning("brave_search called but BRAVE_API_KEY is not set")
         return "Web search is not available: BRAVE_API_KEY is not configured."
 
-    logger.debug("brave_search query=%r", query)
-    try:
-        response = httpx.get(
-            _API_URL,
-            headers={
-                "X-Subscription-Token": get_settings().BRAVE_API_KEY,
-                "Accept": "application/json",
-            },
-            params={"q": query, "count": _MAX_RESULTS},
-            timeout=10.0,
-        )
-        logger.debug("brave_search status=%d", response.status_code)
-        response.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        logger.error("brave_search HTTP error: %s — body: %s", e, e.response.text)
-        raise
-    except httpx.RequestError as e:
-        logger.error("brave_search request failed: %s", e)
-        raise
+    with _lock:
+        global _last_request_at
+        wait = _MIN_INTERVAL - (time.monotonic() - _last_request_at)
+        if wait > 0:
+            logger.debug("brave_search rate-limit wait %.2fs", wait)
+            time.sleep(wait)
+
+        logger.debug("brave_search query=%r", query)
+        try:
+            response = httpx.get(
+                _API_URL,
+                headers={
+                    "X-Subscription-Token": get_settings().BRAVE_API_KEY,
+                    "Accept": "application/json",
+                },
+                params={"q": query, "count": _MAX_RESULTS},
+                timeout=10.0,
+            )
+            logger.debug("brave_search status=%d", response.status_code)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            logger.error("brave_search HTTP error: %s — body: %s", e, e.response.text)
+            return f"Search failed: HTTP {e.response.status_code}."
+        except httpx.RequestError as e:
+            logger.error("brave_search request failed: %s", e)
+            return f"Search failed: {e}."
+        finally:
+            _last_request_at = time.monotonic()
 
     data = response.json()
     logger.debug("brave_search raw response keys: %s", list(data.keys()))
