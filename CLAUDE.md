@@ -34,7 +34,8 @@ aug/
 │       ├── db.py               ← asyncpg pool + schema bootstrap
 │       ├── storage.py          ← File storage abstraction
 │       ├── logging.py          ← JSON (prod) / human-readable (dev) structured logging
-│       └── data.py             ← read_data_file() / write_data_file() — /app/data volume access
+│       ├── data.py             ← read_data_file() / write_data_file() — /app/data volume access
+│       └── user_settings.py    ← per-user settings; get_setting() / set_setting() with nested path
 ├── tests/
 ├── Makefile
 ├── pyproject.toml
@@ -125,6 +126,35 @@ def my_tool(query: str) -> str:
     """Description the LLM uses to decide when to call this tool."""
     ...
 ```
+
+---
+
+## User settings
+
+Per-user settings are stored in `/app/data/settings.json` via `aug/utils/user_settings.py`.
+
+Schema: top-level key is the **interface namespace**, then sub-keys, then entity ID, then the setting:
+
+```json
+{
+  "telegram": {
+    "chats": {
+      "<chat_id>": { "agent": "default" }
+    }
+  }
+}
+```
+
+API:
+```python
+get_setting("telegram", "chats", str(chat_id), "agent", default="default")
+set_setting("telegram", "chats", str(chat_id), "agent", value="v1_claude")
+```
+
+Rules:
+- Always namespace by interface (`"telegram"`, `"api"`, etc.) — entity IDs differ per interface and must not be mixed.
+- Sub-keys within an interface group related features (e.g. `"chats"` for per-chat config).
+- Do not add a flat `"agent"` directly under `"telegram"` — that level is reserved for interface-wide settings.
 
 ---
 

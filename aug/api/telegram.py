@@ -22,11 +22,12 @@ from urllib.parse import urlparse
 import markdown as md
 from langchain_core.messages import HumanMessage
 from openai import RateLimitError
-from telegram import LinkPreviewOptions, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Update
 from telegram.constants import ChatAction
 from telegram.error import RetryAfter
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
@@ -35,8 +36,9 @@ from telegram.ext import (
 )
 
 from aug.config import get_settings
-from aug.core.registry import get_agent
+from aug.core.registry import get_agent, list_agents
 from aug.core.state import AgentState
+from aug.utils.user_settings import get_setting, set_setting
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +75,8 @@ def build_bot(checkpointer) -> Application:
         )
     )
     bot_app.add_handler(CommandHandler("clear", _handle_clear))
+    bot_app.add_handler(CommandHandler("version", _handle_version))
+    bot_app.add_handler(CallbackQueryHandler(_handle_version_callback, pattern=r"^version:"))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
     return bot_app
 
@@ -89,6 +93,7 @@ async def start_polling(app) -> None:
     await bot_app.initialize()
     await bot_app.bot.set_my_commands(
         [
+            ("version", "Switch agent version"),
             ("secret", "Store a secret"),
             ("clear", "Start a new conversation"),
         ]
@@ -277,6 +282,43 @@ async def _handle_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("Context cleared. Starting fresh.")  # type: ignore[union-attr]
 
 
+async def _handle_version(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show available agent versions as inline buttons."""
+    chat_id = update.effective_chat.id  # type: ignore[union-attr]
+    if not _is_allowed(chat_id):
+        return
+    current = get_setting("telegram", "chats", str(chat_id), "agent", default="default")
+    agents = [a for a in list_agents() if a != "fake"]
+    buttons = [
+        [InlineKeyboardButton(f"{'✅ ' if a == current else ''}{a}", callback_data=f"version:{a}")]
+        for a in agents
+    ]
+    await update.message.reply_text(  # type: ignore[union-attr]
+        f"Current version: <code>{_escape(current)}</code>\nChoose a version:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def _handle_version_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle version selection from inline keyboard."""
+    query = update.callback_query
+    if query is None:
+        return
+    await query.answer()
+    chat_id = update.effective_chat.id  # type: ignore[union-attr]
+    if not _is_allowed(chat_id):
+        return
+    agent_name = query.data.split(":", 1)[1]  # type: ignore[union-attr]
+    if agent_name not in list_agents():
+        await query.edit_message_text("Unknown version.")
+        return
+    set_setting("telegram", "chats", str(chat_id), "agent", value=agent_name)
+    await query.edit_message_text(
+        f"Switched to <code>{_escape(agent_name)}</code>.", parse_mode="HTML"
+    )
+
+
 async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Route a Telegram message through the default agent."""
     if not update.message or not update.message.text:
@@ -284,9 +326,11 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not _is_allowed(update.effective_chat.id):  # type: ignore[union-attr]
         return
 
-    thread_id = _thread_id(context, update.effective_chat.id)  # type: ignore[union-attr]
+    chat_id = update.effective_chat.id  # type: ignore[union-attr]
+    thread_id = _thread_id(context, chat_id)
     checkpointer = context.application.bot_data["checkpointer"]
-    graph = get_agent("default", checkpointer)
+    agent_name = get_setting("telegram", "chats", str(chat_id), "agent", default="default")
+    graph = get_agent(agent_name, checkpointer)
     input_state = AgentState(
         messages=[HumanMessage(content=update.message.text)],
         thread_id=thread_id,

@@ -17,15 +17,18 @@ RUN useradd --create-home appuser
 
 WORKDIR /app
 
+# Add the venv to PATH so installed binaries (uvicorn etc.) are available without full paths
+ENV PATH="/app/.venv/bin:$PATH"
+
 # Install dependencies first (layer-cached until pyproject.toml changes)
 COPY pyproject.toml ./
-RUN uv sync --system --no-dev --no-install-project
+RUN uv sync --no-dev --no-install-project
 
 # Copy application source
 COPY aug/ ./aug/
 
 # Install the project itself, then hand ownership to appuser
-RUN uv sync --system --no-dev && chown -R appuser:appuser /app
+RUN uv sync --no-dev && chown -R appuser:appuser /app
 
 USER appuser
 
