@@ -1,10 +1,18 @@
-# AUG
+# 🦾 AUG 
+
+<table>
+  <tr>
+    <td>
 
 **Aug** is a self-hosted personal AI assistant that talks to you via Telegram or REST, ships with powerful tools, doesn't reveal your secrets to the LLM ([hushed](https://github.com/vadimtitov/hushed)), and has a persistent memory system that builds a real picture of you and self across time. Works with any OpenAI-compatible API.
 
-Work in progress.
+*Work in progress.*
 
----
+  </td>
+    <td><img src="https://github.com/user-attachments/assets/2cf5088d-433e-4ca5-b6e1-3f6fc1909b00" width="250"></td>
+  </tr>
+</table>
+
 
 ## Memory
 
@@ -20,7 +28,6 @@ Mid-conversation, the agent uses the `note` tool to capture things worth remembe
 
 See [docs/memory-design.md](docs/memory-design.md) for the full design rationale.
 
----
 
 ## Installation
 
@@ -41,7 +48,7 @@ docker compose up --build
 
 Interactive docs at `http://localhost:8000/docs`.
 
----
+
 
 ## API
 
@@ -56,26 +63,6 @@ Interactive docs at `http://localhost:8000/docs`.
 | `POST` | `/files/upload` | Upload file |
 | `GET` | `/files/{id}` | File metadata |
 
----
-
-## Extending
-
-**New agent** — subclass `BaseAgent` or `ChatAgent`, register in `aug/core/registry.py`:
-
-```python
-_REGISTRY["my_agent"] = ChatAgent(
-    model="gpt-4o-mini",
-    system_prompt="...",
-    tools=[brave_search],
-)
-```
-
-**New tool** — `@tool`-decorated function in `aug/core/tools/`, add to your agent in the registry.
-
-Override hooks in your subclass: `preprocess`, `respond`, `postprocess` — each returns `AgentStateUpdate`.
-
----
-
 ## Configuration
 
 | Variable | Required | Description |
@@ -89,16 +76,6 @@ Override hooks in your subclass: `preprocess`, `respond`, `postprocess` — each
 | `BRAVE_API_KEY` | No | Enables web search |
 | `DEBUG` | No | `true` → human-readable logs; `false` (default) → JSON |
 
----
-
-## Stack
-
-- **FastAPI** + **LangGraph 1.0**
-- **asyncpg** + **PostgreSQL** (conversation history + checkpointing)
-- **pydantic-settings**, **ruff**, **pytest**
-- **python-telegram-bot** (optional)
-
----
 
 ## Make targets
 
