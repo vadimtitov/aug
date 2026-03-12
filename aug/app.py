@@ -19,6 +19,7 @@ from fastapi import FastAPI
 
 from aug.api.routers import chat, files, threads
 from aug.config import get_settings
+from aug.core.memory import init_memory_files
 from aug.utils.db import create_pool
 from aug.utils.logging import configure_logging
 from aug.utils.storage import LocalFileStorage
@@ -45,6 +46,7 @@ async def lifespan(app: FastAPI):
     """Manage startup and shutdown of shared resources."""
     configure_logging(debug=get_settings().DEBUG)
     logger.info("AUG %s starting up…", get_settings().APP_VERSION)
+    init_memory_files()
 
     # Database pool
     pool = await create_pool(get_settings().DATABASE_URL)

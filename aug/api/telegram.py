@@ -18,6 +18,7 @@ import logging
 import re
 import subprocess
 import textwrap
+from html.parser import HTMLParser
 from urllib.parse import urlparse
 
 import markdown as md
@@ -157,7 +158,58 @@ async def _spinner_task(msg, tool_name: str, args: dict) -> None:
             return
 
 
-_TELEGRAM_TAGS = {"b", "strong", "i", "em", "code", "pre", "a", "s", "u", "span"}
+_TELEGRAM_TAGS = {"b", "strong", "i", "em", "code", "pre", "a", "s", "u", "span", "blockquote"}
+_BLOCK_TAGS = {"p", "div", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "td", "th"}
+
+
+class _TelegramSanitizer(HTMLParser):
+    """Strip HTML down to only Telegram-supported tags.
+
+    Keeps content of unsupported tags. Ignores orphaned closing tags.
+    Ensures all opened allowed tags are closed.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._out: list[str] = []
+        self._open: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if tag in _TELEGRAM_TAGS:
+            attr_str = ""
+            if tag == "a":
+                href = next((v for k, v in attrs if k == "href"), None)
+                if href:
+                    attr_str = f' href="{href}"'
+            elif tag == "span":
+                cls = next((v for k, v in attrs if k == "class"), None)
+                if cls:
+                    attr_str = f' class="{cls}"'
+            self._out.append(f"<{tag}{attr_str}>")
+            self._open.append(tag)
+        elif tag in _BLOCK_TAGS or tag == "br":
+            self._out.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _TELEGRAM_TAGS and tag in self._open:
+            self._out.append(f"</{tag}>")
+            self._open.remove(tag)
+        elif tag in _BLOCK_TAGS:
+            self._out.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        self._out.append(data)
+
+    def handle_entityref(self, name: str) -> None:
+        self._out.append(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        self._out.append(f"&#{name};")
+
+    def result(self) -> str:
+        for tag in reversed(self._open):
+            self._out.append(f"</{tag}>")
+        return re.sub(r"\n{3,}", "\n\n", "".join(self._out)).strip()
 
 
 def _table_to_pre(match: re.Match) -> str:
@@ -184,19 +236,14 @@ def _table_to_pre(match: re.Match) -> str:
 def _to_html(text: str) -> str:
     """Convert markdown to Telegram-compatible HTML.
 
-    Converts to HTML then strips any tags Telegram doesn't support,
-    keeping their inner content. Tables are rendered as monospaced <pre> blocks.
+    Converts to HTML then sanitizes down to only Telegram-supported tags.
+    Tables are rendered as monospaced <pre> blocks.
     """
     html = md.markdown(text, extensions=["fenced_code", "tables"])
-    # Convert tables to <pre> blocks before stripping.
     html = re.sub(r"<table[^>]*>.*?</table>", _table_to_pre, html, flags=re.DOTALL)
-    # Replace unsupported block tags with newlines to preserve structure.
-    html = re.sub(r"<(p|li|tr|th|td|h[1-6]|blockquote)([^>]*)>", "\n", html)
-    # Strip all remaining unsupported tags, keeping content.
-    html = re.sub(r"</?(?!(?:" + "|".join(_TELEGRAM_TAGS) + r")\b)[a-zA-Z][^>]*>", "", html)
-    # Collapse excessive blank lines.
-    html = re.sub(r"\n{3,}", "\n\n", html).strip()
-    return html
+    sanitizer = _TelegramSanitizer()
+    sanitizer.feed(html)
+    return sanitizer.result()
 
 
 def _escape(text: str) -> str:
@@ -335,14 +382,13 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     input_state = AgentState(
         messages=[HumanMessage(content=update.message.text)],
         thread_id=thread_id,
-        interface_context=textwrap.dedent("""
-            You are communicating through Telegram. Telegram renders HTML formatting, not Markdown.
+        interface_context="Telegram bot. Keep responses concise — there is a message length limit.",
+        response_format=textwrap.dedent("""
+            Use HTML formatting only. Do NOT use Markdown syntax — no *asterisks*,
+            no _underscores_, no **double asterisks**, no # headers, no --- dividers.
+            It will appear as raw symbols to the user.
 
-            IMPORTANT: Do NOT use Markdown syntax. This means no *asterisks*, no _underscores_,
-            no **double asterisks**, no # headers, no --- dividers. None of it. It will appear
-            as raw symbols to the user.
-
-            Use only these HTML tags for formatting:
+            Supported tags:
             - <b>bold</b>
             - <i>italic</i>
             - <u>underline</u>
@@ -355,10 +401,17 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
             In plain text, escape: & → &amp;  < → &lt;  > → &gt;
 
-            Keep messages concise and chat-appropriate.
+            Tables are not supported. Use labeled lists instead:
 
-            NO MARKDOWN SYNTAX WHATSOEVER. NO TABLES. NO HEADERS. NO DIVIDERS.
-            ONLY THE ABOVE HTML TAGS FOR FORMATTING.
+            WRONG:
+            | Name  | Price |
+            |-------|-------|
+            | Apple | £1.00 |
+            | Pear  | £0.80 |
+
+            CORRECT:
+            <b>Apple</b> — £1.00
+            <b>Pear</b> — £0.80
         """).strip(),
     )
     stop_typing = asyncio.Event()
