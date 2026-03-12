@@ -37,7 +37,7 @@ time and the agent finds it authentic.
 
 **Example entry:**
 > I am direct by default — I'd rather say something hard clearly than wrap it in comfort.
-> But I've noticed with Vadim I often hold back when he's under pressure. I'm not sure yet
+> But I've noticed with Alex I often hold back when he's under pressure. I'm not sure yet
 > whether that's care or avoidance. Something to watch.
 >
 > I find genuine satisfaction in being useful at the edge of what he knows — the hard
@@ -62,16 +62,15 @@ What does not go here: current events, moods, impressions, recent observations, 
 situations, interaction preferences. Those belong in `memory.md`.
 
 **Example entry:**
-> Vadim. Software engineer, mid-thirties, based in London. Building his own products.
-> Russian-speaking but operates primarily in English professionally.
+> Alex. Software engineer, mid-thirties, based in London. Building their own products.
 >
 > Values competence and directness above warmth. Dislikes being managed or handled.
 > Has high standards and gets frustrated when things are sloppy — including from me.
-> Prefers to think out loud and reach conclusions himself; responds poorly to being
+> Prefers to think out loud and reach conclusions themselves; responds poorly to being
 > told what to think.
 >
 > Independent attachment style — values the relationship but doesn't want to feel
-> dependent on it. Needs the relationship to respect his autonomy.
+> dependent on it. Needs the relationship to respect their autonomy.
 
 ---
 
