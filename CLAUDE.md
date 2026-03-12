@@ -19,12 +19,20 @@ aug/
 │   ├── core/
 │   │   ├── llm.py              ← build_chat_model() factory — always ChatOpenAI → LiteLLM proxy
 │   │   ├── state.py            ← AgentState + AgentStateUpdate (Pydantic models)
-│   │   ├── prompts.py          ← get_user_context() — assembles runtime system prompt context
+│   │   ├── prompts.py          ← build_system_prompt() — assembles full system prompt from memory files + state
+│   │   ├── memory.py           ← MEMORY_DIR, init_memory_files(), default file content
+│   │   ├── consolidation.py    ← light (nightly) and deep (weekly) memory consolidation
 │   │   ├── registry.py         ← Agent registry + compiled-graph cache
-│   │   └── agents/
-│   │       ├── base_agent.py   ← BaseAgent ABC with agentic loop in build()
-│   │       ├── chat_agent.py   ← ChatAgent (configurable) + TimeAwareChatAgent
-│   │       └── fake_agent.py   ← Hardcoded response, no LLM (for testing)
+│   │   ├── agents/
+│   │   │   ├── base_agent.py   ← BaseAgent ABC with agentic loop in build()
+│   │   │   ├── chat_agent.py   ← ChatAgent, TimeAwareChatAgent, AugAgent
+│   │   │   └── fake_agent.py   ← Hardcoded response, no LLM (for testing)
+│   │   └── tools/
+│   │       ├── brave_search.py ← Web search via Brave API
+│   │       ├── fetch_page.py   ← URL content extraction
+│   │       ├── run_bash.py     ← Shell access with secret injection + blocklist
+│   │       ├── note.py         ← Mid-conversation memory capture
+│   │       └── memory.py       ← Legacy key-value memory tools (remember/recall/forget)
 │   ├── api/
 │   │   ├── security.py         ← require_api_key FastAPI dependency
 │   │   ├── schemas/            ← Pydantic request/response models
@@ -37,6 +45,9 @@ aug/
 │       ├── data.py             ← read_data_file() / write_data_file() — /app/data volume access
 │       └── user_settings.py    ← per-user settings; get_setting() / set_setting() with nested path
 ├── tests/
+├── docs/
+│   ├── memory-design.md        ← Memory system design rationale
+│   └── TODO.md                 ← Open tasks
 ├── Makefile
 ├── pyproject.toml
 ├── Dockerfile
