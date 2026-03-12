@@ -24,7 +24,11 @@ from aug.utils.user_settings import get_setting, set_setting
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "claude-sonnet-4-6"
+_DEFAULT_MODEL = "claude-sonnet-4-6"
+
+
+def _model() -> str:
+    return get_setting("consolidation", "model", default=_DEFAULT_MODEL)
 
 
 async def run_light_consolidation() -> None:
@@ -36,7 +40,7 @@ async def run_light_consolidation() -> None:
         return
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-    llm = build_chat_model(_MODEL, temperature=0.3)
+    llm = build_chat_model(_model(), temperature=0.3)
     response = await llm.ainvoke(
         [
             SystemMessage(content=_LIGHT_SYSTEM),
@@ -65,7 +69,7 @@ async def run_light_consolidation() -> None:
 async def run_deep_consolidation() -> None:
     """Weekly pass: reflect across all files, update what has genuinely shifted."""
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-    llm = build_chat_model(_MODEL, temperature=0.7)
+    llm = build_chat_model(_model(), temperature=0.7)
 
     # Stage 1 — reflect freely, no updates yet.
     reflect_response = await llm.ainvoke(

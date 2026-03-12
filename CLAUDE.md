@@ -158,6 +158,17 @@ Rules:
 
 ---
 
+## Configuration philosophy
+
+Making behaviour configurable via `settings.json` is good — but only when we are
+confident a setting will be used and won't need to change shape later. Once something
+is in `settings.json`, it is part of the interface: users may set it, scripts may
+depend on it, and migrating or removing it has a cost.
+
+Before adding a new setting, ask: is this actually going to be changed, or is it
+just a hardcoded value with extra steps? Default to hardcoding. Promote to config
+only when there is a clear, immediate reason.
+
 ## Key rules
 
 - **LLM access** — always via `build_chat_model()` in `aug/core/llm.py`. Never instantiate `ChatOpenAI` directly.
