@@ -6,11 +6,10 @@ import subprocess
 
 from langchain_core.tools import tool
 
-from aug.utils.data import read_data_file
+from aug.utils.user_settings import get_setting
 
 logger = logging.getLogger(__name__)
 
-_BLACKLIST_FILE = "bash_blacklist"
 _TIMEOUT = 60
 
 
@@ -48,11 +47,7 @@ def run_bash(command: str) -> str:
 
 def _check_blacklist(command: str) -> str | None:
     """Return an error string if the command matches a blacklist pattern, else None."""
-    patterns = [
-        line.strip()
-        for line in read_data_file(_BLACKLIST_FILE).splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
+    patterns: list[str] = get_setting("tools", "bash", "blacklist", default=[])
     for pattern in patterns:
         if re.search(pattern, command):
             logger.warning("run_bash blocked by blacklist pattern %r: %s", pattern, command)

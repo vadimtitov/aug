@@ -17,16 +17,19 @@ import asyncio
 import logging
 import re
 import subprocess
+import textwrap
+from html.parser import HTMLParser
 from urllib.parse import urlparse
 
 import markdown as md
 from langchain_core.messages import HumanMessage
 from openai import RateLimitError
-from telegram import LinkPreviewOptions, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Update
 from telegram.constants import ChatAction
 from telegram.error import RetryAfter
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
@@ -35,14 +38,12 @@ from telegram.ext import (
 )
 
 from aug.config import get_settings
-from aug.core.registry import get_agent
+from aug.core.registry import get_agent, list_agents
 from aug.core.state import AgentState
+from aug.utils.user_settings import get_setting, set_setting
 
 logger = logging.getLogger(__name__)
 
-
-# Tags supported by Telegram's HTML parse mode.
-_TELEGRAM_TAGS = {"b", "strong", "i", "em", "code", "pre", "a", "s", "u", "span"}
 
 _SPINNER = ["🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚", "🕛"]
 
@@ -73,6 +74,8 @@ def build_bot(checkpointer) -> Application:
         )
     )
     bot_app.add_handler(CommandHandler("clear", _handle_clear))
+    bot_app.add_handler(CommandHandler("version", _handle_version))
+    bot_app.add_handler(CallbackQueryHandler(_handle_version_callback, pattern=r"^version:"))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
     return bot_app
 
@@ -89,6 +92,7 @@ async def start_polling(app) -> None:
     await bot_app.initialize()
     await bot_app.bot.set_my_commands(
         [
+            ("version", "Switch agent version"),
             ("secret", "Store a secret"),
             ("clear", "Start a new conversation"),
         ]
@@ -154,8 +158,58 @@ async def _spinner_task(msg, tool_name: str, args: dict) -> None:
             return
 
 
-def _escape(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+_TELEGRAM_TAGS = {"b", "strong", "i", "em", "code", "pre", "a", "s", "u", "span", "blockquote"}
+_BLOCK_TAGS = {"p", "div", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "td", "th"}
+
+
+class _TelegramSanitizer(HTMLParser):
+    """Strip HTML down to only Telegram-supported tags.
+
+    Keeps content of unsupported tags. Ignores orphaned closing tags.
+    Ensures all opened allowed tags are closed.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._out: list[str] = []
+        self._open: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        if tag in _TELEGRAM_TAGS:
+            attr_str = ""
+            if tag == "a":
+                href = next((v for k, v in attrs if k == "href"), None)
+                if href:
+                    attr_str = f' href="{href}"'
+            elif tag == "span":
+                cls = next((v for k, v in attrs if k == "class"), None)
+                if cls:
+                    attr_str = f' class="{cls}"'
+            self._out.append(f"<{tag}{attr_str}>")
+            self._open.append(tag)
+        elif tag in _BLOCK_TAGS or tag == "br":
+            self._out.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _TELEGRAM_TAGS and tag in self._open:
+            self._out.append(f"</{tag}>")
+            self._open.remove(tag)
+        elif tag in _BLOCK_TAGS:
+            self._out.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        self._out.append(data)
+
+    def handle_entityref(self, name: str) -> None:
+        self._out.append(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        self._out.append(f"&#{name};")
+
+    def result(self) -> str:
+        for tag in reversed(self._open):
+            self._out.append(f"</{tag}>")
+        return re.sub(r"\n{3,}", "\n\n", "".join(self._out)).strip()
 
 
 def _table_to_pre(match: re.Match) -> str:
@@ -182,19 +236,18 @@ def _table_to_pre(match: re.Match) -> str:
 def _to_html(text: str) -> str:
     """Convert markdown to Telegram-compatible HTML.
 
-    Converts to HTML then strips any tags Telegram doesn't support,
-    keeping their inner content. Tables are rendered as monospaced <pre> blocks.
+    Converts to HTML then sanitizes down to only Telegram-supported tags.
+    Tables are rendered as monospaced <pre> blocks.
     """
     html = md.markdown(text, extensions=["fenced_code", "tables"])
-    # Convert tables to <pre> blocks before stripping.
     html = re.sub(r"<table[^>]*>.*?</table>", _table_to_pre, html, flags=re.DOTALL)
-    # Replace unsupported block tags with newlines to preserve structure.
-    html = re.sub(r"<(p|li|tr|th|td|h[1-6]|blockquote)([^>]*)>", "\n", html)
-    # Strip all remaining unsupported tags, keeping content.
-    html = re.sub(r"</?(?!(?:" + "|".join(_TELEGRAM_TAGS) + r")\b)[a-zA-Z][^>]*>", "", html)
-    # Collapse excessive blank lines.
-    html = re.sub(r"\n{3,}", "\n\n", html).strip()
-    return html
+    sanitizer = _TelegramSanitizer()
+    sanitizer.feed(html)
+    return sanitizer.result()
+
+
+def _escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 async def _typing_loop(update: Update, stop_event: asyncio.Event) -> None:
@@ -216,8 +269,8 @@ def _is_allowed(chat_id: int) -> bool:
     return not allowed or chat_id in allowed
 
 
-def _thread_id(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> str:
-    session = context.application.bot_data.get(f"session:{chat_id}", 0)
+def _thread_id(chat_id: int) -> str:
+    session = get_setting("telegram", "chats", str(chat_id), "session", default=0)
     return f"tg-{chat_id}-{session}"
 
 
@@ -272,9 +325,46 @@ async def _handle_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     chat_id = update.effective_chat.id  # type: ignore[union-attr]
     if not _is_allowed(chat_id):
         return
-    current = context.application.bot_data.get(f"session:{chat_id}", 0)
-    context.application.bot_data[f"session:{chat_id}"] = current + 1
+    current = get_setting("telegram", "chats", str(chat_id), "session", default=0)
+    set_setting("telegram", "chats", str(chat_id), "session", value=current + 1)
     await update.message.reply_text("Context cleared. Starting fresh.")  # type: ignore[union-attr]
+
+
+async def _handle_version(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show available agent versions as inline buttons."""
+    chat_id = update.effective_chat.id  # type: ignore[union-attr]
+    if not _is_allowed(chat_id):
+        return
+    current = get_setting("telegram", "chats", str(chat_id), "agent", default="default")
+    agents = [a for a in list_agents() if a != "fake"]
+    buttons = [
+        [InlineKeyboardButton(f"{'✅ ' if a == current else ''}{a}", callback_data=f"version:{a}")]
+        for a in agents
+    ]
+    await update.message.reply_text(  # type: ignore[union-attr]
+        f"Current version: <code>{_escape(current)}</code>\nChoose a version:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def _handle_version_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle version selection from inline keyboard."""
+    query = update.callback_query
+    if query is None:
+        return
+    await query.answer()
+    chat_id = update.effective_chat.id  # type: ignore[union-attr]
+    if not _is_allowed(chat_id):
+        return
+    agent_name = query.data.split(":", 1)[1]  # type: ignore[union-attr]
+    if agent_name not in list_agents():
+        await query.edit_message_text("Unknown version.")
+        return
+    set_setting("telegram", "chats", str(chat_id), "agent", value=agent_name)
+    await query.edit_message_text(
+        f"Switched to <code>{_escape(agent_name)}</code>.", parse_mode="HTML"
+    )
 
 
 async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -284,20 +374,46 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not _is_allowed(update.effective_chat.id):  # type: ignore[union-attr]
         return
 
-    thread_id = _thread_id(context, update.effective_chat.id)  # type: ignore[union-attr]
+    chat_id = update.effective_chat.id  # type: ignore[union-attr]
+    thread_id = _thread_id(chat_id)
     checkpointer = context.application.bot_data["checkpointer"]
-    graph = get_agent("default", checkpointer)
+    agent_name = get_setting("telegram", "chats", str(chat_id), "agent", default="default")
+    graph = get_agent(agent_name, checkpointer)
     input_state = AgentState(
         messages=[HumanMessage(content=update.message.text)],
         thread_id=thread_id,
-        interface_context=(
-            "Interface: Telegram.\n"
-            "Formatting: bold and italic are supported. "
-            "Do not use markdown tables — present tabular data as bullet lists instead. "
-            "Keep responses concise; this is a mobile messaging app."
-        ),
-    )
+        interface_context="Telegram bot. Keep responses concise — there is a message length limit.",
+        response_format=textwrap.dedent("""
+            Use HTML formatting only. Do NOT use Markdown syntax — no *asterisks*,
+            no _underscores_, no **double asterisks**, no # headers, no --- dividers.
+            It will appear as raw symbols to the user.
 
+            Supported tags:
+            - <b>bold</b>
+            - <i>italic</i>
+            - <u>underline</u>
+            - <s>strikethrough</s>
+            - <code>inline code</code>
+            - <pre>code block</pre>
+            - <a href="URL">link text</a>
+            - <span class="tg-spoiler">spoiler</span>
+            - <blockquote>quote</blockquote>
+
+            In plain text, escape: & → &amp;  < → &lt;  > → &gt;
+
+            Tables are not supported. Use labeled lists instead:
+
+            WRONG:
+            | Name  | Price |
+            |-------|-------|
+            | Apple | £1.00 |
+            | Pear  | £0.80 |
+
+            CORRECT:
+            <b>Apple</b> — £1.00
+            <b>Pear</b> — £0.80
+        """).strip(),
+    )
     stop_typing = asyncio.Event()
     typing_task = asyncio.create_task(_typing_loop(update, stop_typing))
 
@@ -320,7 +436,7 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                             accumulated_text, link_preview_options=_NO_PREVIEW
                         )
                         last_stream_edit = now
-                    elif now - last_stream_edit >= 0.1:
+                    elif now - last_stream_edit >= 0.3:
                         try:
                             await stream_msg.edit_text(
                                 accumulated_text, link_preview_options=_NO_PREVIEW
@@ -355,19 +471,33 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         pass
 
         if accumulated_text:
-            html = _to_html(accumulated_text)
+            final_text, final_parse_mode = _to_html(accumulated_text), "HTML"
             try:
                 if stream_msg is not None:
                     await stream_msg.edit_text(
-                        html, parse_mode="HTML", link_preview_options=_NO_PREVIEW
+                        final_text,
+                        parse_mode=final_parse_mode,
+                        link_preview_options=_NO_PREVIEW,
                     )
                 else:
                     await update.message.reply_text(
-                        html, parse_mode="HTML", link_preview_options=_NO_PREVIEW
+                        final_text,
+                        parse_mode=final_parse_mode,
+                        link_preview_options=_NO_PREVIEW,
                     )
+            except RetryAfter as e:
+                # Flood control hit on final send — wait it out and deliver as a fresh message.
+                await asyncio.sleep(e.retry_after)
+                await update.message.reply_text(
+                    final_text, parse_mode=final_parse_mode, link_preview_options=_NO_PREVIEW
+                )
             except Exception:
-                target = stream_msg or update.message
-                await target.reply_text(accumulated_text, link_preview_options=_NO_PREVIEW)
+                logger.warning(
+                    "Failed to send with %s, falling back to plain text",
+                    final_parse_mode,
+                    exc_info=True,
+                )
+                await update.message.reply_text(accumulated_text, link_preview_options=_NO_PREVIEW)
 
     except RateLimitError:
         logger.warning("Rate limit / context too large")

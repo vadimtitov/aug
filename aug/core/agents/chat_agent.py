@@ -7,7 +7,7 @@ from langchain_core.tools import BaseTool
 
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.llm import build_chat_model
-from aug.core.prompts import get_user_context
+from aug.core.prompts import build_system_prompt
 from aug.core.state import AgentState, AgentStateUpdate
 
 
@@ -51,7 +51,7 @@ class ChatAgent(BaseAgent):
         ).bind_tools(self.tools)
 
     def _build_system_prompt(self, state: AgentState) -> str:
-        parts = [self._system_prompt, get_user_context(), state.interface_context]
+        parts = [self._system_prompt, state.interface_context]
         return "\n\n".join(p for p in parts if p)
 
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
@@ -77,6 +77,52 @@ class TimeAwareChatAgent(ChatAgent):
             stamped = HumanMessage(content=f"[{now}] {last.content}", id=last.id)
             return AgentStateUpdate(system_prompt=prompt, messages=[stamped])
         return AgentStateUpdate(system_prompt=prompt)
+
+
+class AugAgent(BaseAgent):
+    """Personal assistant agent using the full AUG system prompt.
+
+    Reads identity, user knowledge, and memory from data/memory/ and builds
+    the system prompt via build_system_prompt(). Time-aware: stamps incoming
+    human messages with the current UTC time.
+    """
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        tools: list[BaseTool] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        max_retries: int = 2,
+        timeout: float | None = None,
+        seed: int | None = None,
+    ) -> None:
+        self.tools = tools or []
+        self._llm = build_chat_model(
+            model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            max_retries=max_retries,
+            timeout=timeout,
+            seed=seed,
+        ).bind_tools(self.tools)
+
+    def preprocess(self, state: AgentState) -> AgentStateUpdate:
+        now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+        prompt = build_system_prompt(state)
+        last = state.messages[-1] if state.messages else None
+        if isinstance(last, HumanMessage):
+            stamped = HumanMessage(content=f"[{now}] {last.content}", id=last.id)
+            return AgentStateUpdate(system_prompt=prompt, messages=[stamped])
+        return AgentStateUpdate(system_prompt=prompt)
+
+    def respond(self, state: AgentState) -> AgentStateUpdate:
+        messages = _drop_orphaned_tool_calls(state.messages)
+        if state.system_prompt:
+            messages = [SystemMessage(content=state.system_prompt), *messages]
+        response: AIMessage = self._llm.invoke(messages)
+        return AgentStateUpdate(messages=[response])
 
 
 def _drop_orphaned_tool_calls(messages: list[AnyMessage]) -> list[AnyMessage]:

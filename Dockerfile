@@ -3,7 +3,10 @@ FROM python:3.12-slim
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
-# System tools + hushed
+# System tools + hushed (https://github.com/vadimtitov/hushed).
+# hushed stores secrets on disk and redacts their values from all process output.
+# The main goal: prevent secrets from appearing in any text the LLM could see
+# (tool output, logs, shell responses, crash traces, etc.).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl git jq procps \
     && curl -fsSL https://raw.githubusercontent.com/vadimtitov/hushed/main/install.sh | bash \
@@ -13,6 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd --create-home appuser
 
 WORKDIR /app
+
+# Add the venv to PATH so installed binaries (uvicorn etc.) are available without full paths
+ENV PATH="/app/.venv/bin:$PATH"
 
 # Install dependencies first (layer-cached until pyproject.toml changes)
 COPY pyproject.toml ./
@@ -31,4 +37,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
 
-CMD ["/app/.venv/bin/uvicorn", "aug.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "aug.app:app", "--host", "0.0.0.0", "--port", "8000"]

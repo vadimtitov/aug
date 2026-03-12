@@ -3,9 +3,7 @@
 # and runs docker compose up --build, so no pre-built image or registry needed.
 #
 # Assumes:
-#   - An external Docker network named "backend" where Postgres already lives.
-#   - Environment variables supplied via Portainer's "Environment variables" UI
-#     (or a .env file if running manually).
+#   - Environment variables supplied via Portainer's "Environment variables" UI.
 #   - Host data directory owned by UID 1000 (the container's appuser):
 #       sudo mkdir -p /opt/aug/data && sudo chown -R 1000:1000 /opt/aug/data
 
@@ -14,7 +12,7 @@ services:
     build: .
     restart: unless-stopped
     environment:
-      HUSHED_DIR: /app/data/hushed
+      HUSHED_DIR: /app/data/.hushed
       API_KEY: ${API_KEY}
       LLM_API_KEY: ${LLM_API_KEY}
       LLM_BASE_URL: ${LLM_BASE_URL}
@@ -23,5 +21,20 @@ services:
       TELEGRAM_ALLOWED_CHAT_IDS: ${TELEGRAM_ALLOWED_CHAT_IDS:-}
       BRAVE_API_KEY: ${BRAVE_API_KEY:-}
       DEBUG: ${DEBUG:-false}
+    ports:
+      - "8012:8000"
     volumes:
       - /opt/aug/data:/app/data
+    # Store secrets in hushed, then run the app via "hushed run --".
+    # hushed redacts secret values from all process output, preventing them
+    # from appearing in any text the LLM could see (tool output, shell responses, etc.).
+    command: >
+      sh -c "
+      hushed add API_KEY $$API_KEY &&
+      hushed add LLM_API_KEY $$LLM_API_KEY &&
+      hushed add LLM_BASE_URL $$LLM_BASE_URL &&
+      hushed add DATABASE_URL $$DATABASE_URL &&
+      hushed add TELEGRAM_BOT_TOKEN $$TELEGRAM_BOT_TOKEN &&
+      hushed add BRAVE_API_KEY $$BRAVE_API_KEY &&
+      exec hushed run -- uvicorn aug.app:app --host 0.0.0.0 --port 8000
+      "
