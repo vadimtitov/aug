@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # Brave Search (optional — tool is disabled if key is absent)
     BRAVE_API_KEY: str | None = None
 
+    # Browser tool — CDP URL of the remote Chromium instance
+    BROWSER_CDP_URL: str | None = None
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

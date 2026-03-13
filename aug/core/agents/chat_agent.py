@@ -97,8 +97,10 @@ class AugAgent(BaseAgent):
         max_retries: int = 2,
         timeout: float | None = None,
         seed: int | None = None,
+        recursion_limit: int = 25,
     ) -> None:
         self.tools = tools or []
+        self.recursion_limit = recursion_limit
         self._llm = build_chat_model(
             model,
             temperature=temperature,

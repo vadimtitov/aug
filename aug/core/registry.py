@@ -10,6 +10,7 @@ from aug.core.agents.base_agent import BaseAgent
 from aug.core.agents.chat_agent import AugAgent, TimeAwareChatAgent
 from aug.core.agents.fake_agent import FakeAgent
 from aug.core.tools.brave_search import brave_search
+from aug.core.tools.browser import browser
 from aug.core.tools.fetch_page import fetch_page
 from aug.core.tools.memory import forget, recall, remember, update_memory
 from aug.core.tools.note import note
@@ -48,6 +49,36 @@ _REGISTRY: dict[str, BaseAgent] = {
         model="claude-sonnet-4-6",
         tools=[brave_search, fetch_page, run_bash, note],
         temperature=1.0,
+    ),
+    "v3_claude": AugAgent(
+        model="claude-sonnet-4-6",
+        tools=[brave_search, fetch_page, run_bash, note, browser],
+        temperature=1.0,
+        recursion_limit=100,
+    ),
+    "v3_gpt4o": AugAgent(
+        model="gpt-4o",
+        tools=[brave_search, fetch_page, run_bash, note, browser],
+        temperature=1.0,
+        recursion_limit=100,
+    ),
+    "v3_gpt41": AugAgent(
+        model="gpt-4.1",
+        tools=[brave_search, fetch_page, run_bash, note, browser],
+        temperature=1.0,
+        recursion_limit=100,
+    ),
+    "v3_gemini_flash": AugAgent(
+        model="gemini-2.5-flash",
+        tools=[brave_search, fetch_page, run_bash, note, browser],
+        temperature=1.0,
+        recursion_limit=100,
+    ),
+    "v3_gemini_pro": AugAgent(
+        model="gemini-2.5-pro",
+        tools=[brave_search, fetch_page, run_bash, note, browser],
+        temperature=1.0,
+        recursion_limit=100,
     ),
 }
 

@@ -187,6 +187,7 @@ only when there is a clear, immediate reason.
 - **Async everywhere** — `async def` throughout.
 - **ruff only** — no black, flake8, isort.
 - **uv only** — no `requirements.txt`.
+- **Agent versions are immutable** — never modify the tools or behaviour of an existing agent version. Add a new version instead (`v3_claude`, `v4_claude`, etc.).
 
 ## Code style
 

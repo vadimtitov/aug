@@ -40,6 +40,7 @@ from telegram.ext import (
 from aug.config import get_settings
 from aug.core.registry import get_agent, list_agents
 from aug.core.state import AgentState
+from aug.core.tools.browser import browser_progress_queue
 from aug.utils.user_settings import get_setting, set_setting
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,7 @@ _TOOL_NAMES = {
     "recall": "Recall",
     "update_memory": "Memory",
     "forget": "Forget",
+    "browser": "Browser",
 }
 _ARG_TRUNCATE = 50
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
@@ -156,6 +158,25 @@ async def _spinner_task(msg, tool_name: str, args: dict) -> None:
             )
         except Exception:
             return
+
+
+async def _browser_step_consumer(queue: asyncio.Queue, msg, tool_name: str, args: dict) -> None:
+    """Edit the browser tool message with live step updates until None sentinel."""
+    step_text = ""
+    while True:
+        update = await queue.get()
+        if update is None:
+            break
+        step_text = update
+        try:
+            header = _format_tool_call(tool_name, args, done=False)
+            await msg.edit_text(
+                f"{header}\n<code>{_escape(step_text)}</code>",
+                parse_mode="HTML",
+                link_preview_options=_NO_PREVIEW,
+            )
+        except Exception:
+            pass
 
 
 _TELEGRAM_TAGS = {"b", "strong", "i", "em", "code", "pre", "a", "s", "u", "span", "blockquote"}
@@ -422,6 +443,10 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     last_stream_edit = 0.0
     tool_msgs: dict[str, tuple] = {}
 
+    # Set up browser progress queue so the browser tool can push step updates.
+    _browser_queue: asyncio.Queue[str | None] = asyncio.Queue()
+    _browser_queue_token = browser_progress_queue.set(_browser_queue)
+
     try:
         config = {"configurable": {"thread_id": thread_id}}
         async for event in graph.astream_events(input_state, config=config, version="v2"):
@@ -452,15 +477,21 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 msg = await update.message.reply_text(
                     text, parse_mode="HTML", link_preview_options=_NO_PREVIEW
                 )
-                spin = asyncio.create_task(_spinner_task(msg, event["name"], args))
-                tool_msgs[event["run_id"]] = (args, msg, spin)
+                if event["name"] == "browser":
+                    consumer = asyncio.create_task(
+                        _browser_step_consumer(_browser_queue, msg, event["name"], args)
+                    )
+                    tool_msgs[event["run_id"]] = (args, msg, consumer)
+                else:
+                    spin = asyncio.create_task(_spinner_task(msg, event["name"], args))
+                    tool_msgs[event["run_id"]] = (args, msg, spin)
                 accumulated_text = ""
                 stream_msg = None
             elif kind == "on_tool_end":
                 entry = tool_msgs.pop(event["run_id"], None)
                 if entry:
-                    args, msg, spin = entry
-                    spin.cancel()
+                    args, msg, task = entry
+                    task.cancel()
                     try:
                         await msg.edit_text(
                             _format_tool_call(event["name"], args, done=True),
@@ -509,5 +540,6 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(f"Sorry, something went wrong: {e}")
 
     finally:
+        browser_progress_queue.reset(_browser_queue_token)
         stop_typing.set()
         typing_task.cancel()
