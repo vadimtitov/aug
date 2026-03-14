@@ -38,7 +38,11 @@ from telegram.ext import (
 )
 
 from aug.config import get_settings
-from aug.core.prompts import TELEGRAM_INTERFACE_CONTEXT, TELEGRAM_RESPONSE_FORMAT, build_system_prompt
+from aug.core.prompts import (
+    TELEGRAM_INTERFACE_CONTEXT,
+    TELEGRAM_RESPONSE_FORMAT,
+    build_system_prompt,
+)
 from aug.core.registry import get_agent, list_agents
 from aug.core.state import AgentState
 from aug.core.tools.browser import browser_progress_queue
