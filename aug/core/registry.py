@@ -68,6 +68,12 @@ _REGISTRY: dict[str, BaseAgent] = {
         temperature=1.0,
         recursion_limit=100,
     ),
+    "v3_gpt51": AugAgent(
+        model="gpt-5.1",
+        tools=[brave_search, fetch_page, run_bash, note, browser],
+        temperature=1.0,
+        recursion_limit=100,
+    ),
     "v3_gemini_flash": AugAgent(
         model="gemini-2.5-flash",
         tools=[brave_search, fetch_page, run_bash, note, browser],

@@ -24,7 +24,7 @@ from aug.utils.user_settings import get_setting, set_setting
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "claude-sonnet-4-6"
+_DEFAULT_MODEL = "gpt-5.1"
 
 
 def _model() -> str:

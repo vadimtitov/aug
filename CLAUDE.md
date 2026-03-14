@@ -68,13 +68,13 @@ make run               # docker compose up --build — logs stream to terminal, 
 
 ## Testing the agent via API
 
-Local API key is `123` (set in `.env`).
+Local API key is set in `.env` as `API_KEY`.
 
 **Single invoke:**
 ```bash
 curl -s -X POST http://localhost:8000/chat/invoke \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: 123" \
+  -H "X-API-Key: $API_KEY" \
   -d '{"message": "what time is it?", "thread_id": "test-1", "agent": "default"}' \
   | python3 -m json.tool
 ```
@@ -83,7 +83,7 @@ curl -s -X POST http://localhost:8000/chat/invoke \
 ```bash
 curl -N -X POST http://localhost:8000/chat/stream \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: 123" \
+  -H "X-API-Key: $API_KEY" \
   -d '{"message": "search the web for latest AI news", "thread_id": "test-2", "agent": "default"}'
 ```
 
@@ -137,6 +137,28 @@ def my_tool(query: str) -> str:
     """Description the LLM uses to decide when to call this tool."""
     ...
 ```
+
+### Tool implementation standard
+
+The user does not have time to manually test every tool. **You are expected to test it yourself** before considering a tool done. The service is running locally, the API key is in `API_KEY` env var, and you know how to call the endpoints. Use them.
+
+**What "done" means for a tool:**
+
+1. **It actually works end-to-end.** Call the streaming endpoint with a real prompt that exercises the tool. Watch the logs. Confirm the tool ran and returned a sensible result — not just that the code looks right.
+
+2. **Failure modes are handled honestly.** When a tool fails, it must return an unambiguous error string. Never return a neutral or success-sounding message when the task didn't complete — the main agent will take it at face value and lie to the user. If `final_result` is None, if a subprocess failed, if an API returned an error — say so explicitly. A good failure string directly tells the agent what to report: `"Task did NOT complete. Errors: ..."`.
+
+3. **The return value is informative.** The tool's return value is what the main LLM reads. Vague strings like `"Task completed."` or `"Done."` cause hallucination. Be specific about what was done, what was found, or what failed.
+
+4. **Third-party library APIs are verified.** Don't assume the library's API matches its documentation or your prior knowledge. Read the installed source (`site-packages`) to confirm method signatures, parameter names, and return types before using them. Libraries change.
+
+5. **Unit tests cover the real behaviour.** Tests must mock at the right boundary. If a function does DNS resolution, mock the DNS call. If a return value changed shape (e.g. resolved hostname in URL), update the assertion. Tests that pass by accident are worse than no tests.
+
+6. **Corner cases are tested:**
+   - Tool not configured (missing env var, missing API key) → graceful message
+   - External service fails or times out → clean error, no crash
+   - Empty / None return from underlying library → handled explicitly
+   - Ambiguous success (task ran but produced no result) → treated as failure, not success
 
 ---
 
@@ -204,7 +226,7 @@ only when there is a clear, immediate reason.
 | `API_KEY` | Yes | Shared secret for `X-API-Key` auth |
 | `LLM_API_KEY` | Yes | Passed to OpenAI client (dummy string if LiteLLM handles auth) |
 | `LLM_BASE_URL` | Yes | LiteLLM proxy URL, e.g. `http://litellm:4000` |
-| `DATABASE_URL` | Yes | `postgresql+asyncpg://user:password@host:5432/dbname` |
+| `DATABASE_URL` | Yes | `postgresql+asyncpg://user:pass@host:5432/dbname` |
 | `TELEGRAM_BOT_TOKEN` | No | Bot disabled if absent |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | No | Comma-separated chat IDs allowed to use the bot. If unset, all chats are allowed. Get your ID from `@userinfobot` |
 | `BRAVE_API_KEY` | No | Web search tool disabled if absent |

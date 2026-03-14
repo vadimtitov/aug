@@ -18,7 +18,7 @@ from aug.utils.user_settings import get_setting
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "gpt-4.1"
+_DEFAULT_MODEL = "gemini-2.5-flash"
 
 # Callers (e.g. Telegram handler) can set this to an asyncio.Queue[str] before
 # invoking the graph. The browser tool will push a human-readable status string
@@ -39,6 +39,7 @@ def _llm() -> BrowserLLM:
         model=_model(),
         api_key=settings.LLM_API_KEY,
         base_url=settings.LLM_BASE_URL,
+        frequency_penalty=None,
     )
 
 
@@ -92,7 +93,14 @@ async def browser(task: str, secrets: dict[str, str] | None = None) -> str:
             register_new_step_callback=_step_callback,
         )
         history = await agent.run()
-        return history.final_result() or "Task completed."
+        if history.is_done() and history.final_result():
+            return history.final_result()
+        errors = history.errors() if history.has_errors() else []
+        error_summary = "; ".join(str(e) for e in errors[-3:]) if errors else "unknown reason"
+        return (
+            f"Browser task did NOT complete successfully after {history.number_of_steps()} steps. "
+            f"Errors: {error_summary}. Do NOT assume success — tell the user it failed and why."
+        )
     except Exception as e:
         logger.error("browser tool failed: %s", e)
         return f"Browser task failed: {e}"

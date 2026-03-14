@@ -1,8 +1,8 @@
 .PHONY: run down test lint format check logs shell
 
-# Build and start — logs stream to terminal, Ctrl+C stops gracefully
+# Build and start — streams aug + postgres logs, suppresses chromium noise
 run:
-	docker compose up --build
+	docker compose up --build -d && docker compose logs -f aug postgres
 
 # Stop and remove containers
 down:

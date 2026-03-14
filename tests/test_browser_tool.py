@@ -79,4 +79,8 @@ async def test_browser_stops_on_failure(mock_browser_deps) -> None:
 async def test_browser_fallback_when_no_final_result(mock_browser_deps) -> None:
     mock_browser_deps["history"].final_result.return_value = None
     result = await browser.ainvoke({"task": "click around"})
-    assert result == "Task completed."
+    assert (
+        "failed" in result.lower()
+        or "not completing" in result.lower()
+        or "stopped" in result.lower()
+    )
