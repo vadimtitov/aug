@@ -14,6 +14,7 @@ Message UX:
 """
 
 import asyncio
+import io
 import logging
 import re
 import subprocess
@@ -37,7 +38,11 @@ from telegram.ext import (
 )
 
 from aug.config import get_settings
-from aug.core.prompts import TELEGRAM_INTERFACE_CONTEXT, TELEGRAM_RESPONSE_FORMAT
+from aug.core.prompts import (
+    TELEGRAM_INTERFACE_CONTEXT,
+    TELEGRAM_RESPONSE_FORMAT,
+    build_system_prompt,
+)
 from aug.core.registry import get_agent, list_agents
 from aug.core.state import AgentState
 from aug.core.tools.browser import browser_progress_queue
@@ -77,6 +82,7 @@ def build_bot(checkpointer) -> Application:
     )
     bot_app.add_handler(CommandHandler("clear", _handle_clear))
     bot_app.add_handler(CommandHandler("version", _handle_version))
+    bot_app.add_handler(CommandHandler("prompt", _handle_prompt))
     bot_app.add_handler(CallbackQueryHandler(_handle_version_callback, pattern=r"^version:"))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
     return bot_app
@@ -97,6 +103,7 @@ async def start_polling(app) -> None:
             ("version", "Switch agent version"),
             ("secret", "Store a secret"),
             ("clear", "Start a new conversation"),
+            ("prompt", "Export current system prompt as a file"),
         ]
     )
     await bot_app.start()
@@ -386,6 +393,24 @@ async def _handle_version_callback(update: Update, context: ContextTypes.DEFAULT
     await query.edit_message_text(
         f"Switched to <code>{_escape(agent_name)}</code>.", parse_mode="HTML"
     )
+
+
+async def _handle_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send the current system prompt as a text file."""
+    chat_id = update.effective_chat.id  # type: ignore[union-attr]
+    if not _is_allowed(chat_id):
+        return
+    thread_id = _thread_id(chat_id)
+    state = AgentState(
+        messages=[],
+        thread_id=thread_id,
+        interface_context=TELEGRAM_INTERFACE_CONTEXT,
+        response_format=TELEGRAM_RESPONSE_FORMAT,
+    )
+    prompt_text = build_system_prompt(state)
+    file = io.BytesIO(prompt_text.encode())
+    file.name = "system_prompt.txt"
+    await update.message.reply_document(document=file, filename="system_prompt.txt")  # type: ignore[union-attr]
 
 
 async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
