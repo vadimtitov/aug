@@ -10,7 +10,6 @@ import textwrap
 from aug.core.memory import MEMORY_DIR
 from aug.core.state import AgentState
 
-
 # ---------------------------------------------------------------------------
 # System prompt builder
 # ---------------------------------------------------------------------------
@@ -259,7 +258,15 @@ TELEGRAM_RESPONSE_FORMAT = textwrap.dedent("""
 
 BROWSER_TASK_CONSTRAINTS = (
     "Only perform actions explicitly required by the task. "
-    "Do not modify, remove, or interact with anything not mentioned in the task."
+    "Do not modify, remove, or interact with anything not mentioned in the task. "
+    "Never log out of any account, clear any session, or click anything that would "
+    "end an authenticated session — even if it seems relevant to the task. "
+    "When you encounter a form, modal, or any interactive UI panel, before taking any action "
+    "read all the elements present: labels, options, required markers, radio groups, dropdowns, "
+    "and checkboxes. Identify which ones are required and complete them all before attempting "
+    "to submit or click a confirm button. Never assume a form is ready to submit — always "
+    "survey it first. Before clicking any button, verify it is enabled; if it is disabled or "
+    "greyed out, that means a required field above is still incomplete."
 )
 
 

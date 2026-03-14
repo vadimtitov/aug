@@ -29,6 +29,13 @@ Mid-conversation, the agent uses the `note` tool to capture things worth remembe
 See [docs/memory-design.md](docs/memory-design.md) for the full design rationale.
 
 
+## Browser
+
+AUG can control a real Chrome browser — log into websites, fill forms, add items to baskets, anything you'd do manually. Sessions persist so you log in once and it works from then on.
+
+See [docs/browser-tool.md](docs/browser-tool.md) for setup, credentials, 2FA, and security notes.
+
+
 ## Installation
 
 **Portainer (intended for production)**
@@ -81,7 +88,8 @@ Interactive docs at `http://localhost:8000/docs`.
 
 | Target | Description |
 |--------|-------------|
-| `make run` | `docker compose up --build` |
+| `make run` | Build and start, stream logs |
+| `make rebuild` | Stop, rebuild, start |
 | `make down` | Stop and remove containers |
 | `make test` | Run pytest |
 | `make lint` | ruff check |

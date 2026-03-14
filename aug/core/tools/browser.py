@@ -14,11 +14,12 @@ from browser_use.llm import ChatOpenAI as BrowserLLM
 from langchain_core.tools import tool
 
 from aug.config import get_settings
+from aug.core.prompts import BROWSER_TASK_CONSTRAINTS
 from aug.utils.user_settings import get_setting
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "gemini-2.5-flash"
+_DEFAULT_MODEL = "gpt-5.1"
 
 # Callers (e.g. Telegram handler) can set this to an asyncio.Queue[str] before
 # invoking the graph. The browser tool will push a human-readable status string
@@ -90,10 +91,7 @@ async def browser(task: str, secrets: dict[str, str] | None = None) -> str:
             browser=b,
             sensitive_data=sensitive_data or None,
             register_new_step_callback=_step_callback,
-            extend_system_message=(
-                "Only perform actions explicitly required by the task. "
-                "Do not modify, remove, or interact with anything not mentioned in the task."
-            ),
+            extend_system_message=BROWSER_TASK_CONSTRAINTS,
         )
         history = await agent.run()
         if history.is_done() and history.final_result():
