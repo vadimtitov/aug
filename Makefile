@@ -1,12 +1,16 @@
-.PHONY: run down test lint format check logs shell
+.PHONY: run down rebuild test lint format check logs shell
 
-# Build and start — logs stream to terminal, Ctrl+C stops gracefully
+# Build and start — streams aug + postgres logs, suppresses chromium noise
 run:
-	docker compose up --build
+	docker compose up --build -d && docker compose logs -f aug postgres chromium
 
 # Stop and remove containers
 down:
 	docker compose down
+
+# Full rebuild — stop, rebuild images, start
+rebuild:
+	docker compose down && docker compose up --build -d && docker compose logs -f aug postgres chromium
 
 # Run lint, format check, and tests
 check: lint

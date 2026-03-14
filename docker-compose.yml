@@ -6,6 +6,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://aug:password@postgres:5432/aug
       HUSHED_DIR: /app/data/.hushed
+      BROWSER_CDP_URL: http://chromium:9222
     env_file: .env
     volumes:
       - ./aug:/app/aug
@@ -14,6 +15,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      chromium:
+        condition: service_started
     restart: unless-stopped
 
   postgres:
@@ -32,5 +35,20 @@ services:
       timeout: 3s
       retries: 10
 
+  chromium:
+    build: ./chromium
+    environment:
+      PUID: 1000
+      PGID: 1000
+      CHROME_CLI: --remote-debugging-port=9221 --remote-allow-origins=* --no-sandbox --disable-dev-shm-usage
+    ports:
+      - "3012:3000"
+      - "9222:9222"
+    volumes:
+      - chrome_profile:/config
+    shm_size: 1g
+    restart: unless-stopped
+
 volumes:
   postgres_data:
+  chrome_profile:

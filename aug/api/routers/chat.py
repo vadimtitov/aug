@@ -93,7 +93,9 @@ async def stream(body: ChatRequest, request: Request) -> StreamingResponse:
                 yield f"event: tool_call\ndata: {json.dumps(payload)}\n\n"
 
             elif kind == "on_tool_end":
-                payload = {"name": event["name"], "output": event["data"].get("output", {})}
+                raw = event["data"].get("output", "")
+                output = raw.content if hasattr(raw, "content") else raw
+                payload = {"name": event["name"], "output": output}
                 yield f"event: tool_result\ndata: {json.dumps(payload)}\n\n"
 
         done_payload = json.dumps({"thread_id": body.thread_id, "agent": body.agent})

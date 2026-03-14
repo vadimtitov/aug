@@ -39,6 +39,7 @@ class BaseAgent(ABC):
     """
 
     tools: list[BaseTool] = []
+    recursion_limit: int = 25
 
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
         """Prepare state before the LLM is called.
@@ -76,4 +77,5 @@ class BaseAgent(ABC):
         graph.add_conditional_edges("call_model", self._should_continue)
         graph.add_edge("call_tools", "call_model")
         graph.add_edge("postprocess", END)
-        return graph.compile(checkpointer=checkpointer)
+        compiled = graph.compile(checkpointer=checkpointer)
+        return compiled.with_config({"recursion_limit": self.recursion_limit})

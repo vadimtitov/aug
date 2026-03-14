@@ -6,6 +6,10 @@
 #   - Environment variables supplied via Portainer's "Environment variables" UI.
 #   - Host data directory owned by UID 1000 (the container's appuser):
 #       sudo mkdir -p /opt/aug/data && sudo chown -R 1000:1000 /opt/aug/data
+#   - Chrome profile directory owned by UID 1000:
+#       sudo mkdir -p /opt/aug/chrome-profile && sudo chown -R 1000:1000 /opt/aug/chrome-profile
+#   - CHROME_PASSWORD env var set — the browser UI on port 3000 is protected with basic auth.
+#     Do not expose port 3000 publicly without a password.
 
 services:
   aug:
@@ -20,6 +24,7 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ALLOWED_CHAT_IDS: ${TELEGRAM_ALLOWED_CHAT_IDS:-}
       BRAVE_API_KEY: ${BRAVE_API_KEY:-}
+      BROWSER_CDP_URL: http://chromium:9222
       DEBUG: ${DEBUG:-false}
     ports:
       - "8012:8000"
@@ -38,3 +43,18 @@ services:
       hushed add BRAVE_API_KEY $$BRAVE_API_KEY &&
       exec hushed run -- uvicorn aug.app:app --host 0.0.0.0 --port 8000
       "
+
+  chromium:
+    build: ./chromium
+    environment:
+      PUID: 1000
+      PGID: 1000
+      CHROME_CLI: --remote-debugging-port=9221 --remote-allow-origins=* --no-sandbox --disable-dev-shm-usage
+      CUSTOM_USER: ${CHROME_USER:-aug}
+      PASSWORD: ${CHROME_PASSWORD}
+    ports:
+      - "3012:3000"
+    volumes:
+      - /opt/aug/chrome-profile:/config
+    shm_size: 1g
+    restart: unless-stopped
