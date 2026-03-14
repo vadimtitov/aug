@@ -53,7 +53,7 @@ services:
       CUSTOM_USER: ${CHROME_USER:-aug}
       PASSWORD: ${CHROME_PASSWORD}
     ports:
-      - "3012:3000"
+      - "3012:3001"
     volumes:
       - /opt/aug/chrome-profile:/config
     shm_size: 1g
