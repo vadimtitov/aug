@@ -64,7 +64,6 @@ async def browser(task: str, secrets: dict[str, str] | None = None) -> str:
         task: Plain-language description. Use {placeholder} for any sensitive values.
         secrets: Map of {placeholder: env_var_name} for credentials or other secrets.
     """
-    print(f"Running browser tool with secrets: {secrets}")
     cdp_url = get_settings().BROWSER_CDP_URL
     if not cdp_url:
         return "Browser tool is not available — BROWSER_CDP_URL is not configured."
