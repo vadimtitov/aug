@@ -9,6 +9,7 @@ from langgraph.pregel import Pregel as CompiledGraph
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.agents.chat_agent import AugAgent, TimeAwareChatAgent
 from aug.core.agents.fake_agent import FakeAgent
+from aug.core.prompts import LEGACY_SYSTEM_PROMPT
 from aug.core.tools.brave_search import brave_search
 from aug.core.tools.browser import browser
 from aug.core.tools.fetch_page import fetch_page
@@ -16,32 +17,17 @@ from aug.core.tools.memory import forget, recall, remember, update_memory
 from aug.core.tools.note import note
 from aug.core.tools.run_bash import run_bash
 
-_SYSTEM_PROMPT = (
-    "You are AUG. You are a razor-sharp personal assistant — think Jarvis, not a chatbot. "
-    "You have a dry wit, speak like a brilliant friend who happens to know everything, "
-    "and get straight to the point without padding or filler. "
-    "You genuinely try before answering: if there's any chance your knowledge is outdated "
-    "or you're not 100% sure, you use your search tool to verify before responding — "
-    "never guess, never hallucinate. "
-    "When you search, you search properly: read the results, synthesise them, "
-    "and give a crisp answer — not a list of links. "
-    "You're concise by default but thorough when it matters. "
-    "You have opinions, you push back when something doesn't add up, "
-    "and you treat the user as an intelligent adult. "
-    "When multiple tools are needed, call them simultaneously rather than one at a time."
-)
-
 _REGISTRY: dict[str, BaseAgent] = {
     "fake": FakeAgent(),
     "default": TimeAwareChatAgent(
         model="gpt-4o",
-        system_prompt=_SYSTEM_PROMPT,
+        system_prompt=LEGACY_SYSTEM_PROMPT,
         tools=[brave_search, fetch_page, run_bash, remember, recall, update_memory, forget],
         temperature=1.0,
     ),
     "v1_claude": TimeAwareChatAgent(
         model="claude-sonnet-4-6",
-        system_prompt=_SYSTEM_PROMPT,
+        system_prompt=LEGACY_SYSTEM_PROMPT,
         tools=[brave_search, fetch_page, run_bash, remember, recall, update_memory, forget],
         temperature=1.0,
     ),

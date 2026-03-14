@@ -17,7 +17,6 @@ import asyncio
 import logging
 import re
 import subprocess
-import textwrap
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
@@ -38,6 +37,7 @@ from telegram.ext import (
 )
 
 from aug.config import get_settings
+from aug.core.prompts import TELEGRAM_INTERFACE_CONTEXT, TELEGRAM_RESPONSE_FORMAT
 from aug.core.registry import get_agent, list_agents
 from aug.core.state import AgentState
 from aug.core.tools.browser import browser_progress_queue
@@ -403,37 +403,8 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     input_state = AgentState(
         messages=[HumanMessage(content=update.message.text)],
         thread_id=thread_id,
-        interface_context="Telegram bot. Keep responses concise — there is a message length limit.",
-        response_format=textwrap.dedent("""
-            Use HTML formatting only. Do NOT use Markdown syntax — no *asterisks*,
-            no _underscores_, no **double asterisks**, no # headers, no --- dividers.
-            It will appear as raw symbols to the user.
-
-            Supported tags:
-            - <b>bold</b>
-            - <i>italic</i>
-            - <u>underline</u>
-            - <s>strikethrough</s>
-            - <code>inline code</code>
-            - <pre>code block</pre>
-            - <a href="URL">link text</a>
-            - <span class="tg-spoiler">spoiler</span>
-            - <blockquote>quote</blockquote>
-
-            In plain text, escape: & → &amp;  < → &lt;  > → &gt;
-
-            Tables are not supported. Use labeled lists instead:
-
-            WRONG:
-            | Name  | Price |
-            |-------|-------|
-            | Apple | £1.00 |
-            | Pear  | £0.80 |
-
-            CORRECT:
-            <b>Apple</b> — £1.00
-            <b>Pear</b> — £0.80
-        """).strip(),
+        interface_context=TELEGRAM_INTERFACE_CONTEXT,
+        response_format=TELEGRAM_RESPONSE_FORMAT,
     )
     stop_typing = asyncio.Event()
     typing_task = asyncio.create_task(_typing_loop(update, stop_typing))

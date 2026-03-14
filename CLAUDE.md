@@ -206,6 +206,7 @@ only when there is a clear, immediate reason.
 
 - **LLM access** — always via `build_chat_model()` in `aug/core/llm.py`. Never instantiate `ChatOpenAI` directly.
 - **Settings** — always via `get_settings()` from `aug/config.py`. Never import `settings` at module level.
+- **Prompts** — all hardcoded strings passed to an LLM (system prompts, tool instructions, consolidation prompts, format instructions) must be defined as named constants in `aug/core/prompts.py`. Never define prompt strings inline in other modules.
 - **Async everywhere** — `async def` throughout.
 - **ruff only** — no black, flake8, isort.
 - **uv only** — no `requirements.txt`.

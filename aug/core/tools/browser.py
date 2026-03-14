@@ -91,6 +91,10 @@ async def browser(task: str, secrets: dict[str, str] | None = None) -> str:
             browser=b,
             sensitive_data=sensitive_data or None,
             register_new_step_callback=_step_callback,
+            extend_system_message=(
+                "Only perform actions explicitly required by the task. "
+                "Do not modify, remove, or interact with anything not mentioned in the task."
+            ),
         )
         history = await agent.run()
         if history.is_done() and history.final_result():
