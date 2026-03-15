@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 import markdown as md
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.errors import GraphRecursionError
 from openai import RateLimitError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Update
 from telegram.constants import ChatAction
@@ -219,6 +220,11 @@ class TelegramInterface(BaseInterface[Update]):
             logger.warning("Rate limit / context too large")
             await msg.reply_text(  # type: ignore[union-attr]
                 "Context window is full. Use /clear to start a fresh conversation."
+            )
+        except GraphRecursionError:
+            logger.warning("Agent hit recursion limit")
+            await msg.reply_text(  # type: ignore[union-attr]
+                "The agent got stuck in a loop and was stopped. Try rephrasing your request."
             )
         except Exception as e:
             logger.exception("Error handling Telegram message")

@@ -16,13 +16,13 @@ from collections.abc import AsyncIterator
 
 import httpx
 from langchain_core.messages import HumanMessage
-from langchain_core.runnables.schema import StreamEvent
+from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from aug.config import get_settings
-from aug.core.events import AgentEvent, ChatModelStreamEvent, parse_event
+from aug.core.events import AgentEvent, ChatModelStreamEvent
 from aug.core.registry import get_agent
 from aug.core.state import AgentState
 
@@ -102,8 +102,8 @@ class BaseInterface[ContextT](ABC):
         if incoming is None:
             return
         content = await _preprocess(incoming.parts)
-        raw_stream = _stream_agent(content, incoming, self._checkpointer)
-        await self.send_stream(_parse_stream(raw_stream), context)
+        stream = _stream_agent(content, incoming, self._checkpointer)
+        await self.send_stream(stream, context)
 
 
 # ---------------------------------------------------------------------------
@@ -141,23 +141,16 @@ def _stream_agent(
     content: str | list,
     message: IncomingMessage,
     checkpointer: BaseCheckpointSaver,
-) -> AsyncIterator[StreamEvent]:
-    graph = get_agent(message.agent_name, checkpointer)
+) -> AsyncIterator[AgentEvent]:
+    agent = get_agent(message.agent_name)
     state = AgentState(
         messages=[HumanMessage(content=content)],
         thread_id=message.thread_id,
         interface_context=message.interface_context,
         response_format=message.response_format,
     )
-    config = {"configurable": {"thread_id": message.thread_id}}
-    return graph.astream_events(state, config=config, version="v2")
-
-
-async def _parse_stream(stream: AsyncIterator[StreamEvent]) -> AsyncIterator[AgentEvent]:
-    async for raw in stream:
-        event = parse_event(raw)
-        if event is not None:
-            yield event
+    config: RunnableConfig = {"configurable": {"thread_id": message.thread_id}}
+    return agent.astream_events(state, config, checkpointer)
 
 
 async def _collect(stream: AsyncIterator[AgentEvent]) -> str:

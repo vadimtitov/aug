@@ -3,9 +3,6 @@
 To add a new agent, instantiate a BaseAgent subclass and add it to _REGISTRY.
 """
 
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.pregel import Pregel as CompiledGraph
-
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.agents.chat_agent import AugAgent, TimeAwareChatAgent
 from aug.core.agents.fake_agent import FakeAgent
@@ -74,17 +71,14 @@ _REGISTRY: dict[str, BaseAgent] = {
     ),
 }
 
-# Module-level cache so we don't recompile the same graph on every request.
-_graph_cache: dict[str, CompiledGraph] = {}
-
 
 def list_agents() -> list[str]:
     """Return all registered agent names."""
     return list(_REGISTRY.keys())
 
 
-def get_agent(name: str, checkpointer: BaseCheckpointSaver) -> CompiledGraph:
-    """Return a compiled graph for *name*, building it on first call.
+def get_agent(name: str) -> BaseAgent:
+    """Return the agent for *name*.
 
     Raises:
         ValueError: if *name* is not in the registry.
@@ -92,8 +86,4 @@ def get_agent(name: str, checkpointer: BaseCheckpointSaver) -> CompiledGraph:
     if name not in _REGISTRY:
         registered = ", ".join(_REGISTRY)
         raise ValueError(f"Unknown agent '{name}'. Registered agents: {registered}")
-
-    if name not in _graph_cache:
-        _graph_cache[name] = _REGISTRY[name].build(checkpointer)
-
-    return _graph_cache[name]
+    return _REGISTRY[name]
