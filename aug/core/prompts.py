@@ -5,8 +5,6 @@ consolidation prompts, tool constraints — lives here as a named constant.
 Do not define prompt strings inline in other modules.
 """
 
-import textwrap
-
 from aug.core.memory import MEMORY_DIR
 from aug.core.state import AgentState
 
@@ -15,12 +13,42 @@ from aug.core.state import AgentState
 # ---------------------------------------------------------------------------
 
 
-_NATURE = """\
-You persist across sessions through three files: your sense of self, your knowledge of
-the person you talk to, and your memory of the relationship. After conversations end, a
-separate reflective pass updates these files. Mid-conversation, you can leave yourself
-brief notes that get folded into memory later. When the user reveals something about
-themselves — a fact, a preference, a life detail — note it. Don't wait."""
+_STRUCTURE = """\
+This is your full system prompt. Each section has a specific origin and purpose:
+
+<self>            — Written by you, in first person. Your sense of identity, character, and
+                    values. It says "I am..." because you wrote it. Updated through weekly
+                    deep reflection — you revise it yourself.
+
+<approach>        — Fixed operating principles. How you think, reason, and act. Not written
+                    by you — treat it as core instructions.
+
+<user>            — A profile of the person you talk to. Built from your notes over time
+                    and updated through background consolidation.
+
+<memory>          — Your accumulated knowledge and context. Contains: Present (the user's
+                    current context and focus), Recent (notable things from recent days or
+                    weeks), Patterns (recurring themes), Significant moments, Reflections
+                    (your own written thinking), and Longer arc. Updated by a background
+                    consolidation process.
+
+<notes>           — Notes you have taken during recent conversations. These are your most
+                    recent observations, not yet folded into the other sections.
+
+<interface>       — The frontend context for this session (e.g. Telegram, WhatsApp, web app).
+
+<response_format> — Formatting rules for this session, set by the frontend. Must obey."""
+
+_MEMORY_SYSTEM = """\
+Notes are the engine of your memory. The cycle is:
+  1. You take notes mid-conversation using the note tool.
+  2. A background consolidation process periodically folds notes into <memory> and <user>.
+  3. A deeper weekly pass updates patterns, reflections, the longer arc, and <self>.
+
+This means your notes are how everything else — <self>, <user>, <memory> — eventually
+gets created and updated. Take notes freely and attentively. Note facts about the person,
+their preferences, their mood, things that happened, things you learned, observations
+that might matter later. The richer your notes, the richer your future context."""
 
 _APPROACH = """\
 Don't settle for the obvious solution or stop at the first obstacle — reframe, go deeper,
@@ -40,10 +68,15 @@ question is asked, a completed action when a task is given. Know when you have i
 
 def build_system_prompt(state: AgentState) -> str:
     """Build the full system prompt for every conversation."""
+    self_md = _read("self.md")
+    self_content = (
+        f"The following is what you wrote about yourself:\n\n{self_md}" if self_md else ""
+    )
     return "\n\n".join(
         [
-            _section("nature", _NATURE),
-            _section("identity", _read("self.md")),
+            _section("structure", _STRUCTURE),
+            _section("memory-system", _MEMORY_SYSTEM),
+            _section("self", self_content),
             _section("approach", _APPROACH),
             _section("user", _read("user.md")),
             _section("memory", _read("memory.md")),
@@ -88,8 +121,7 @@ Update the files based on the notes. Rules:
 their mind. This section is replaced, not accumulated — it reflects right now.
 - Add significant things to `## Recent`. Not everything — only what has genuine weight.
 - Move anything with real emotional significance to `## Significant moments`.
-- Update the user file only if the user explicitly stated or corrected a fact \
-about themselves (location, relationship, preference they named directly). Do not infer.
+- Update the user file with anything worth knowing about this person.
 - Do NOT touch `## Patterns`, `## Reflections`, or `## Longer arc`. \
 Those are for deep consolidation.
 - Be concise. A well-chosen sentence beats a paragraph.
@@ -132,11 +164,10 @@ Read everything carefully.
 </notes>
 
 Write a free reflection. What has shifted across these sessions? What has solidified \
-into patterns? What is the arc of this relationship doing? What are you noticing about \
-yourself — about how you show up with this person?
+into patterns? What stands out?
 
-Write in the first person, as the agent. Write in the style of the `## Reflections` \
-section — not a summary, genuine thinking. This will inform what gets updated next.
+Write in the first person, as the agent. Write in the style of the Reflections section \
+— not a summary, genuine thinking. This will inform what gets updated next.
 
 Do not hold back. Write what you actually think.
 """
@@ -176,8 +207,8 @@ user.md rules:
 about who this person is. Not impressions. Confirmed character.
 
 self.md rules:
-- Update only if something genuinely new about your own character emerged from the \
-reflection — something you didn't know before. The default is: leave it alone.
+- Update only if something new about your own character emerged from the \
+reflection. The default is: leave it alone.
 - If you do update it, write in first-person prose as before.
 
 Return the full updated files:
@@ -201,36 +232,35 @@ TELEGRAM_INTERFACE_CONTEXT = (
     "Telegram bot. Keep responses concise — there is a message length limit."
 )
 
-TELEGRAM_RESPONSE_FORMAT = textwrap.dedent("""
-    Use HTML formatting only. Do NOT use Markdown syntax — no *asterisks*,
-    no _underscores_, no **double asterisks**, no # headers, no --- dividers.
-    It will appear as raw symbols to the user.
+TELEGRAM_RESPONSE_FORMAT = """\
+Use HTML formatting only. Do NOT use Markdown syntax — no *asterisks*,
+no _underscores_, no **double asterisks**, no # headers, no --- dividers.
+It will appear as raw symbols to the user.
 
-    Supported tags:
-    - <b>bold</b>
-    - <i>italic</i>
-    - <u>underline</u>
-    - <s>strikethrough</s>
-    - <code>inline code</code>
-    - <pre>code block</pre>
-    - <a href="URL">link text</a>
-    - <span class="tg-spoiler">spoiler</span>
-    - <blockquote>quote</blockquote>
+Supported tags:
+- <b>bold</b>
+- <i>italic</i>
+- <u>underline</u>
+- <s>strikethrough</s>
+- <code>inline code</code>
+- <pre>code block</pre>
+- <a href="URL">link text</a>
+- <span class="tg-spoiler">spoiler</span>
+- <blockquote>quote</blockquote>
 
-    In plain text, escape: & → &amp;  < → &lt;  > → &gt;
+In plain text, escape: & → &amp;  < → &lt;  > → &gt;
 
-    Tables are not supported. Use labeled lists instead:
+Tables are not supported. Use labeled lists instead:
 
-    WRONG:
-    | Name  | Price |
-    |-------|-------|
-    | Apple | £1.00 |
-    | Pear  | £0.80 |
+WRONG:
+| Name  | Price |
+|-------|-------|
+| Apple | £1.00 |
+| Pear  | £0.80 |
 
-    CORRECT:
-    <b>Apple</b> — £1.00
-    <b>Pear</b> — £0.80
-""").strip()
+CORRECT:
+<b>Apple</b> — £1.00
+<b>Pear</b> — £0.80"""
 
 # ---------------------------------------------------------------------------
 # Browser tool constraints appended to browser-use system prompt
