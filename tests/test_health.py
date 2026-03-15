@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from aug.api.interfaces.telegram import TelegramInterface
 from aug.app import create_app
 
 
@@ -28,8 +29,8 @@ def client():
         patch("aug.app._checkpointer_context", return_value=_async_ctx(mock_checkpointer)),
         patch("aug.app.init_memory_files"),
         patch("aug.app.start_consolidation_scheduler", new=AsyncMock()),
-        patch("aug.api.telegram.start_polling", new=AsyncMock()),
-        patch("aug.api.telegram.stop_polling", new=AsyncMock()),
+        patch.object(TelegramInterface, "start_polling", new=AsyncMock()),
+        patch.object(TelegramInterface, "stop_polling", new=AsyncMock()),
     ):
         test_app = create_app()
         with TestClient(test_app, raise_server_exceptions=True) as c:

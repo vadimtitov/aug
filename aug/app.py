@@ -63,16 +63,17 @@ async def lifespan(app: FastAPI):
         app.state.storage = LocalFileStorage()
 
         # Optional Telegram bot (polling)
-        from aug.api.telegram import start_polling, stop_polling
+        from aug.api.interfaces.telegram import TelegramInterface
 
-        await start_polling(app)
+        telegram = TelegramInterface(checkpointer)
+        await telegram.start_polling(app)
 
         await start_consolidation_scheduler()
 
         logger.info("AUG startup complete.")
         yield
 
-        await stop_polling(app)
+        await telegram.stop_polling(app)
 
     # Shutdown
     await pool.close()
