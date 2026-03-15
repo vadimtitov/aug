@@ -22,6 +22,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from aug.config import get_settings
+from aug.core.events import AgentEvent, ChatModelStreamEvent, parse_event
 from aug.core.registry import get_agent
 from aug.core.state import AgentState
 
@@ -79,7 +80,7 @@ class BaseInterface[ContextT](ABC):
         Return None to silently ignore the input (e.g. unauthorized sender).
         """
 
-    async def send_stream(self, stream: AsyncIterator[StreamEvent], context: ContextT) -> None:
+    async def send_stream(self, stream: AsyncIterator[AgentEvent], context: ContextT) -> None:
         """Consume the agent event stream and deliver the response.
 
         Default: collect the full response then call send_message.
@@ -101,8 +102,8 @@ class BaseInterface[ContextT](ABC):
         if incoming is None:
             return
         content = await _preprocess(incoming.parts)
-        stream = _stream_agent(content, incoming, self._checkpointer)
-        await self.send_stream(stream, context)
+        raw_stream = _stream_agent(content, incoming, self._checkpointer)
+        await self.send_stream(_parse_stream(raw_stream), context)
 
 
 # ---------------------------------------------------------------------------
@@ -152,12 +153,18 @@ def _stream_agent(
     return graph.astream_events(state, config=config, version="v2")
 
 
-async def _collect(stream: AsyncIterator[StreamEvent]) -> str:
+async def _parse_stream(stream: AsyncIterator[StreamEvent]) -> AsyncIterator[AgentEvent]:
+    async for raw in stream:
+        event = parse_event(raw)
+        if event is not None:
+            yield event
+
+
+async def _collect(stream: AsyncIterator[AgentEvent]) -> str:
     text = ""
     async for event in stream:
-        if event["event"] == "on_chat_model_stream":
-            delta = event["data"]["chunk"].content
-            if delta:
+        match event:
+            case ChatModelStreamEvent(delta=delta) if delta:
                 text += delta
     return text
 

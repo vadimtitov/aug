@@ -1,10 +1,8 @@
 """Browser tool — remote-controlled Chromium via browser-use and CDP."""
 
-import asyncio
 import logging
 import os
 import socket
-from contextvars import ContextVar
 from urllib.parse import urlparse, urlunparse
 
 from browser_use import Agent, Browser
@@ -14,20 +12,13 @@ from browser_use.llm import ChatOpenAI as BrowserLLM
 from langchain_core.tools import tool
 
 from aug.config import get_settings
+from aug.core.events import send_tool_progress_update
 from aug.core.prompts import BROWSER_TASK_CONSTRAINTS
 from aug.utils.user_settings import get_setting
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "gpt-5.1"
-
-# Callers (e.g. Telegram handler) can set this to an asyncio.Queue[str] before
-# invoking the graph. The browser tool will push a human-readable status string
-# into the queue on every browser-use step so the caller can show live progress.
-# A None sentinel is pushed when the tool finishes (success or failure).
-browser_progress_queue: ContextVar[asyncio.Queue[str | None] | None] = ContextVar(
-    "browser_progress_queue", default=None
-)
 
 
 def _model() -> str:
@@ -71,17 +62,13 @@ async def browser(task: str, secrets: dict[str, str] | None = None) -> str:
 
     sensitive_data = _resolve_secrets(secrets)
 
-    queue = browser_progress_queue.get()
-
     async def _step_callback(state: BrowserStateSummary, output: AgentOutput, step: int) -> None:
-        if queue is None:
-            return
         goal = output.next_goal or ""
         netloc = urlparse(state.url).netloc or state.url
         text = f"Step {step} · {netloc}"
         if goal:
             text += f"\n{goal}"
-        await queue.put(text)
+        await send_tool_progress_update(text)
 
     b = Browser(cdp_url=_resolve_cdp_url(cdp_url))
     try:
@@ -107,8 +94,6 @@ async def browser(task: str, secrets: dict[str, str] | None = None) -> str:
         return f"Browser task failed: {e}"
     finally:
         await b.stop()
-        if queue is not None:
-            await queue.put(None)
 
 
 def _resolve_secrets(secrets: dict[str, str] | None) -> dict[str, str]:
