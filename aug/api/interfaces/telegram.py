@@ -132,8 +132,12 @@ class TelegramInterface(BaseInterface[Update]):
         accumulated_text = ""
         stream_msg = None
         last_stream_edit = 0.0
-        # tool_run_id → (tool_name, args, tool_msg, task)
-        tool_msgs: dict[str, tuple[str, dict, object, asyncio.Task]] = {}
+        # tool_run_id → (tool_name, args, tool_msg, task, step_holder)
+        # step_holder is a 1-element list so the spinner and progress
+        # handler share the same mutable ref
+        tool_msgs: dict[str, tuple[str, dict, object, asyncio.Task, list]] = {}
+        # parent_id → tool_run_id (for matching ToolProgressEvent to its tool_msg)
+        progress_index: dict[str, str] = {}
 
         try:
             async for event in stream:
@@ -156,32 +160,37 @@ class TelegramInterface(BaseInterface[Update]):
                                 last_stream_edit = now + e.retry_after
                             except Exception:
                                 pass
-                    case ToolStartEvent(run_id=run_id, tool_name=tool_name, args=args):
+                    case ToolStartEvent(
+                        run_id=run_id, tool_name=tool_name, args=args, parent_ids=parent_ids
+                    ):
                         text = _format_tool_call(tool_name, args, done=False)
                         tool_msg = await msg.reply_text(  # type: ignore[union-attr]
                             text, parse_mode="HTML", link_preview_options=_NO_PREVIEW
                         )
-                        spin = asyncio.create_task(_spinner_task(tool_msg, tool_name, args))
-                        tool_msgs[run_id] = (tool_name, args, tool_msg, spin)
+                        step_holder: list[str] = [""]
+                        spin = asyncio.create_task(
+                            _spinner_task(tool_msg, tool_name, args, step_holder)
+                        )
+                        tool_msgs[run_id] = (tool_name, args, tool_msg, spin, step_holder)
+                        for pid in parent_ids:
+                            progress_index[pid] = run_id
                         accumulated_text = ""
                         stream_msg = None
                     case ToolProgressEvent(parent_ids=parent_ids, step=step) if step:
-                        tool_run_id = next((pid for pid in parent_ids if pid in tool_msgs), None)
+                        tool_run_id = next(
+                            (progress_index[pid] for pid in parent_ids if pid in progress_index),
+                            None,
+                        )
                         if tool_run_id:
-                            tool_name, args, tool_msg, _ = tool_msgs[tool_run_id]
-                            try:
-                                header = _format_tool_call(tool_name, args, done=False)
-                                await tool_msg.edit_text(  # type: ignore[union-attr]
-                                    f"{header}\n<code>{_escape(step)}</code>",
-                                    parse_mode="HTML",
-                                    link_preview_options=_NO_PREVIEW,
-                                )
-                            except Exception:
-                                pass
+                            tool_name, args, tool_msg, _, step_holder = tool_msgs[tool_run_id]
+                            step_holder[0] = step
                     case ToolEndEvent(run_id=run_id, tool_name=tool_name, output=output):
                         entry = tool_msgs.pop(run_id, None)
+                        progress_index = {
+                            pid: rid for pid, rid in progress_index.items() if rid != run_id
+                        }
                         if entry:
-                            tool_name, args, tool_msg, task = entry
+                            tool_name, args, tool_msg, task, _ = entry
                             task.cancel()
                             try:
                                 await tool_msg.edit_text(  # type: ignore[union-attr]
@@ -460,17 +469,16 @@ def _format_args(args: dict) -> str:
     return text
 
 
-async def _spinner_task(msg, tool_name: str, args: dict) -> None:
+async def _spinner_task(msg, tool_name: str, args: dict, step_holder: list[str]) -> None:
     i = 0
     while True:
         await asyncio.sleep(1.0)
         i += 1
         try:
-            await msg.edit_text(
-                _format_tool_call(tool_name, args, done=False, spin=i),
-                parse_mode="HTML",
-                link_preview_options=_NO_PREVIEW,
-            )
+            header = _format_tool_call(tool_name, args, done=False, spin=i)
+            step = step_holder[0]
+            text = f"{header}\n<code>{_escape(step)}</code>" if step else header
+            await msg.edit_text(text, parse_mode="HTML", link_preview_options=_NO_PREVIEW)
         except Exception:
             return
 

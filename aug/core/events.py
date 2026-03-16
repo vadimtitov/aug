@@ -42,6 +42,7 @@ class ToolStartEvent:
     run_id: str
     tool_name: str
     args: dict
+    parent_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -75,6 +76,7 @@ def parse_event(event: StreamEvent) -> AgentEvent | None:
             run_id=event["run_id"],
             tool_name=event["name"],
             args=event["data"].get("input") or {},
+            parent_ids=list(event.get("parent_ids", [])),
         )
     if kind == "on_tool_end":
         raw: Any = event["data"].get("output")
