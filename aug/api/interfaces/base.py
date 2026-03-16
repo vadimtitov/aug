@@ -16,12 +16,13 @@ from collections.abc import AsyncIterator
 
 import httpx
 from langchain_core.messages import HumanMessage
-from langchain_core.runnables.schema import StreamEvent
+from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from aug.config import get_settings
+from aug.core.events import AgentEvent, ChatModelStreamEvent
 from aug.core.registry import get_agent
 from aug.core.state import AgentState
 
@@ -79,7 +80,7 @@ class BaseInterface[ContextT](ABC):
         Return None to silently ignore the input (e.g. unauthorized sender).
         """
 
-    async def send_stream(self, stream: AsyncIterator[StreamEvent], context: ContextT) -> None:
+    async def send_stream(self, stream: AsyncIterator[AgentEvent], context: ContextT) -> None:
         """Consume the agent event stream and deliver the response.
 
         Default: collect the full response then call send_message.
@@ -140,24 +141,23 @@ def _stream_agent(
     content: str | list,
     message: IncomingMessage,
     checkpointer: BaseCheckpointSaver,
-) -> AsyncIterator[StreamEvent]:
-    graph = get_agent(message.agent_name, checkpointer)
+) -> AsyncIterator[AgentEvent]:
+    agent = get_agent(message.agent_name)
     state = AgentState(
         messages=[HumanMessage(content=content)],
         thread_id=message.thread_id,
         interface_context=message.interface_context,
         response_format=message.response_format,
     )
-    config = {"configurable": {"thread_id": message.thread_id}}
-    return graph.astream_events(state, config=config, version="v2")
+    config: RunnableConfig = {"configurable": {"thread_id": message.thread_id}}
+    return agent.astream_events(state, config, checkpointer)
 
 
-async def _collect(stream: AsyncIterator[StreamEvent]) -> str:
+async def _collect(stream: AsyncIterator[AgentEvent]) -> str:
     text = ""
     async for event in stream:
-        if event["event"] == "on_chat_model_stream":
-            delta = event["data"]["chunk"].content
-            if delta:
+        match event:
+            case ChatModelStreamEvent(delta=delta) if delta:
                 text += delta
     return text
 

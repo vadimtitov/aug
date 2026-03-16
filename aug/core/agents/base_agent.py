@@ -1,13 +1,15 @@
 """Base class for all AUG agents."""
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 
+from langchain_core.runnables.config import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
-from langgraph.pregel import Pregel as CompiledGraph
 
+from aug.core.events import AgentEvent, parse_event
 from aug.core.state import AgentState, AgentStateUpdate
 
 
@@ -41,12 +43,26 @@ class BaseAgent(ABC):
     tools: list[BaseTool] = []
     recursion_limit: int = 25
 
-    def preprocess(self, state: AgentState) -> AgentStateUpdate:
-        """Prepare state before the LLM is called.
+    def __init__(self) -> None:
+        self._compiled_graph = None
 
-        Override to inject a dynamic system prompt, expose conditional tools,
-        annotate messages with metadata (e.g. timestamps), etc.
-        """
+    async def astream_events(
+        self,
+        state: AgentState,
+        config: RunnableConfig,
+        checkpointer: BaseCheckpointSaver,
+    ) -> AsyncIterator[AgentEvent]:
+        if self._compiled_graph is None:
+            self._compiled_graph = self._build(checkpointer)
+        full_config: RunnableConfig = {"recursion_limit": self.recursion_limit, **config}
+        raw_stream = self._compiled_graph.astream_events(state, config=full_config, version="v2")
+        async for raw in raw_stream:
+            event = parse_event(raw)
+            if event is not None:
+                yield event
+
+    def preprocess(self, state: AgentState) -> AgentStateUpdate:
+        """Prepare state before the LLM is called."""
         return AgentStateUpdate()
 
     @abstractmethod
@@ -54,10 +70,7 @@ class BaseAgent(ABC):
         """Call the LLM and return its response (including any tool call requests)."""
 
     def postprocess(self, state: AgentState) -> AgentStateUpdate:
-        """Transform or log the final LLM response before returning to the user.
-
-        Override to add response filtering, logging, formatting, etc.
-        """
+        """Transform or log the final LLM response before returning to the user."""
         return AgentStateUpdate()
 
     def _should_continue(self, state: AgentState) -> str:
@@ -66,7 +79,7 @@ class BaseAgent(ABC):
             return "call_tools"
         return "postprocess"
 
-    def build(self, checkpointer: BaseCheckpointSaver) -> CompiledGraph:
+    def _build(self, checkpointer: BaseCheckpointSaver):
         graph = StateGraph(AgentState)
         graph.add_node("preprocess", self.preprocess)
         graph.add_node("call_model", self.respond)
@@ -77,5 +90,4 @@ class BaseAgent(ABC):
         graph.add_conditional_edges("call_model", self._should_continue)
         graph.add_edge("call_tools", "call_model")
         graph.add_edge("postprocess", END)
-        compiled = graph.compile(checkpointer=checkpointer)
-        return compiled.with_config({"recursion_limit": self.recursion_limit})
+        return graph.compile(checkpointer=checkpointer)

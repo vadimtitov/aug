@@ -8,6 +8,8 @@
 #       sudo mkdir -p /opt/aug/data && sudo chown -R 1000:1000 /opt/aug/data
 #   - Chrome profile directory owned by UID 1000:
 #       sudo mkdir -p /opt/aug/chrome-profile && sudo chown -R 1000:1000 /opt/aug/chrome-profile
+#   - Browser downloads directory owned by UID 1000:
+#       sudo mkdir -p /opt/aug/browser-downloads && sudo chown -R 1000:1000 /opt/aug/browser-downloads
 #   - CHROME_PASSWORD env var set — the browser UI on port 3000 is protected with basic auth.
 #     Do not expose port 3000 publicly without a password.
 
@@ -30,6 +32,7 @@ services:
       - "8012:8000"
     volumes:
       - /opt/aug/data:/app/data
+      - /opt/aug/browser-downloads:/app/browser-downloads
     # Store secrets in hushed, then run the app via "hushed run --".
     # hushed redacts secret values from all process output, preventing them
     # from appearing in any text the LLM could see (tool output, shell responses, etc.).
@@ -56,5 +59,6 @@ services:
       - "3012:3001"
     volumes:
       - /opt/aug/chrome-profile:/config
+      - /opt/aug/browser-downloads:/app/browser-downloads
     shm_size: 1g
     restart: unless-stopped

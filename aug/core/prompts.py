@@ -276,7 +276,11 @@ BROWSER_TASK_CONSTRAINTS = (
     "and checkboxes. Identify which ones are required and complete them all before attempting "
     "to submit or click a confirm button. Never assume a form is ready to submit — always "
     "survey it first. Before clicking any button, verify it is enabled; if it is disabled or "
-    "greyed out, that means a required field above is still incomplete."
+    "greyed out, that means a required field above is still incomplete. "
+    "Any file you download or screenshot you save will be sent directly to the user immediately. "
+    "When the result of your task contains something visual the user should see — a QR code, "
+    "barcode, confirmation graphic, document, or PDF — save or download it before completing. "
+    "Do not download or screenshot anything irrelevant to the task result."
 )
 
 

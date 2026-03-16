@@ -11,6 +11,7 @@ services:
     volumes:
       - ./aug:/app/aug
       - ./data:/app/data
+      - browser_downloads:/app/browser-downloads
     command: ["uvicorn", "aug.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     depends_on:
       postgres:
@@ -46,9 +47,11 @@ services:
       - "9222:9222"
     volumes:
       - chrome_profile:/config
+      - browser_downloads:/app/browser-downloads
     shm_size: 1g
     restart: unless-stopped
 
 volumes:
   postgres_data:
   chrome_profile:
+  browser_downloads:

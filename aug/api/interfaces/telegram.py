@@ -19,8 +19,8 @@ from html.parser import HTMLParser
 from urllib.parse import urlparse
 
 import markdown as md
-from langchain_core.runnables.schema import StreamEvent
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.errors import GraphRecursionError
 from openai import RateLimitError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Update
 from telegram.constants import ChatAction
@@ -44,6 +44,13 @@ from aug.api.interfaces.base import (
     TextContent,
 )
 from aug.config import get_settings
+from aug.core.events import (
+    AgentEvent,
+    ChatModelStreamEvent,
+    ToolEndEvent,
+    ToolProgressEvent,
+    ToolStartEvent,
+)
 from aug.core.prompts import (
     TELEGRAM_INTERFACE_CONTEXT,
     TELEGRAM_RESPONSE_FORMAT,
@@ -51,7 +58,7 @@ from aug.core.prompts import (
 )
 from aug.core.registry import list_agents
 from aug.core.state import AgentState
-from aug.core.tools.browser import browser_progress_queue
+from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
 from aug.utils.user_settings import get_setting, set_setting
 
 logger = logging.getLogger(__name__)
@@ -117,7 +124,7 @@ class TelegramInterface(BaseInterface[Update]):
             agent_name=get_setting("telegram", "chats", str(chat_id), "agent", default="default"),
         )
 
-    async def send_stream(self, stream: AsyncIterator[StreamEvent], context: Update) -> None:
+    async def send_stream(self, stream: AsyncIterator[AgentEvent], context: Update) -> None:
         msg = context.message
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(_typing_loop(context, stop_typing))
@@ -125,17 +132,17 @@ class TelegramInterface(BaseInterface[Update]):
         accumulated_text = ""
         stream_msg = None
         last_stream_edit = 0.0
-        tool_msgs: dict[str, tuple] = {}
-
-        _browser_queue: asyncio.Queue[str | None] = asyncio.Queue()
-        _browser_queue_token = browser_progress_queue.set(_browser_queue)
+        # tool_run_id → (tool_name, args, tool_msg, task, step_holder)
+        # step_holder is a 1-element list so the spinner and progress
+        # handler share the same mutable ref
+        tool_msgs: dict[str, tuple[str, dict, object, asyncio.Task, list]] = {}
+        # parent_id → tool_run_id (for matching ToolProgressEvent to its tool_msg)
+        progress_index: dict[str, str] = {}
 
         try:
             async for event in stream:
-                kind = event["event"]
-                if kind == "on_chat_model_stream":
-                    delta = event["data"]["chunk"].content
-                    if delta:
+                match event:
+                    case ChatModelStreamEvent(delta=delta) if delta:
                         accumulated_text += delta
                         now = asyncio.get_running_loop().time()
                         if stream_msg is None:
@@ -153,35 +160,49 @@ class TelegramInterface(BaseInterface[Update]):
                                 last_stream_edit = now + e.retry_after
                             except Exception:
                                 pass
-                elif kind == "on_tool_start":
-                    args = event["data"].get("input") or {}
-                    text = _format_tool_call(event["name"], args, done=False)
-                    tool_msg = await msg.reply_text(  # type: ignore[union-attr]
-                        text, parse_mode="HTML", link_preview_options=_NO_PREVIEW
-                    )
-                    if event["name"] == "browser":
-                        consumer = asyncio.create_task(
-                            _browser_step_consumer(_browser_queue, tool_msg, event["name"], args)
+                    case ToolStartEvent(
+                        run_id=run_id, tool_name=tool_name, args=args, parent_ids=parent_ids
+                    ):
+                        text = _format_tool_call(tool_name, args, done=False)
+                        tool_msg = await msg.reply_text(  # type: ignore[union-attr]
+                            text, parse_mode="HTML", link_preview_options=_NO_PREVIEW
                         )
-                        tool_msgs[event["run_id"]] = (args, tool_msg, consumer)
-                    else:
-                        spin = asyncio.create_task(_spinner_task(tool_msg, event["name"], args))
-                        tool_msgs[event["run_id"]] = (args, tool_msg, spin)
-                    accumulated_text = ""
-                    stream_msg = None
-                elif kind == "on_tool_end":
-                    entry = tool_msgs.pop(event["run_id"], None)
-                    if entry:
-                        args, tool_msg, task = entry
-                        task.cancel()
-                        try:
-                            await tool_msg.edit_text(
-                                _format_tool_call(event["name"], args, done=True),
-                                parse_mode="HTML",
-                                link_preview_options=_NO_PREVIEW,
-                            )
-                        except Exception:
-                            pass
+                        step_holder: list[str] = [""]
+                        spin = asyncio.create_task(
+                            _spinner_task(tool_msg, tool_name, args, step_holder)
+                        )
+                        tool_msgs[run_id] = (tool_name, args, tool_msg, spin, step_holder)
+                        for pid in parent_ids:
+                            progress_index[pid] = run_id
+                        accumulated_text = ""
+                        stream_msg = None
+                    case ToolProgressEvent(parent_ids=parent_ids, step=step) if step:
+                        tool_run_id = next(
+                            (progress_index[pid] for pid in parent_ids if pid in progress_index),
+                            None,
+                        )
+                        if tool_run_id:
+                            tool_name, args, tool_msg, _, step_holder = tool_msgs[tool_run_id]
+                            step_holder[0] = step
+                    case ToolEndEvent(run_id=run_id, tool_name=tool_name, output=output):
+                        entry = tool_msgs.pop(run_id, None)
+                        progress_index = {
+                            pid: rid for pid, rid in progress_index.items() if rid != run_id
+                        }
+                        if entry:
+                            tool_name, args, tool_msg, task, _ = entry
+                            task.cancel()
+                            try:
+                                await tool_msg.edit_text(  # type: ignore[union-attr]
+                                    _format_tool_call(tool_name, args, done=True),
+                                    parse_mode="HTML",
+                                    link_preview_options=_NO_PREVIEW,
+                                )
+                            except Exception:
+                                pass
+                            if isinstance(output, ToolOutput) and output.attachments:
+                                for attachment in output.attachments:
+                                    await _send_attachment(msg, attachment)  # type: ignore[arg-type]
 
             if accumulated_text:
                 final_text = _to_html(accumulated_text)
@@ -209,11 +230,15 @@ class TelegramInterface(BaseInterface[Update]):
             await msg.reply_text(  # type: ignore[union-attr]
                 "Context window is full. Use /clear to start a fresh conversation."
             )
+        except GraphRecursionError:
+            logger.warning("Agent hit recursion limit")
+            await msg.reply_text(  # type: ignore[union-attr]
+                "The agent got stuck in a loop and was stopped. Try rephrasing your request."
+            )
         except Exception as e:
             logger.exception("Error handling Telegram message")
             await msg.reply_text(f"Sorry, something went wrong: {e}")  # type: ignore[union-attr]
         finally:
-            browser_progress_queue.reset(_browser_queue_token)
             stop_typing.set()
             typing_task.cancel()
 
@@ -444,37 +469,28 @@ def _format_args(args: dict) -> str:
     return text
 
 
-async def _spinner_task(msg, tool_name: str, args: dict) -> None:
+async def _spinner_task(msg, tool_name: str, args: dict, step_holder: list[str]) -> None:
     i = 0
     while True:
         await asyncio.sleep(1.0)
         i += 1
         try:
-            await msg.edit_text(
-                _format_tool_call(tool_name, args, done=False, spin=i),
-                parse_mode="HTML",
-                link_preview_options=_NO_PREVIEW,
-            )
+            header = _format_tool_call(tool_name, args, done=False, spin=i)
+            step = step_holder[0]
+            text = f"{header}\n<code>{_escape(step)}</code>" if step else header
+            await msg.edit_text(text, parse_mode="HTML", link_preview_options=_NO_PREVIEW)
         except Exception:
             return
 
 
-async def _browser_step_consumer(queue: asyncio.Queue, msg, tool_name: str, args: dict) -> None:
-    step_text = ""
-    while True:
-        update = await queue.get()
-        if update is None:
-            break
-        step_text = update
-        try:
-            header = _format_tool_call(tool_name, args, done=False)
-            await msg.edit_text(
-                f"{header}\n<code>{_escape(step_text)}</code>",
-                parse_mode="HTML",
-                link_preview_options=_NO_PREVIEW,
-            )
-        except Exception:
-            pass
+async def _send_attachment(msg, attachment: Attachment) -> None:
+    data = io.BytesIO(attachment.data)
+    caption = attachment.caption or None
+    if isinstance(attachment, ImageAttachment):
+        await msg.reply_photo(photo=data, caption=caption)
+    elif isinstance(attachment, FileAttachment):
+        data.name = attachment.filename
+        await msg.reply_document(document=data, caption=caption, filename=attachment.filename)
 
 
 async def _typing_loop(update: Update, stop_event: asyncio.Event) -> None:
