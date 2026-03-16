@@ -39,6 +39,7 @@ class ChatAgent(BaseAgent):
         timeout: float | None = None,
         seed: int | None = None,
     ) -> None:
+        super().__init__()
         self.tools = tools or []
         self._system_prompt = system_prompt
         self._llm = build_chat_model(
@@ -99,6 +100,7 @@ class AugAgent(BaseAgent):
         seed: int | None = None,
         recursion_limit: int = 25,
     ) -> None:
+        super().__init__()
         self.tools = tools or []
         self.recursion_limit = recursion_limit
         self._llm = build_chat_model(

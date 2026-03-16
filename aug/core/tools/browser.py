@@ -1,8 +1,11 @@
 """Browser tool — remote-controlled Chromium via browser-use and CDP."""
 
+import base64
 import logging
+import mimetypes
 import os
 import socket
+from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
 from browser_use import Agent, Browser
@@ -14,11 +17,13 @@ from langchain_core.tools import tool
 from aug.config import get_settings
 from aug.core.events import send_tool_progress_update
 from aug.core.prompts import BROWSER_TASK_CONSTRAINTS
+from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
 from aug.utils.user_settings import get_setting
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "gpt-5.1"
+_DOWNLOADS_DIR = "/app/browser-downloads"
 
 
 def _model() -> str:
@@ -35,8 +40,10 @@ def _llm() -> BrowserLLM:
     )
 
 
-@tool
-async def browser(task: str, secrets: dict[str, str] | None = None) -> str:
+@tool(response_format="content_and_artifact")
+async def browser(
+    task: str, secrets: dict[str, str] | None = None
+) -> tuple[str, ToolOutput | None]:
     """Control a web browser to complete a task.
 
     Can navigate websites, click buttons, fill forms, log in, and extract
@@ -58,7 +65,7 @@ async def browser(task: str, secrets: dict[str, str] | None = None) -> str:
     """
     cdp_url = get_settings().BROWSER_CDP_URL
     if not cdp_url:
-        return "Browser tool is not available — BROWSER_CDP_URL is not configured."
+        return "Browser tool is not available — BROWSER_CDP_URL is not configured.", None
 
     sensitive_data = _resolve_secrets(secrets)
 
@@ -70,7 +77,9 @@ async def browser(task: str, secrets: dict[str, str] | None = None) -> str:
             text += f"\n{goal}"
         await send_tool_progress_update(text)
 
-    b = Browser(cdp_url=_resolve_cdp_url(cdp_url))
+    downloads_dir = Path(_DOWNLOADS_DIR)
+    before = set(downloads_dir.iterdir()) if downloads_dir.exists() else set()
+    b = Browser(cdp_url=_resolve_cdp_url(cdp_url), downloads_path=_DOWNLOADS_DIR)
     try:
         agent = Agent(
             task=task,
@@ -79,19 +88,32 @@ async def browser(task: str, secrets: dict[str, str] | None = None) -> str:
             sensitive_data=sensitive_data or None,
             register_new_step_callback=_step_callback,
             extend_system_message=BROWSER_TASK_CONSTRAINTS,
+            use_vision="auto",
         )
         history = await agent.run()
         if history.is_done() and history.final_result():
-            return history.final_result()
+            after = set(downloads_dir.iterdir()) if downloads_dir.exists() else set()
+            new_files = [p for p in (after - before) if p.is_file()]
+            logger.info("browser new files: %s", new_files)
+            attachments: list[Attachment] = [_path_to_attachment(str(p)) for p in new_files]
+            screenshots = history.screenshots(n_last=1, return_none_if_not_screenshot=False)
+            logger.info("browser screenshots: %d", len(screenshots))
+            if screenshots:
+                attachments.append(
+                    ImageAttachment(data=base64.b64decode(screenshots[-1]), mime_type="image/png")
+                )
+            output = ToolOutput(text=history.final_result(), attachments=attachments)
+            return str(output), output
         errors = history.errors() if history.has_errors() else []
         error_summary = "; ".join(str(e) for e in errors[-3:]) if errors else "unknown reason"
-        return (
+        msg = (
             f"Browser task did NOT complete successfully after {history.number_of_steps()} steps. "
             f"Errors: {error_summary}. Do NOT assume success — tell the user it failed and why."
         )
+        return msg, None
     except Exception as e:
         logger.error("browser tool failed: %s", e)
-        return f"Browser task failed: {e}"
+        return f"Browser task failed: {e}", None
     finally:
         await b.stop()
 
@@ -126,6 +148,15 @@ def _resolve_cdp_url(cdp_url: str) -> str:
         resolved = parsed._replace(netloc=f"{ip}:{parsed.port}" if parsed.port else ip)
         return urlunparse(resolved)
     return cdp_url
+
+
+def _path_to_attachment(path: str) -> Attachment:
+    data = Path(path).read_bytes()
+    mime, _ = mimetypes.guess_type(path)
+    mime = mime or "application/octet-stream"
+    if mime.startswith("image/"):
+        return ImageAttachment(data=data, mime_type=mime)
+    return FileAttachment(data=data, filename=Path(path).name)
 
 
 def _is_ip_or_localhost(host: str) -> bool:

@@ -28,7 +28,9 @@ RUN uv sync --no-dev --no-install-project
 COPY aug/ ./aug/
 
 # Install the project itself, then hand ownership to appuser
-RUN uv sync --no-dev && chown -R appuser:appuser /app
+RUN uv sync --no-dev && \
+    mkdir -p /app/browser-downloads && \
+    chown -R appuser:appuser /app
 
 USER appuser
 

@@ -78,8 +78,11 @@ def parse_event(event: StreamEvent) -> AgentEvent | None:
         )
     if kind == "on_tool_end":
         raw: Any = event["data"].get("output")
-        if isinstance(raw, (ToolOutput, str)) or raw is None:
-            output: ToolOutput | str | None = raw
+        artifact = getattr(raw, "artifact", None)
+        if isinstance(artifact, ToolOutput):
+            output: ToolOutput | str | None = artifact
+        elif isinstance(raw, (ToolOutput, str)) or raw is None:
+            output = raw
         else:
             output = str(raw)
         return ToolEndEvent(
