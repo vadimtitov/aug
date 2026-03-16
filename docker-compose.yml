@@ -2,11 +2,12 @@ services:
   aug:
     build: .
     ports:
-      - "8000:8000"
+      - "8012:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://aug:password@postgres:5432/aug
       HUSHED_DIR: /app/data/.hushed
       BROWSER_CDP_URL: http://chromium:9222
+      BASE_URL: ${BASE_URL:-http://YOUR_HOST:8012}
     env_file: .env
     volumes:
       - ./aug:/app/aug

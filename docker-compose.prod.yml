@@ -26,7 +26,10 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ALLOWED_CHAT_IDS: ${TELEGRAM_ALLOWED_CHAT_IDS:-}
       BRAVE_API_KEY: ${BRAVE_API_KEY:-}
+      GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID:-}
+      GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET:-}
       BROWSER_CDP_URL: http://chromium:9222
+      BASE_URL: ${BASE_URL:-http://YOUR_HOST:8012}
       DEBUG: ${DEBUG:-false}
     ports:
       - "8012:8000"
@@ -44,6 +47,8 @@ services:
       hushed add DATABASE_URL $$DATABASE_URL &&
       hushed add TELEGRAM_BOT_TOKEN $$TELEGRAM_BOT_TOKEN &&
       hushed add BRAVE_API_KEY $$BRAVE_API_KEY &&
+      hushed add GMAIL_CLIENT_ID $$GMAIL_CLIENT_ID &&
+      hushed add GMAIL_CLIENT_SECRET $$GMAIL_CLIENT_SECRET &&
       exec hushed run -- uvicorn aug.app:app --host 0.0.0.0 --port 8000
       "
 

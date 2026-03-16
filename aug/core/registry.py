@@ -10,6 +10,7 @@ from aug.core.prompts import LEGACY_SYSTEM_PROMPT
 from aug.core.tools.brave_search import brave_search
 from aug.core.tools.browser import browser
 from aug.core.tools.fetch_page import fetch_page
+from aug.core.tools.gmail import gmail_draft, gmail_read_thread, gmail_search, gmail_send
 from aug.core.tools.memory import forget, recall, remember, update_memory
 from aug.core.tools.note import note
 from aug.core.tools.run_bash import run_bash
@@ -66,6 +67,102 @@ _REGISTRY: dict[str, BaseAgent] = {
     "v3_gemini_pro": AugAgent(
         model="gemini-2.5-pro",
         tools=[brave_search, fetch_page, run_bash, note, browser],
+        temperature=1.0,
+        recursion_limit=100,
+    ),
+    "v4_claude": AugAgent(
+        model="claude-sonnet-4-6",
+        tools=[
+            brave_search,
+            fetch_page,
+            run_bash,
+            note,
+            browser,
+            gmail_search,
+            gmail_read_thread,
+            gmail_send,
+            gmail_draft,
+        ],
+        temperature=1.0,
+        recursion_limit=100,
+    ),
+    "v4_gemini_flash": AugAgent(
+        model="gemini-2.5-flash",
+        tools=[
+            brave_search,
+            fetch_page,
+            run_bash,
+            note,
+            browser,
+            gmail_search,
+            gmail_read_thread,
+            gmail_send,
+            gmail_draft,
+        ],
+        temperature=1.0,
+        recursion_limit=100,
+    ),
+    "v4_gemini_pro": AugAgent(
+        model="gemini-2.5-pro",
+        tools=[
+            brave_search,
+            fetch_page,
+            run_bash,
+            note,
+            browser,
+            gmail_search,
+            gmail_read_thread,
+            gmail_send,
+            gmail_draft,
+        ],
+        temperature=1.0,
+        recursion_limit=100,
+    ),
+    "v4_gpt4o": AugAgent(
+        model="gpt-4o",
+        tools=[
+            brave_search,
+            fetch_page,
+            run_bash,
+            note,
+            browser,
+            gmail_search,
+            gmail_read_thread,
+            gmail_send,
+            gmail_draft,
+        ],
+        temperature=1.0,
+        recursion_limit=100,
+    ),
+    "v4_gpt41": AugAgent(
+        model="gpt-4.1",
+        tools=[
+            brave_search,
+            fetch_page,
+            run_bash,
+            note,
+            browser,
+            gmail_search,
+            gmail_read_thread,
+            gmail_send,
+            gmail_draft,
+        ],
+        temperature=1.0,
+        recursion_limit=100,
+    ),
+    "v4_gpt51": AugAgent(
+        model="gpt-5.1",
+        tools=[
+            brave_search,
+            fetch_page,
+            run_bash,
+            note,
+            browser,
+            gmail_search,
+            gmail_read_thread,
+            gmail_send,
+            gmail_draft,
+        ],
         temperature=1.0,
         recursion_limit=100,
     ),
