@@ -41,6 +41,19 @@ class Settings(BaseSettings):
     # Brave Search (optional — tool is disabled if key is absent)
     BRAVE_API_KEY: str | None = None
 
+    # Gmail OAuth (optional — tool is disabled if absent)
+    GMAIL_CLIENT_ID: str | None = None
+    GMAIL_CLIENT_SECRET: str | None = None
+
+    # Base URL used for OAuth redirect URIs and auth links sent to users.
+    # Defaults to auto-detected LAN IP on port 8012.
+    BASE_URL: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def base_url(self) -> str:
+        return self.BASE_URL.rstrip("/")
+
     # Browser tool — CDP URL of the remote Chromium instance
     BROWSER_CDP_URL: str | None = None
 

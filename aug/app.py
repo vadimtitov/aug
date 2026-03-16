@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from aug.api.routers import chat, files, threads
+from aug.api.routers import chat, files, gmail_auth, threads
 from aug.config import get_settings
 from aug.core.consolidation import start_consolidation_scheduler
 from aug.core.memory import init_memory_files
@@ -94,6 +94,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router)
     app.include_router(threads.router)
     app.include_router(files.router)
+    app.include_router(gmail_auth.router)
 
     return app
 
