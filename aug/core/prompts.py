@@ -5,8 +5,20 @@ consolidation prompts, tool constraints — lives here as a named constant.
 Do not define prompt strings inline in other modules.
 """
 
+from textwrap import dedent
+
+from pydantic import BaseModel
+
 from aug.core.memory import MEMORY_DIR
 from aug.core.state import AgentState
+
+
+class InterfacePrompts(BaseModel):
+    """Interface-specific prompts injected into AgentState."""
+
+    interface_context: str
+    response_format: str
+
 
 # ---------------------------------------------------------------------------
 # System prompt builder
@@ -72,6 +84,9 @@ def build_system_prompt(state: AgentState) -> str:
     self_content = (
         f"The following is what you wrote about yourself:\n\n{self_md}" if self_md else ""
     )
+    prompts = INTERFACE_PROMPTS.get(state.interface)
+    interface_context = prompts.interface_context if prompts else ""
+    response_format = prompts.response_format if prompts else ""
     return "\n\n".join(
         [
             _section("structure", _STRUCTURE),
@@ -81,8 +96,8 @@ def build_system_prompt(state: AgentState) -> str:
             _section("user", _read("user.md")),
             _section("memory", _read("memory.md")),
             _section("notes", _read("notes.md")),
-            _section("interface", state.interface_context),
-            _section("response_format", state.response_format),
+            _section("interface", interface_context),
+            _section("response_format", response_format),
         ]
     )
 
@@ -225,42 +240,47 @@ Return the full updated files:
 
 
 # ---------------------------------------------------------------------------
-# Interface context injected into AgentState per frontend
+# Interface prompts — context and response format per frontend
 # ---------------------------------------------------------------------------
 
-TELEGRAM_INTERFACE_CONTEXT = (
-    "Telegram bot. Keep responses concise — there is a message length limit."
-)
+INTERFACE_PROMPTS: dict[str, InterfacePrompts] = {
+    "telegram": InterfacePrompts(
+        interface_context="Telegram bot. Keep responses concise — there is a message length limit.",
+        response_format=dedent("""\
+            Use HTML formatting only. Do NOT use Markdown syntax — no *asterisks*,
+            no _underscores_, no **double asterisks**, no # headers, no --- dividers.
+            It will appear as raw symbols to the user.
 
-TELEGRAM_RESPONSE_FORMAT = """\
-Use HTML formatting only. Do NOT use Markdown syntax — no *asterisks*,
-no _underscores_, no **double asterisks**, no # headers, no --- dividers.
-It will appear as raw symbols to the user.
+            Supported tags:
+            - <b>bold</b>
+            - <i>italic</i>
+            - <u>underline</u>
+            - <s>strikethrough</s>
+            - <code>inline code</code>
+            - <pre>code block</pre>
+            - <a href="URL">link text</a>
+            - <span class="tg-spoiler">spoiler</span>
+            - <blockquote>quote</blockquote>
 
-Supported tags:
-- <b>bold</b>
-- <i>italic</i>
-- <u>underline</u>
-- <s>strikethrough</s>
-- <code>inline code</code>
-- <pre>code block</pre>
-- <a href="URL">link text</a>
-- <span class="tg-spoiler">spoiler</span>
-- <blockquote>quote</blockquote>
+            In plain text, escape: & → &amp;  < → &lt;  > → &gt;
 
-In plain text, escape: & → &amp;  < → &lt;  > → &gt;
+            Tables are not supported. Use labeled lists instead:
 
-Tables are not supported. Use labeled lists instead:
+            WRONG:
+            | Name  | Price |
+            |-------|-------|
+            | Apple | £1.00 |
+            | Pear  | £0.80 |
 
-WRONG:
-| Name  | Price |
-|-------|-------|
-| Apple | £1.00 |
-| Pear  | £0.80 |
-
-CORRECT:
-<b>Apple</b> — £1.00
-<b>Pear</b> — £0.80"""
+            CORRECT:
+            <b>Apple</b> — £1.00
+            <b>Pear</b> — £0.80"""),
+    ),
+    "rest_api": InterfacePrompts(
+        interface_context="REST API. Markdown is supported.",
+        response_format="",
+    ),
+}
 
 # ---------------------------------------------------------------------------
 # Browser tool constraints appended to browser-use system prompt

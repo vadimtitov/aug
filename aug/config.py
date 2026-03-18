@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     GMAIL_CLIENT_ID: str | None = None
     GMAIL_CLIENT_SECRET: str | None = None
 
+    # Image generation via LiteLLM proxy
+    IMAGE_GEN_MODEL: str = "dall-e-3"
+
+    # Portainer (optional — portainer tools disabled if absent)
+    PORTAINER_URL: str | None = None
+    PORTAINER_API_TOKEN: str | None = None
+    PORTAINER_ENDPOINT_ID: int = 1
+
     # Base URL used for OAuth redirect URIs and auth links sent to users.
     # Defaults to auto-detected LAN IP on port 8012.
     BASE_URL: str = ""

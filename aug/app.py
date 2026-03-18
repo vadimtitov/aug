@@ -16,13 +16,16 @@ import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # noqa: PLC0415
 
+from aug.api.interfaces.telegram import TelegramInterface
 from aug.api.routers import chat, files, gmail_auth, threads
 from aug.config import get_settings
 from aug.core.consolidation import start_consolidation_scheduler
 from aug.core.memory import init_memory_files
 from aug.utils.db import create_pool
 from aug.utils.logging import configure_logging
+from aug.utils.reminders import start_reminder_loop
 from aug.utils.storage import LocalFileStorage
 
 logger = logging.getLogger(__name__)
@@ -35,7 +38,6 @@ async def _checkpointer_context(dsn: str):
     Import is deferred so the module loads without libpq (tests mock this).
     ``from_conn_string`` returns a context manager in langgraph-checkpoint-postgres 2+.
     """
-    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # noqa: PLC0415
 
     async with AsyncPostgresSaver.from_conn_string(dsn) as checkpointer:
         await checkpointer.setup()
@@ -62,17 +64,20 @@ async def lifespan(app: FastAPI):
         # File storage
         app.state.storage = LocalFileStorage()
 
-        # Optional Telegram bot (polling)
-        from aug.api.interfaces.telegram import TelegramInterface
+        # Interface registry — keyed by interface name, used for proactive notifications
+        app.state.interfaces = {}
 
         telegram = TelegramInterface(checkpointer)
         await telegram.start_polling(app)
 
         await start_consolidation_scheduler()
 
+        reminder_task = start_reminder_loop(app)
+
         logger.info("AUG startup complete.")
         yield
 
+        reminder_task.cancel()
         await telegram.stop_polling(app)
 
     # Shutdown

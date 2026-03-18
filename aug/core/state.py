@@ -15,13 +15,14 @@ class AgentState(BaseModel):
     thread_id:     Opaque identifier propagated from the API layer.
     system_prompt: Built dynamically by preprocess(); read by respond().
                    Empty by default — respond() skips it if not set.
+    interface:     The frontend surface ("telegram", "rest_api", "webhook", …).
+                   Used to look up interface-specific prompts at runtime.
     """
 
     messages: Annotated[list[AnyMessage], add_messages] = []
     thread_id: str = ""
     system_prompt: str = ""
-    interface_context: str = ""  # injected by the client surface
-    response_format: str = ""  # injected by the client surface
+    interface: str = ""
 
     def model_dump(self, **kwargs):
         kwargs.setdefault("exclude_unset", True)

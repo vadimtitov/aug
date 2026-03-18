@@ -7,7 +7,7 @@ from langchain_core.tools import BaseTool
 
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.llm import build_chat_model
-from aug.core.prompts import build_system_prompt
+from aug.core.prompts import INTERFACE_PROMPTS, build_system_prompt
 from aug.core.state import AgentState, AgentStateUpdate
 
 
@@ -52,7 +52,9 @@ class ChatAgent(BaseAgent):
         ).bind_tools(self.tools)
 
     def _build_system_prompt(self, state: AgentState) -> str:
-        parts = [self._system_prompt, state.interface_context]
+        prompts = INTERFACE_PROMPTS.get(state.interface)
+        interface_context = prompts.interface_context if prompts else ""
+        parts = [self._system_prompt, interface_context]
         return "\n\n".join(p for p in parts if p)
 
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
