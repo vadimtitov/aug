@@ -13,6 +13,7 @@ import io
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from typing import Literal
 
 import httpx
 from langchain_core.messages import HumanMessage
@@ -25,6 +26,7 @@ from aug.config import get_settings
 from aug.core.events import AgentEvent, ChatModelStreamEvent
 from aug.core.registry import get_agent
 from aug.core.state import AgentState
+from aug.utils.notify import register_notification_target
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +59,13 @@ ContentPart = TextContent | AudioContent | ImageContent | LocationContent
 
 
 class IncomingMessage(BaseModel):
+    """Incoming message after translation from platform-specific input."""
+
     parts: list[ContentPart]
-    interface_context: str
-    response_format: str
+    interface: Literal["telegram", "rest_api"]
+    sender_id: str
     thread_id: str
-    agent_name: str
+    agent_version: str
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +82,13 @@ class BaseInterface[ContextT](ABC):
         """Translate platform-specific input into a message.
 
         Return None to silently ignore the input (e.g. unauthorized sender).
+        """
+
+    @abstractmethod
+    async def send_notification(self, target_id: str, text: str) -> None:
+        """Send a proactive message to a user outside of a request/response cycle.
+
+        Must raise on failure so callers (e.g. reminder loop) can retry.
         """
 
     async def send_stream(self, stream: AsyncIterator[AgentEvent], context: ContextT) -> None:
@@ -101,6 +112,7 @@ class BaseInterface[ContextT](ABC):
         incoming = await self.receive_message(context)
         if incoming is None:
             return
+        register_notification_target(incoming.thread_id, incoming.interface, incoming.sender_id)
         content = await _preprocess(incoming.parts)
         stream = _stream_agent(content, incoming, self._checkpointer)
         await self.send_stream(stream, context)
@@ -142,12 +154,11 @@ def _stream_agent(
     message: IncomingMessage,
     checkpointer: BaseCheckpointSaver,
 ) -> AsyncIterator[AgentEvent]:
-    agent = get_agent(message.agent_name)
+    agent = get_agent(message.agent_version)
     state = AgentState(
         messages=[HumanMessage(content=content)],
         thread_id=message.thread_id,
-        interface_context=message.interface_context,
-        response_format=message.response_format,
+        interface=message.interface,
     )
     config: RunnableConfig = {"configurable": {"thread_id": message.thread_id}}
     return agent.astream_events(state, config, checkpointer)

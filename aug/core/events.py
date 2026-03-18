@@ -50,6 +50,7 @@ class ToolEndEvent:
     run_id: str
     tool_name: str
     output: ToolOutput | str | None
+    error: bool = False
 
 
 @dataclass
@@ -91,6 +92,7 @@ def parse_event(event: StreamEvent) -> AgentEvent | None:
             run_id=event["run_id"],
             tool_name=event["name"],
             output=output,
+            error=getattr(raw, "status", None) == "error",
         )
     if kind == "on_custom_event" and event["name"] == _TOOL_PROGRESS:
         return ToolProgressEvent(

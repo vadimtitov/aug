@@ -25,6 +25,29 @@ CREATE TABLE IF NOT EXISTS threads (
 );
 """
 
+_CREATE_REMINDERS_TABLE = """
+CREATE TABLE IF NOT EXISTS reminders (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    message           TEXT NOT NULL,
+    trigger_at        TIMESTAMPTZ NOT NULL,
+    fired             BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    notification_interface  TEXT NOT NULL DEFAULT '',
+    notification_target     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS reminders_pending_idx
+    ON reminders (trigger_at) WHERE fired = FALSE;
+"""
+
+# Idempotent migrations — add columns introduced after initial schema creation.
+_MIGRATE_REMINDERS_COLUMNS = """
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS notification_interface TEXT NOT NULL DEFAULT '';
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS notification_target     TEXT NOT NULL DEFAULT '';
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS retry_count   INTEGER   NOT NULL DEFAULT 0;
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS last_error    TEXT;
+"""
+
 
 def _strip_driver(url: str) -> str:
     """Convert ``postgresql+asyncpg://...`` → ``postgresql://...`` for asyncpg."""
@@ -49,4 +72,6 @@ async def _ensure_schema(pool: asyncpg.Pool) -> None:
     """Create application tables if they don't exist yet."""
     async with pool.acquire() as conn:
         await conn.execute(_CREATE_THREADS_TABLE)
+        await conn.execute(_CREATE_REMINDERS_TABLE)
+        await conn.execute(_MIGRATE_REMINDERS_COLUMNS)
     logger.debug("DB schema verified.")

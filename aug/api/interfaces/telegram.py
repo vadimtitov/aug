@@ -51,11 +51,7 @@ from aug.core.events import (
     ToolProgressEvent,
     ToolStartEvent,
 )
-from aug.core.prompts import (
-    TELEGRAM_INTERFACE_CONTEXT,
-    TELEGRAM_RESPONSE_FORMAT,
-    build_system_prompt,
-)
+from aug.core.prompts import build_system_prompt
 from aug.core.registry import list_agents
 from aug.core.state import AgentState
 from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
@@ -73,6 +69,20 @@ _TOOL_NAMES = {
     "update_memory": "Memory",
     "forget": "Forget",
     "browser": "Browser",
+    "note": "Note",
+    "gmail_search": "Gmail",
+    "gmail_read_thread": "Gmail",
+    "gmail_send": "Send email",
+    "gmail_draft": "Draft email",
+    "respond_with_file": "Send file",
+    "generate_image": "Generate image",
+    "portainer_list_containers": "Portainer",
+    "portainer_container_logs": "Portainer logs",
+    "portainer_container_action": "Portainer action",
+    "portainer_list_stacks": "Portainer stacks",
+    "portainer_deploy_stack": "Portainer deploy",
+    "portainer_stack_action": "Portainer stack",
+    "set_reminder": "Set reminder",
 }
 _ARG_TRUNCATE = 50
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
@@ -82,6 +92,7 @@ _SECRET_NAME, _SECRET_VALUE = range(2)
 class TelegramInterface(BaseInterface[Update]):
     def __init__(self, checkpointer: BaseCheckpointSaver) -> None:
         super().__init__(checkpointer)
+        self._bot_app = None
 
     # ------------------------------------------------------------------
     # BaseInterface implementation
@@ -104,6 +115,11 @@ class TelegramInterface(BaseInterface[Update]):
             parts.append(ImageContent(data=bytes(await file.download_as_bytearray())))
             if msg.caption:
                 parts.append(TextContent(text=msg.caption))
+        elif msg.sticker:
+            file = await msg.sticker.get_file()
+            parts.append(ImageContent(data=bytes(await file.download_as_bytearray())))
+            if msg.sticker.emoji:
+                parts.append(TextContent(text=f"[sticker: {msg.sticker.emoji}]"))
         elif msg.location:
             parts.append(
                 LocationContent(latitude=msg.location.latitude, longitude=msg.location.longitude)
@@ -118,10 +134,12 @@ class TelegramInterface(BaseInterface[Update]):
 
         return IncomingMessage(
             parts=parts,
-            interface_context=TELEGRAM_INTERFACE_CONTEXT,
-            response_format=TELEGRAM_RESPONSE_FORMAT,
+            interface="telegram",
+            sender_id=str(chat_id),
             thread_id=_thread_id(chat_id),
-            agent_name=get_setting("telegram", "chats", str(chat_id), "agent", default="default"),
+            agent_version=get_setting(
+                "telegram", "chats", str(chat_id), "agent", default="default"
+            ),
         )
 
     async def send_stream(self, stream: AsyncIterator[AgentEvent], context: Update) -> None:
@@ -184,7 +202,9 @@ class TelegramInterface(BaseInterface[Update]):
                         if tool_run_id:
                             tool_name, args, tool_msg, _, step_holder = tool_msgs[tool_run_id]
                             step_holder[0] = step
-                    case ToolEndEvent(run_id=run_id, tool_name=tool_name, output=output):
+                    case ToolEndEvent(
+                        run_id=run_id, tool_name=tool_name, output=output, error=error
+                    ):  # noqa: E501
                         entry = tool_msgs.pop(run_id, None)
                         progress_index = {
                             pid: rid for pid, rid in progress_index.items() if rid != run_id
@@ -194,7 +214,7 @@ class TelegramInterface(BaseInterface[Update]):
                             task.cancel()
                             try:
                                 await tool_msg.edit_text(  # type: ignore[union-attr]
-                                    _format_tool_call(tool_name, args, done=True),
+                                    _format_tool_call(tool_name, args, done=True, error=error),
                                     parse_mode="HTML",
                                     link_preview_options=_NO_PREVIEW,
                                 )
@@ -272,17 +292,23 @@ class TelegramInterface(BaseInterface[Update]):
         bot_app.add_handler(MessageHandler(filters.VOICE, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.PHOTO, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.LOCATION, self._handle_input))
+        bot_app.add_handler(MessageHandler(filters.Sticker.ALL, self._handle_input))
         return bot_app
+
+    async def send_notification(self, target_id: str, text: str) -> None:
+        if not self._bot_app:
+            raise RuntimeError("Telegram bot is not running")
+        await self._bot_app.bot.send_message(chat_id=int(target_id), text=text)
 
     async def start_polling(self, app) -> None:
         """Start the bot and begin polling. Called from FastAPI lifespan."""
         if not get_settings().TELEGRAM_BOT_TOKEN:
             logger.info("TELEGRAM_BOT_TOKEN not set — Telegram bot disabled.")
             return
-        bot_app = self.build_bot()
-        app.state.telegram = bot_app
-        await bot_app.initialize()
-        await bot_app.bot.set_my_commands(
+        self._bot_app = self.build_bot()
+        app.state.interfaces["telegram"] = self
+        await self._bot_app.initialize()
+        await self._bot_app.bot.set_my_commands(
             [
                 ("version", "Switch agent version"),
                 ("secret", "Store a secret"),
@@ -290,18 +316,17 @@ class TelegramInterface(BaseInterface[Update]):
                 ("prompt", "Export current system prompt as a file"),
             ]
         )
-        await bot_app.start()
-        await bot_app.updater.start_polling()
+        await self._bot_app.start()
+        await self._bot_app.updater.start_polling()
         logger.info("Telegram bot started (polling).")
 
     async def stop_polling(self, app) -> None:
         """Gracefully stop the bot. Called from FastAPI lifespan shutdown."""
-        bot_app = getattr(app.state, "telegram", None)
-        if bot_app is None:
+        if not self._bot_app:
             return
-        await bot_app.updater.stop()
-        await bot_app.stop()
-        await bot_app.shutdown()
+        await self._bot_app.updater.stop()
+        await self._bot_app.stop()
+        await self._bot_app.shutdown()
         logger.info("Telegram bot stopped.")
 
     # ------------------------------------------------------------------
@@ -376,8 +401,7 @@ class TelegramInterface(BaseInterface[Update]):
         state = AgentState(
             messages=[],
             thread_id=_thread_id(chat_id),
-            interface_context=TELEGRAM_INTERFACE_CONTEXT,
-            response_format=TELEGRAM_RESPONSE_FORMAT,
+            interface="telegram",
         )
         prompt_text = build_system_prompt(state)
         file = io.BytesIO(prompt_text.encode())
@@ -441,8 +465,10 @@ def _thread_id(chat_id: int) -> str:
     return f"tg-{chat_id}-{session}"
 
 
-def _format_tool_call(tool_name: str, args: dict, done: bool, spin: int = 0) -> str:
-    icon = "🟢" if done else _SPINNER[spin % len(_SPINNER)]
+def _format_tool_call(
+    tool_name: str, args: dict, done: bool, spin: int = 0, error: bool = False
+) -> str:  # noqa: E501
+    icon = ("❌" if error else "🟢") if done else _SPINNER[spin % len(_SPINNER)]
     display = _TOOL_NAMES.get(tool_name, tool_name)
     if tool_name == "fetch_page":
         urls = args.get("urls", [])
@@ -452,6 +478,9 @@ def _format_tool_call(tool_name: str, args: dict, done: bool, spin: int = 0) -> 
             f'<a href="{_escape(url)}">{_escape(urlparse(url).netloc or url)}</a>' for url in urls
         )
         return f"{icon} <code>{_escape(display)}(</code>{links}<code>)</code>"
+    if tool_name == "respond_with_file":
+        filename = _escape(args.get("filename", "file"))
+        return f"{icon} <code>{_escape(display)}({filename})</code>"
     inner = _format_args(args)
     call = f"{display}({inner})" if inner else f"{display}()"
     return f"{icon} <code>{_escape(call)}</code>"
