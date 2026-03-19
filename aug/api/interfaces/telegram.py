@@ -213,7 +213,7 @@ class TelegramInterface(BaseInterface[Update]):
                             step_holder[0] = step
                     case ToolEndEvent(
                         run_id=run_id, tool_name=tool_name, output=output, error=error
-                    ):  # noqa: E501
+                    ):
                         entry = tool_msgs.pop(run_id, None)
                         progress_index = {
                             pid: rid for pid, rid in progress_index.items() if rid != run_id
@@ -476,7 +476,7 @@ def _thread_id(chat_id: int) -> str:
 
 def _format_tool_call(
     tool_name: str, args: dict, done: bool, spin: int = 0, error: bool = False
-) -> str:  # noqa: E501
+) -> str:
     icon = ("❌" if error else "🟢") if done else _SPINNER[spin % len(_SPINNER)]
     display = _TOOL_NAMES.get(tool_name, tool_name)
     if tool_name == "fetch_page":

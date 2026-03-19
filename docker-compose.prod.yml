@@ -17,6 +17,7 @@ services:
   aug:
     build: .
     restart: unless-stopped
+    stop_grace_period: 30s
     environment:
       HUSHED_DIR: /app/data/.hushed
       API_KEY: ${API_KEY}
@@ -54,7 +55,7 @@ services:
       hushed add GMAIL_CLIENT_ID $$GMAIL_CLIENT_ID &&
       hushed add GMAIL_CLIENT_SECRET $$GMAIL_CLIENT_SECRET &&
       hushed add PORTAINER_API_TOKEN $$PORTAINER_API_TOKEN &&
-      exec hushed run -- uvicorn aug.app:app --host 0.0.0.0 --port 8000
+      exec hushed run -- uvicorn aug.app:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 25
       "
 
   chromium:

@@ -9,6 +9,7 @@ from aug.core.agents.base_agent import BaseAgent
 from aug.core.llm import build_chat_model
 from aug.core.prompts import INTERFACE_PROMPTS, build_system_prompt
 from aug.core.state import AgentState, AgentStateUpdate
+from aug.utils.logging import log_token_usage
 
 
 class ChatAgent(BaseAgent):
@@ -65,6 +66,7 @@ class ChatAgent(BaseAgent):
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
         response: AIMessage = self._llm.invoke(messages)
+        log_token_usage(response)
         return AgentStateUpdate(messages=[response])
 
 
@@ -128,6 +130,7 @@ class AugAgent(BaseAgent):
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
         response: AIMessage = self._llm.invoke(messages)
+        log_token_usage(response)
         return AgentStateUpdate(messages=[response])
 
 

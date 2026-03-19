@@ -43,9 +43,10 @@ CREATE INDEX IF NOT EXISTS reminders_pending_idx
 _MIGRATE_REMINDERS_COLUMNS = """
 ALTER TABLE reminders ADD COLUMN IF NOT EXISTS notification_interface TEXT NOT NULL DEFAULT '';
 ALTER TABLE reminders ADD COLUMN IF NOT EXISTS notification_target     TEXT NOT NULL DEFAULT '';
-ALTER TABLE reminders ADD COLUMN IF NOT EXISTS retry_count   INTEGER   NOT NULL DEFAULT 0;
-ALTER TABLE reminders ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;
-ALTER TABLE reminders ADD COLUMN IF NOT EXISTS last_error    TEXT;
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS retry_count      INTEGER     NOT NULL DEFAULT 0;
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS next_retry_at    TIMESTAMPTZ;
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS last_error       TEXT;
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS dead_lettered_at TIMESTAMPTZ;
 """
 
 
@@ -62,8 +63,16 @@ async def create_pool(database_url: str) -> asyncpg.Pool:
             ``postgresql+asyncpg://user:password@host:5432/dbname``.
     """
     dsn = _strip_driver(database_url)
-    pool: asyncpg.Pool = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=10)
+    pool: asyncpg.Pool = await asyncpg.create_pool(
+        dsn=dsn,
+        min_size=2,
+        max_size=15,
+        command_timeout=30,
+        server_settings={"application_name": "aug"},
+    )
     logger.info("Postgres pool created — %s", dsn.split("@")[-1])
+    async with pool.acquire() as conn:
+        await conn.fetchval("SELECT 1")
     await _ensure_schema(pool)
     return pool
 

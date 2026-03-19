@@ -14,6 +14,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Literal
+from uuid import uuid4
 
 import httpx
 from langchain_core.messages import HumanMessage
@@ -26,6 +27,7 @@ from aug.config import get_settings
 from aug.core.events import AgentEvent, ChatModelStreamEvent
 from aug.core.registry import get_agent
 from aug.core.state import AgentState
+from aug.utils.logging import set_correlation_id
 from aug.utils.notify import register_notification_target
 
 logger = logging.getLogger(__name__)
@@ -109,6 +111,7 @@ class BaseInterface[ContextT](ABC):
 
     async def run(self, context: ContextT) -> None:
         """Full pipeline: receive → preprocess → agent → deliver."""
+        set_correlation_id(str(uuid4())[:8])
         incoming = await self.receive_message(context)
         if incoming is None:
             return

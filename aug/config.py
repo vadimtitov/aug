@@ -2,7 +2,7 @@
 
 from functools import lru_cache
 
-from pydantic import computed_field
+from pydantic import computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -64,6 +64,18 @@ class Settings(BaseSettings):
 
     # Browser tool — CDP URL of the remote Chromium instance
     BROWSER_CDP_URL: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_paired_settings(self) -> "Settings":
+        if bool(self.GMAIL_CLIENT_ID) != bool(self.GMAIL_CLIENT_SECRET):
+            raise ValueError(
+                "GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET must both be set or both absent"
+            )
+        if bool(self.PORTAINER_URL) != bool(self.PORTAINER_API_TOKEN):
+            raise ValueError(
+                "PORTAINER_URL and PORTAINER_API_TOKEN must both be set or both absent"
+            )
+        return self
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
