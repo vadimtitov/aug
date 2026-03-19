@@ -13,6 +13,7 @@ via ``request.app.state.<resource>``.
 
 import logging
 import re
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -29,6 +30,15 @@ from aug.utils.reminders import start_reminder_loop
 from aug.utils.storage import LocalFileStorage
 
 logger = logging.getLogger(__name__)
+
+_BANNER = r"""
+   █████╗ ██╗   ██╗ ██████╗
+  ██╔══██╗██║   ██║██╔════╝
+  ███████║██║   ██║██║  ███╗
+  ██╔══██║██║   ██║██║   ██║
+  ██║  ██║╚██████╔╝╚██████╔╝
+  ╚═╝  ╚═╝ ╚═════╝  ╚═════╝
+"""
 
 
 @asynccontextmanager
@@ -74,6 +84,7 @@ async def lifespan(app: FastAPI):
 
         reminder_task = start_reminder_loop(app)
 
+        sys.stderr.write(_BANNER)
         logger.info("AUG startup complete.")
         yield
 
