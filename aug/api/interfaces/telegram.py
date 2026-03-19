@@ -192,6 +192,15 @@ class TelegramInterface(BaseInterface[Update]):
                         tool_msgs[run_id] = (tool_name, args, tool_msg, spin, step_holder)
                         for pid in parent_ids:
                             progress_index[pid] = run_id
+                        if stream_msg is not None and accumulated_text:
+                            try:
+                                await stream_msg.edit_text(
+                                    _to_html(accumulated_text),
+                                    parse_mode="HTML",
+                                    link_preview_options=_NO_PREVIEW,
+                                )
+                            except Exception:
+                                pass
                         accumulated_text = ""
                         stream_msg = None
                     case ToolProgressEvent(parent_ids=parent_ids, step=step) if step:
