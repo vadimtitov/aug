@@ -278,6 +278,18 @@ _REGISTRY.update(
             temperature=1.0,
             recursion_limit=100,
         ),
+        "v7_gpt53": AugAgent(
+            model="gpt-5.3-chat-latest",
+            tools=_V7_TOOLS,
+            temperature=1.0,
+            recursion_limit=100,
+        ),
+        "v7_gpt54": AugAgent(
+            model="gpt-5.4",
+            tools=_V7_TOOLS,
+            temperature=1.0,
+            recursion_limit=100,
+        ),
     }
 )
 
