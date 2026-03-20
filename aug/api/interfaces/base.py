@@ -17,10 +17,12 @@ from typing import Literal
 from uuid import uuid4
 
 import httpx
+import psycopg
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from openai import AsyncOpenAI
+from langgraph.errors import GraphRecursionError
+from openai import AsyncOpenAI, RateLimitError
 from pydantic import BaseModel
 
 from aug.config import get_settings
@@ -118,7 +120,27 @@ class BaseInterface[ContextT](ABC):
         register_notification_target(incoming.thread_id, incoming.interface, incoming.sender_id)
         content = await _preprocess(incoming.parts)
         stream = _stream_agent(content, incoming, self._checkpointer)
-        await self.send_stream(stream, context)
+        try:
+            await self.send_stream(stream, context)
+        except psycopg.OperationalError:
+            logger.exception("DB connection lost")
+            await self.send_message(
+                "Database connection lost. Please try again in a moment.", context
+            )
+        except RateLimitError:
+            logger.warning("LLM rate limit hit")
+            await self.send_message(
+                "Context window is full. Use /clear to start a fresh conversation.", context
+            )
+        except GraphRecursionError:
+            logger.warning("Agent hit recursion limit")
+            await self.send_message(
+                "The agent got stuck in a loop and was stopped. Try rephrasing your request.",
+                context,
+            )
+        except Exception:
+            logger.exception("Unhandled error in agent pipeline")
+            await self.send_message("Sorry, something went wrong.", context)
 
 
 # ---------------------------------------------------------------------------

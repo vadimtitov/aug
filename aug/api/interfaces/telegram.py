@@ -20,8 +20,6 @@ from urllib.parse import urlparse
 
 import markdown as md
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.errors import GraphRecursionError
-from openai import RateLimitError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Update
 from telegram.constants import ChatAction
 from telegram.error import BadRequest, RetryAfter
@@ -254,22 +252,12 @@ class TelegramInterface(BaseInterface[Update]):
                         logger.warning("Failed to send HTML, falling back to plain", exc_info=True)
                         await msg.reply_text(accumulated_text, link_preview_options=_NO_PREVIEW)  # type: ignore[union-attr]
 
-        except RateLimitError:
-            logger.warning("Rate limit / context too large")
-            await msg.reply_text(  # type: ignore[union-attr]
-                "Context window is full. Use /clear to start a fresh conversation."
-            )
-        except GraphRecursionError:
-            logger.warning("Agent hit recursion limit")
-            await msg.reply_text(  # type: ignore[union-attr]
-                "The agent got stuck in a loop and was stopped. Try rephrasing your request."
-            )
-        except Exception as e:
-            logger.exception("Error handling Telegram message")
-            await msg.reply_text(f"Sorry, something went wrong: {e}")  # type: ignore[union-attr]
         finally:
             stop_typing.set()
             typing_task.cancel()
+
+    async def send_message(self, message: str, context: Update) -> None:
+        await context.message.reply_text(message)  # type: ignore[union-attr]
 
     # ------------------------------------------------------------------
     # Lifecycle

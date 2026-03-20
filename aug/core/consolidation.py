@@ -150,17 +150,20 @@ async def _scheduler_loop() -> None:
     try:
         while True:
             await asyncio.sleep(3600)
-            now = datetime.now(UTC)
-            today = now.date()
+            try:
+                now = datetime.now(UTC)
+                today = now.date()
 
-            last_light = get_setting("consolidation", "last_light_run")
-            if now.hour >= 3 and _iso_date(last_light) != today:
-                await run_light_consolidation()
+                last_light = get_setting("consolidation", "last_light_run")
+                if now.hour >= 3 and _iso_date(last_light) != today:
+                    await run_light_consolidation()
 
-            this_week = today.isocalendar()[1]
-            last_deep = get_setting("consolidation", "last_deep_run")
-            if now.weekday() == 6 and now.hour >= 4 and _iso_week(last_deep) != this_week:
-                await run_deep_consolidation()
+                this_week = today.isocalendar()[1]
+                last_deep = get_setting("consolidation", "last_deep_run")
+                if now.weekday() == 6 and now.hour >= 4 and _iso_week(last_deep) != this_week:
+                    await run_deep_consolidation()
+            except Exception:
+                logger.exception("Consolidation error — will retry next cycle")
     except asyncio.CancelledError:
         logger.info("Consolidation scheduler shut down cleanly.")
 
