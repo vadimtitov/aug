@@ -9,6 +9,7 @@ Schema bootstrap:
     migrations (Alembic, Flyway, etc.).
 """
 
+import asyncio
 import logging
 import re
 
@@ -43,9 +44,10 @@ CREATE INDEX IF NOT EXISTS reminders_pending_idx
 _MIGRATE_REMINDERS_COLUMNS = """
 ALTER TABLE reminders ADD COLUMN IF NOT EXISTS notification_interface TEXT NOT NULL DEFAULT '';
 ALTER TABLE reminders ADD COLUMN IF NOT EXISTS notification_target     TEXT NOT NULL DEFAULT '';
-ALTER TABLE reminders ADD COLUMN IF NOT EXISTS retry_count   INTEGER   NOT NULL DEFAULT 0;
-ALTER TABLE reminders ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;
-ALTER TABLE reminders ADD COLUMN IF NOT EXISTS last_error    TEXT;
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS retry_count      INTEGER     NOT NULL DEFAULT 0;
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS next_retry_at    TIMESTAMPTZ;
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS last_error       TEXT;
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS dead_lettered_at TIMESTAMPTZ;
 """
 
 
@@ -57,15 +59,45 @@ def _strip_driver(url: str) -> str:
 async def create_pool(database_url: str) -> asyncpg.Pool:
     """Create and return an asyncpg connection pool.
 
+    Waits up to 90 seconds for Postgres to become ready before giving up.
+
     Args:
         database_url: Full connection URI, e.g.
             ``postgresql+asyncpg://user:password@host:5432/dbname``.
     """
     dsn = _strip_driver(database_url)
-    pool: asyncpg.Pool = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=10)
-    logger.info("Postgres pool created — %s", dsn.split("@")[-1])
+    await _wait_for_postgres(dsn)
+    pool: asyncpg.Pool = await asyncpg.create_pool(
+        dsn=dsn,
+        min_size=2,
+        max_size=15,
+        command_timeout=30,
+        server_settings={"application_name": "aug"},
+    )
     await _ensure_schema(pool)
+    logger.info("Postgres ready — %s", dsn.split("@")[-1])
     return pool
+
+
+async def _wait_for_postgres(dsn: str) -> None:
+    """Probe Postgres with exponential back-off until it accepts connections.
+
+    Gives up after 90 seconds and raises TimeoutError.
+    """
+    delay = 1.0
+    try:
+        async with asyncio.timeout(90):
+            while True:
+                try:
+                    conn = await asyncpg.connect(dsn=dsn)
+                    await conn.close()
+                    return
+                except Exception as exc:
+                    logger.warning("Postgres not ready — retrying in %.0fs (%s)", delay, exc)
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 10.0)
+    except TimeoutError:
+        raise RuntimeError("Postgres did not become ready within 90s") from None
 
 
 async def _ensure_schema(pool: asyncpg.Pool) -> None:

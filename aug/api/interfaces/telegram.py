@@ -20,8 +20,6 @@ from urllib.parse import urlparse
 
 import markdown as md
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.errors import GraphRecursionError
-from openai import RateLimitError
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Update
 from telegram.constants import ChatAction
 from telegram.error import BadRequest, RetryAfter
@@ -44,6 +42,7 @@ from aug.api.interfaces.base import (
     TextContent,
 )
 from aug.config import get_settings
+from aug.core.consolidation import run_deep_consolidation, run_light_consolidation
 from aug.core.events import (
     AgentEvent,
     ChatModelStreamEvent,
@@ -192,6 +191,15 @@ class TelegramInterface(BaseInterface[Update]):
                         tool_msgs[run_id] = (tool_name, args, tool_msg, spin, step_holder)
                         for pid in parent_ids:
                             progress_index[pid] = run_id
+                        if stream_msg is not None and accumulated_text:
+                            try:
+                                await stream_msg.edit_text(
+                                    _to_html(accumulated_text),
+                                    parse_mode="HTML",
+                                    link_preview_options=_NO_PREVIEW,
+                                )
+                            except Exception:
+                                pass
                         accumulated_text = ""
                         stream_msg = None
                     case ToolProgressEvent(parent_ids=parent_ids, step=step) if step:
@@ -204,7 +212,7 @@ class TelegramInterface(BaseInterface[Update]):
                             step_holder[0] = step
                     case ToolEndEvent(
                         run_id=run_id, tool_name=tool_name, output=output, error=error
-                    ):  # noqa: E501
+                    ):
                         entry = tool_msgs.pop(run_id, None)
                         progress_index = {
                             pid: rid for pid, rid in progress_index.items() if rid != run_id
@@ -245,22 +253,12 @@ class TelegramInterface(BaseInterface[Update]):
                         logger.warning("Failed to send HTML, falling back to plain", exc_info=True)
                         await msg.reply_text(accumulated_text, link_preview_options=_NO_PREVIEW)  # type: ignore[union-attr]
 
-        except RateLimitError:
-            logger.warning("Rate limit / context too large")
-            await msg.reply_text(  # type: ignore[union-attr]
-                "Context window is full. Use /clear to start a fresh conversation."
-            )
-        except GraphRecursionError:
-            logger.warning("Agent hit recursion limit")
-            await msg.reply_text(  # type: ignore[union-attr]
-                "The agent got stuck in a loop and was stopped. Try rephrasing your request."
-            )
-        except Exception as e:
-            logger.exception("Error handling Telegram message")
-            await msg.reply_text(f"Sorry, something went wrong: {e}")  # type: ignore[union-attr]
         finally:
             stop_typing.set()
             typing_task.cancel()
+
+    async def send_message(self, message: str, context: Update) -> None:
+        await context.message.reply_text(message)  # type: ignore[union-attr]
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -268,6 +266,7 @@ class TelegramInterface(BaseInterface[Update]):
 
     def build_bot(self) -> Application:
         bot_app = Application.builder().token(get_settings().TELEGRAM_BOT_TOKEN).build()  # type: ignore[arg-type]
+        bot_app.add_handler(CommandHandler("clear", self._handle_clear))
         bot_app.add_handler(
             ConversationHandler(
                 entry_points=[CommandHandler("secret", self._secret_start)],
@@ -282,9 +281,10 @@ class TelegramInterface(BaseInterface[Update]):
                 fallbacks=[],
             )
         )
-        bot_app.add_handler(CommandHandler("clear", self._handle_clear))
         bot_app.add_handler(CommandHandler("version", self._handle_version))
         bot_app.add_handler(CommandHandler("prompt", self._handle_prompt))
+        bot_app.add_handler(CommandHandler("consolidate", self._handle_consolidate))
+        bot_app.add_handler(CommandHandler("consolidate_deep", self._handle_consolidate_deep))
         bot_app.add_handler(
             CallbackQueryHandler(self._handle_version_callback, pattern=r"^version:")
         )
@@ -314,6 +314,8 @@ class TelegramInterface(BaseInterface[Update]):
                 ("secret", "Store a secret"),
                 ("clear", "Start a new conversation"),
                 ("prompt", "Export current system prompt as a file"),
+                ("consolidate", "Run memory consolidation now"),
+                ("consolidate_deep", "Run deep (weekly) memory consolidation now"),
             ]
         )
         await self._bot_app.start()
@@ -408,6 +410,33 @@ class TelegramInterface(BaseInterface[Update]):
         file.name = "system_prompt.txt"
         await update.message.reply_document(document=file, filename="system_prompt.txt")  # type: ignore[union-attr]
 
+    async def _handle_consolidate(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat_id = update.effective_chat.id  # type: ignore[union-attr]
+        if not _is_allowed(chat_id):
+            return
+        await update.message.reply_text("Running memory consolidation...")  # type: ignore[union-attr]
+        try:
+            ran = await run_light_consolidation()
+            msg = "Done." if ran else "Nothing to consolidate — no notes."
+            await update.message.reply_text(msg)  # type: ignore[union-attr]
+        except Exception:
+            logger.exception("Manual consolidation failed")
+            await update.message.reply_text("Consolidation failed — check logs.")  # type: ignore[union-attr]
+
+    async def _handle_consolidate_deep(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        chat_id = update.effective_chat.id  # type: ignore[union-attr]
+        if not _is_allowed(chat_id):
+            return
+        await update.message.reply_text("Running deep consolidation...")  # type: ignore[union-attr]
+        try:
+            await run_deep_consolidation()
+            await update.message.reply_text("Done.")  # type: ignore[union-attr]
+        except Exception:
+            logger.exception("Manual deep consolidation failed")
+            await update.message.reply_text("Deep consolidation failed — check logs.")  # type: ignore[union-attr]
+
     async def _secret_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         if not _is_allowed(update.effective_chat.id):  # type: ignore[union-attr]
             return ConversationHandler.END
@@ -467,7 +496,7 @@ def _thread_id(chat_id: int) -> str:
 
 def _format_tool_call(
     tool_name: str, args: dict, done: bool, spin: int = 0, error: bool = False
-) -> str:  # noqa: E501
+) -> str:
     icon = ("❌" if error else "🟢") if done else _SPINNER[spin % len(_SPINNER)]
     display = _TOOL_NAMES.get(tool_name, tool_name)
     if tool_name == "fetch_page":

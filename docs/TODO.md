@@ -1,5 +1,43 @@
 # TODO
 
+## Context compaction
+
+Long conversation threads accumulate context that balloons the prompt. Need a strategy to
+compact/summarise older messages without losing continuity. Options: sliding window,
+summarisation node in the graph, or a dedicated compaction step triggered at token threshold.
+
+---
+
+## Agent interruption
+
+Ability to interrupt the agent mid-run:
+- **Soft interrupt** — inject additional information while the agent is working (e.g. "actually
+  ignore X"). When would the agent see it? Likely only at the next tool-call boundary or after
+  the current LLM turn completes — need to think through the mechanics.
+- **Hard stop** — cancel the current run entirely. `/stop` command in Telegram is the obvious
+  UX. Requires hooking into LangGraph's cancellation or the underlying async task.
+
+---
+
+## Skills
+
+Something similar to Claude Code skills or OpenClaw skills. Community-generated skills are
+compelling (OpenClaw has a large library). Two angles:
+1. **User-defined / community skills** — load and execute named skill definitions.
+2. **Self-generated skills** — as part of the nightly consolidation process, the agent
+   identifies recurring task patterns and writes new skills for itself.
+
+---
+
+## Memory system overhaul
+
+Current memory dumps too much into the prompt; a lot of it is duplicated. Needs review:
+- Share the current system prompt with Claude Code and ask for suggested solutions.
+- Possible directions: retrieval-based memory (embed + similarity search instead of full
+  dump), tiered memory (hot/warm/cold), deduplication pass during consolidation.
+
+---
+
 ## Settings system redesign
 
 Replace the current `settings.json` / `get_setting` / `set_setting` implementation

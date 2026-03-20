@@ -38,13 +38,13 @@ def _model() -> str:
     return get_setting("consolidation", "model", default=_DEFAULT_MODEL)
 
 
-async def run_light_consolidation() -> None:
-    """Nightly pass: fold notes into memory.md and user.md."""
+async def run_light_consolidation() -> bool:
+    """Nightly pass: fold notes into context.md and user.md. Returns True if it ran."""
     notes = _read("notes.md")
     if not notes.strip():
         logger.info("Light consolidation: no notes, skipping.")
         _record("light")
-        return
+        return False
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     llm = build_chat_model(_model(), temperature=0.3)
@@ -54,8 +54,9 @@ async def run_light_consolidation() -> None:
             HumanMessage(
                 content=CONSOLIDATION_LIGHT_PROMPT.format(
                     notes=notes,
-                    memory=_read("memory.md"),
+                    context=_read("context.md"),
                     user=_read("user.md"),
+                    skills=_read("skills.md"),
                     now=now,
                 )
             ),
@@ -63,14 +64,17 @@ async def run_light_consolidation() -> None:
     )
 
     text = response.content
-    if updated := _extract("memory", text):
-        _write("memory.md", updated)
+    if updated := _extract("context", text):
+        _write("context.md", updated)
     if updated := _extract("user", text):
         _write("user.md", updated)
+    if updated := _extract("skills", text):
+        _write("skills.md", updated)
 
     _write("notes.md", "")
     _record("light")
     logger.info("Light consolidation complete.")
+    return True
 
 
 async def run_deep_consolidation() -> None:
@@ -85,8 +89,10 @@ async def run_deep_consolidation() -> None:
             HumanMessage(
                 content=CONSOLIDATION_DEEP_REFLECT_PROMPT.format(
                     self_md=_read("self.md"),
-                    memory=_read("memory.md"),
                     user=_read("user.md"),
+                    context=_read("context.md"),
+                    memory=_read("memory.md"),
+                    reflections=_read("reflections.md"),
                     notes=_read("notes.md"),
                     now=now,
                 )
@@ -105,6 +111,7 @@ async def run_deep_consolidation() -> None:
                     self_md=_read("self.md"),
                     memory=_read("memory.md"),
                     user=_read("user.md"),
+                    skills=_read("skills.md"),
                     now=now,
                 )
             ),
@@ -116,18 +123,23 @@ async def run_deep_consolidation() -> None:
         _write("memory.md", updated)
     if updated := _extract("user", text):
         _write("user.md", updated)
+    if updated := _extract("skills", text):
+        _write("skills.md", updated)
     if updated := _extract("self", text):
         _write("self.md", updated)
+    if new_reflection := _extract("new_reflection", text):
+        existing = _read("reflections.md")
+        _write("reflections.md", (existing + "\n\n" + new_reflection).strip())
 
     _write("notes.md", "")
     _record("deep")
     logger.info("Deep consolidation complete.")
 
 
-async def start_consolidation_scheduler() -> None:
+async def start_consolidation_scheduler() -> asyncio.Task:
     """Catch up on missed runs, then start the background scheduling loop."""
     await _catch_up()
-    asyncio.create_task(_scheduler_loop())
+    return asyncio.create_task(_scheduler_loop())
 
 
 async def _catch_up() -> None:
@@ -147,19 +159,25 @@ async def _catch_up() -> None:
 
 
 async def _scheduler_loop() -> None:
-    while True:
-        await asyncio.sleep(3600)
-        now = datetime.now(UTC)
-        today = now.date()
+    try:
+        while True:
+            await asyncio.sleep(3600)
+            try:
+                now = datetime.now(UTC)
+                today = now.date()
 
-        last_light = get_setting("consolidation", "last_light_run")
-        if now.hour >= 3 and _iso_date(last_light) != today:
-            await run_light_consolidation()
+                last_light = get_setting("consolidation", "last_light_run")
+                if now.hour >= 3 and _iso_date(last_light) != today:
+                    await run_light_consolidation()
 
-        this_week = today.isocalendar()[1]
-        last_deep = get_setting("consolidation", "last_deep_run")
-        if now.weekday() == 6 and now.hour >= 4 and _iso_week(last_deep) != this_week:
-            await run_deep_consolidation()
+                this_week = today.isocalendar()[1]
+                last_deep = get_setting("consolidation", "last_deep_run")
+                if now.weekday() == 6 and now.hour >= 4 and _iso_week(last_deep) != this_week:
+                    await run_deep_consolidation()
+            except Exception:
+                logger.exception("Consolidation error — will retry next cycle")
+    except asyncio.CancelledError:
+        logger.info("Consolidation scheduler shut down cleanly.")
 
 
 def _iso_date(iso: str | None):

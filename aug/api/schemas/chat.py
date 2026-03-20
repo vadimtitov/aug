@@ -9,9 +9,11 @@ class Attachment(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    thread_id: str = Field(..., description="UUID of the conversation thread.")
-    message: str = Field(..., description="User message text.")
-    agent: str = Field(default="default", description="Agent version string.")
+    thread_id: str = Field(
+        ..., max_length=128, pattern=r"^[\w\-]+$", description="Conversation thread ID."
+    )
+    message: str = Field(..., max_length=32_000, description="User message text.")
+    agent: str = Field(default="default", max_length=64, description="Agent version string.")
     attachments: list[Attachment] = Field(default_factory=list)
 
 

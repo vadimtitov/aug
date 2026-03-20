@@ -2,7 +2,9 @@
 
 import json
 import logging
+from uuid import uuid4
 
+import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
@@ -13,6 +15,7 @@ from aug.api.security import require_api_key
 from aug.core.events import ChatModelStreamEvent
 from aug.core.registry import get_agent, list_agents
 from aug.core.state import AgentState
+from aug.utils.logging import set_correlation_id, set_thread_id
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,8 @@ def _validate_agent(agent: str) -> None:
 @router.post("/invoke", response_model=ChatResponse)
 async def invoke(body: ChatRequest, request: Request) -> ChatResponse:
     """Run the agent and return the full response as JSON."""
+    set_correlation_id(str(uuid4())[:8])
+    set_thread_id(body.thread_id)
     _validate_agent(body.agent)
     checkpointer = _get_checkpointer(request)
     agent = get_agent(body.agent)
@@ -51,9 +56,16 @@ async def invoke(body: ChatRequest, request: Request) -> ChatResponse:
 
     logger.info("invoke thread=%s agent=%s", body.thread_id, body.agent)
     text = ""
-    async for event in agent.astream_events(state, config, checkpointer):
-        if isinstance(event, ChatModelStreamEvent) and event.delta:
-            text += event.delta
+    try:
+        async for event in agent.astream_events(state, config, checkpointer):
+            if isinstance(event, ChatModelStreamEvent) and event.delta:
+                text += event.delta
+    except psycopg.OperationalError as exc:
+        logger.exception("DB connection lost during invoke")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database connection lost. Please retry.",
+        ) from exc
 
     return ChatResponse(
         thread_id=body.thread_id,
@@ -66,6 +78,8 @@ async def invoke(body: ChatRequest, request: Request) -> ChatResponse:
 @router.post("/stream")
 async def stream(body: ChatRequest, request: Request) -> StreamingResponse:
     """Run the agent and stream the response as Server-Sent Events."""
+    set_correlation_id(str(uuid4())[:8])
+    set_thread_id(body.thread_id)
     _validate_agent(body.agent)
     checkpointer = _get_checkpointer(request)
     agent = get_agent(body.agent)
@@ -78,11 +92,16 @@ async def stream(body: ChatRequest, request: Request) -> StreamingResponse:
 
     async def event_generator():
         logger.info("stream thread=%s agent=%s", body.thread_id, body.agent)
-
-        async for event in agent.astream_events(state, config, checkpointer):
-            match event:
-                case ChatModelStreamEvent(delta=delta) if delta:
-                    yield f"event: text_delta\ndata: {json.dumps({'delta': delta})}\n\n"
+        try:
+            async for event in agent.astream_events(state, config, checkpointer):
+                match event:
+                    case ChatModelStreamEvent(delta=delta) if delta:
+                        yield f"event: text_delta\ndata: {json.dumps({'delta': delta})}\n\n"
+        except psycopg.OperationalError:
+            logger.exception("DB connection lost during stream")
+            detail = json.dumps({"detail": "Database connection lost. Please retry."})
+            yield f"event: error\ndata: {detail}\n\n"
+            return
 
         done_payload = json.dumps({"thread_id": body.thread_id, "agent": body.agent})
         yield f"event: done\ndata: {done_payload}\n\n"

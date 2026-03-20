@@ -1,5 +1,6 @@
 """General-purpose configurable chat agent."""
 
+import logging
 from datetime import UTC, datetime
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
@@ -9,6 +10,9 @@ from aug.core.agents.base_agent import BaseAgent
 from aug.core.llm import build_chat_model
 from aug.core.prompts import INTERFACE_PROMPTS, build_system_prompt
 from aug.core.state import AgentState, AgentStateUpdate
+from aug.utils.logging import log_token_usage
+
+logger = logging.getLogger(__name__)
 
 
 class ChatAgent(BaseAgent):
@@ -42,6 +46,7 @@ class ChatAgent(BaseAgent):
         super().__init__()
         self.tools = tools or []
         self._system_prompt = system_prompt
+        self._model_name = model
         self._llm = build_chat_model(
             model,
             temperature=temperature,
@@ -64,7 +69,9 @@ class ChatAgent(BaseAgent):
         messages = _drop_orphaned_tool_calls(state.messages)
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
+        logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
         response: AIMessage = self._llm.invoke(messages)
+        log_token_usage(response)
         return AgentStateUpdate(messages=[response])
 
 
@@ -105,6 +112,7 @@ class AugAgent(BaseAgent):
         super().__init__()
         self.tools = tools or []
         self.recursion_limit = recursion_limit
+        self._model_name = model
         self._llm = build_chat_model(
             model,
             temperature=temperature,
@@ -127,7 +135,9 @@ class AugAgent(BaseAgent):
         messages = _drop_orphaned_tool_calls(state.messages)
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
+        logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
         response: AIMessage = self._llm.invoke(messages)
+        log_token_usage(response)
         return AgentStateUpdate(messages=[response])
 
 

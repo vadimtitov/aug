@@ -48,7 +48,7 @@ async def generate_image(
             n=n,
         )
     except Exception as e:
-        logger.error("generate_image failed: %s", e)
+        logger.exception("generate_image failed")
         return f"Image generation failed: {e}", ToolOutput(text=f"Image generation failed: {e}")
 
     urls = [item.url for item in response.data if item.url]
@@ -66,7 +66,7 @@ async def generate_image(
                 img_response.raise_for_status()
             attachments.append(ImageAttachment(data=img_response.content, mime_type="image/png"))
         except Exception as e:
-            logger.error("generate_image download failed: %s", e)
+            logger.exception("generate_image download failed")
             return f"Image generated but download failed: {e}", ToolOutput(
                 text=f"Image generated but download failed: {e}"
             )

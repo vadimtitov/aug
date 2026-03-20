@@ -23,7 +23,7 @@ def _invoke(task: str, **kwargs):
 @pytest.fixture()
 def mock_browser_deps():
     """Patch browser-use classes and LLM."""
-    # Minimal 1×1 PNG as base64 — matches what browser-use screenshots() returns
+    # Minimal 1x1 PNG as base64 — matches what browser-use screenshots() returns
     _PNG_1PX = base64.b64encode(
         b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
         b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"

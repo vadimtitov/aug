@@ -11,21 +11,26 @@ The base class owns the full pipeline: preprocess → agent → deliver.
 import base64
 import io
 import logging
+import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Literal
+from uuid import uuid4
 
 import httpx
+import psycopg
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from openai import AsyncOpenAI
+from langgraph.errors import GraphRecursionError
+from openai import AsyncOpenAI, RateLimitError
 from pydantic import BaseModel
 
 from aug.config import get_settings
 from aug.core.events import AgentEvent, ChatModelStreamEvent
 from aug.core.registry import get_agent
 from aug.core.state import AgentState
+from aug.utils.logging import set_correlation_id, set_thread_id
 from aug.utils.notify import register_notification_target
 
 logger = logging.getLogger(__name__)
@@ -109,13 +114,46 @@ class BaseInterface[ContextT](ABC):
 
     async def run(self, context: ContextT) -> None:
         """Full pipeline: receive → preprocess → agent → deliver."""
+        set_correlation_id(str(uuid4())[:8])
         incoming = await self.receive_message(context)
         if incoming is None:
             return
+        set_thread_id(incoming.thread_id)
         register_notification_target(incoming.thread_id, incoming.interface, incoming.sender_id)
         content = await _preprocess(incoming.parts)
         stream = _stream_agent(content, incoming, self._checkpointer)
-        await self.send_stream(stream, context)
+        t0 = time.monotonic()
+        logger.info(
+            "request_start thread=%s interface=%s agent=%s",
+            incoming.thread_id,
+            incoming.interface,
+            incoming.agent_version,
+        )
+        try:
+            await self.send_stream(stream, context)
+        except psycopg.OperationalError:
+            logger.exception("DB connection lost")
+            await self.send_message(
+                "Database connection lost. Please try again in a moment.", context
+            )
+        except RateLimitError:
+            logger.warning("LLM rate limit hit")
+            await self.send_message(
+                "Context window is full. Use /clear to start a fresh conversation.", context
+            )
+        except GraphRecursionError:
+            logger.warning("Agent hit recursion limit")
+            await self.send_message(
+                "The agent got stuck in a loop and was stopped. Try rephrasing your request.",
+                context,
+            )
+        except Exception:
+            logger.exception("Unhandled error in agent pipeline")
+            await self.send_message("Sorry, something went wrong.", context)
+        finally:
+            logger.info(
+                "request_end thread=%s duration=%.2fs", incoming.thread_id, time.monotonic() - t0
+            )
 
 
 # ---------------------------------------------------------------------------
