@@ -2,9 +2,9 @@
 
 from datetime import date
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from aug.core.consolidation import _extract, _iso_date, _iso_week, _read, _write
+from aug.core.consolidation import _extract, _iso_date, _iso_week, _read, _write, run_light_consolidation
 
 # ---------------------------------------------------------------------------
 # _extract
@@ -78,3 +78,95 @@ def test_write_overwrites(tmp_path: Path) -> None:
     with patch("aug.core.consolidation.MEMORY_DIR", tmp_path):
         _write("notes.md", "")
     assert (tmp_path / "notes.md").read_text() == "\n"
+
+
+# ---------------------------------------------------------------------------
+# run_light_consolidation
+# ---------------------------------------------------------------------------
+
+
+def _mock_llm(response_text: str) -> MagicMock:
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(return_value=MagicMock(content=response_text))
+    return llm
+
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_light_consolidation_skips_when_no_notes(tmp_path: Path) -> None:
+    (tmp_path / "notes.md").write_text("")
+    with (
+        patch("aug.core.consolidation.MEMORY_DIR", tmp_path),
+        patch("aug.core.consolidation.build_chat_model") as mock_build,
+        patch("aug.core.consolidation.get_setting", return_value=None),
+        patch("aug.core.consolidation.set_setting"),
+    ):
+        await run_light_consolidation()
+        mock_build.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_light_consolidation_writes_context_and_user(tmp_path: Path) -> None:
+    (tmp_path / "notes.md").write_text("[2026-01-01] user likes cats")
+    (tmp_path / "context.md").write_text("## Present\n\n## Recent\n")
+    (tmp_path / "user.md").write_text("Nothing known.")
+    (tmp_path / "skills.md").write_text("")
+
+    response = "<context>## Present\nfocused on cats\n## Recent\n</context><user>Likes cats.</user>"
+
+    with (
+        patch("aug.core.consolidation.MEMORY_DIR", tmp_path),
+        patch("aug.core.consolidation.build_chat_model", return_value=_mock_llm(response)),
+        patch("aug.core.consolidation.get_setting", return_value=None),
+        patch("aug.core.consolidation.set_setting"),
+    ):
+        await run_light_consolidation()
+
+    assert "focused on cats" in (tmp_path / "context.md").read_text()
+    assert "Likes cats." in (tmp_path / "user.md").read_text()
+    assert (tmp_path / "notes.md").read_text().strip() == ""
+
+
+@pytest.mark.asyncio
+async def test_light_consolidation_writes_skills(tmp_path: Path) -> None:
+    (tmp_path / "notes.md").write_text("[2026-01-01] you have Home Assistant at HA_URL")
+    (tmp_path / "context.md").write_text("## Present\n\n## Recent\n")
+    (tmp_path / "user.md").write_text("Nothing known.")
+    (tmp_path / "skills.md").write_text("")
+
+    response = "<skills>Home Assistant: HA_URL + HASS_TOKEN. Query entity IDs before use.</skills>"
+
+    with (
+        patch("aug.core.consolidation.MEMORY_DIR", tmp_path),
+        patch("aug.core.consolidation.build_chat_model", return_value=_mock_llm(response)),
+        patch("aug.core.consolidation.get_setting", return_value=None),
+        patch("aug.core.consolidation.set_setting"),
+    ):
+        await run_light_consolidation()
+
+    assert "Home Assistant" in (tmp_path / "skills.md").read_text()
+
+
+@pytest.mark.asyncio
+async def test_light_consolidation_skips_missing_tags(tmp_path: Path) -> None:
+    """If model omits a tag, that file is left unchanged."""
+    (tmp_path / "notes.md").write_text("[2026-01-01] something minor")
+    (tmp_path / "context.md").write_text("original context")
+    (tmp_path / "user.md").write_text("original user")
+    (tmp_path / "skills.md").write_text("original skills")
+
+    response = "<context>updated context</context>"  # user and skills omitted
+
+    with (
+        patch("aug.core.consolidation.MEMORY_DIR", tmp_path),
+        patch("aug.core.consolidation.build_chat_model", return_value=_mock_llm(response)),
+        patch("aug.core.consolidation.get_setting", return_value=None),
+        patch("aug.core.consolidation.set_setting"),
+    ):
+        await run_light_consolidation()
+
+    assert "updated context" in (tmp_path / "context.md").read_text()
+    assert (tmp_path / "user.md").read_text() == "original user"
+    assert (tmp_path / "skills.md").read_text() == "original skills"

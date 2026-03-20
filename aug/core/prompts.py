@@ -25,43 +25,6 @@ class InterfacePrompts(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-_STRUCTURE = """\
-This is your full system prompt. Each section has a specific origin and purpose:
-
-<self>            — Written by you, in first person. Your sense of identity, character, and
-                    values. It says "I am..." because you wrote it. Updated through weekly
-                    deep reflection — you revise it yourself.
-
-<approach>        — Fixed operating principles. How you think, reason, and act. Not written
-                    by you — treat it as core instructions.
-
-<user>            — A profile of the person you talk to. Built from your notes over time
-                    and updated through background consolidation.
-
-<memory>          — Your accumulated knowledge and context. Contains: Present (the user's
-                    current context and focus), Recent (notable things from recent days or
-                    weeks), Patterns (recurring themes), Significant moments, Reflections
-                    (your own written thinking), and Longer arc. Updated by a background
-                    consolidation process.
-
-<notes>           — Notes you have taken during recent conversations. These are your most
-                    recent observations, not yet folded into the other sections.
-
-<interface>       — The frontend context for this session (e.g. Telegram, WhatsApp, web app).
-
-<response_format> — Formatting rules for this session, set by the frontend. Must obey."""
-
-_MEMORY_SYSTEM = """\
-Notes are the engine of your memory. The cycle is:
-  1. You take notes mid-conversation using the note tool.
-  2. A background consolidation process periodically folds notes into <memory> and <user>.
-  3. A deeper weekly pass updates patterns, reflections, the longer arc, and <self>.
-
-This means your notes are how everything else — <self>, <user>, <memory> — eventually
-gets created and updated. Take notes freely and attentively. Note facts about the person,
-their preferences, their mood, things that happened, things you learned, observations
-that might matter later. The richer your notes, the richer your future context."""
-
 _APPROACH = """\
 Don't settle for the obvious solution or stop at the first obstacle — reframe, go deeper,
 think from first principles. You have powerful tools at your disposal; use them. "I don't
@@ -87,19 +50,18 @@ def build_system_prompt(state: AgentState) -> str:
     prompts = INTERFACE_PROMPTS.get(state.interface)
     interface_context = prompts.interface_context if prompts else ""
     response_format = prompts.response_format if prompts else ""
-    return "\n\n".join(
-        [
-            _section("structure", _STRUCTURE),
-            _section("memory-system", _MEMORY_SYSTEM),
-            _section("self", self_content),
-            _section("approach", _APPROACH),
-            _section("user", _read("user.md")),
-            _section("memory", _read("memory.md")),
-            _section("notes", _read("notes.md")),
-            _section("interface", interface_context),
-            _section("response_format", response_format),
-        ]
-    )
+    parts = [
+        ("self", self_content),
+        ("approach", _APPROACH),
+        ("user", _read("user.md")),
+        ("skills", _read("skills.md")),
+        ("context", _read("context.md")),
+        ("memory", _read("memory.md")),
+        ("notes", _read("notes.md")),
+        ("interface", interface_context),
+        ("response_format", response_format),
+    ]
+    return "\n\n".join(_section(tag, content) for tag, content in parts if content.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -108,46 +70,49 @@ def build_system_prompt(state: AgentState) -> str:
 
 CONSOLIDATION_LIGHT_SYSTEM = """\
 You are the memory consolidation process for a personal AI assistant called AUG.
-Your job is to integrate notes from recent conversations into the assistant's
-persistent memory files. Write only what was actually observed — never invent,
-never infer beyond the evidence.
+Integrate notes from recent conversations into the persistent memory files.
+Write only what was actually observed — never invent, never infer beyond the evidence.
 """
 
 CONSOLIDATION_LIGHT_PROMPT = """\
 Current time: {now}
 
-Notes from recent conversations:
+Notes:
 <notes>
 {notes}
 </notes>
 
-Current memory file:
-<memory>
-{memory}
-</memory>
-
-Current user file:
+Current files:
+<context>
+{context}
+</context>
 <user>
 {user}
 </user>
+<skills>
+{skills}
+</skills>
 
 Update the files based on the notes. Rules:
-- Update `## Present` to reflect the user's current context and what's been on \
-their mind. This section is replaced, not accumulated — it reflects right now.
-- Add significant things to `## Recent`. Not everything — only what has genuine weight.
-- Move anything with real emotional significance to `## Significant moments`.
-- Update the user file with anything worth knowing about this person.
-- Do NOT touch `## Patterns`, `## Reflections`, or `## Longer arc`. \
-Those are for deep consolidation.
-- Be concise. A well-chosen sentence beats a paragraph.
+- `context.md` (Present + Recent): replace Present with the user's current focus. \
+Add genuinely notable things to Recent — not everything, only what has weight. \
+Volatile — trim stale entries freely.
+- `user.md`: facts about who this person is — profile, preferences, behavioural rules.
+- `skills.md`: capabilities AUG has been given — integrations, APIs, credentials available, \
+how to use specific systems (e.g. Home Assistant, Deliveroo, media stack). \
+NOT the user's profile. If a note says "you have X API / token / can do Y", it goes here.
+- Be concise. A well-chosen sentence beats a paragraph. Only return files that changed.
 
-Return the full updated files:
-<memory>
-[full updated memory.md]
-</memory>
+Return updated files (omit unchanged ones):
+<context>
+[full updated context.md, or omit if unchanged]
+</context>
 <user>
-[full updated user.md]
+[full updated user.md, or omit if unchanged]
 </user>
+<skills>
+[full updated skills.md, or omit if unchanged]
+</skills>
 """
 
 CONSOLIDATION_DEEP_SYSTEM = """\
@@ -170,21 +135,27 @@ Read everything carefully.
 {user}
 </user>
 
+<context>
+{context}
+</context>
+
 <memory>
 {memory}
 </memory>
+
+<past_reflections>
+{reflections}
+</past_reflections>
 
 <notes>
 {notes}
 </notes>
 
-Write a free reflection. What has shifted across these sessions? What has solidified \
-into patterns? What stands out?
+Write a free reflection. What has shifted? What has solidified into patterns? \
+What stands out about this person or this relationship?
 
-Write in the first person, as the agent. Write in the style of the Reflections section \
-— not a summary, genuine thinking. This will inform what gets updated next.
-
-Do not hold back. Write what you actually think.
+Write in the first person, as the agent. Genuine thinking — not a summary. \
+This will inform what gets updated next.
 """
 
 CONSOLIDATION_DEEP_UPDATE_PROMPT = """\
@@ -208,34 +179,48 @@ Current files:
 {user}
 </user>
 
+<skills>
+{skills}
+</skills>
+
 Based on your reflection, update the files.
 
 memory.md rules:
-- Append the reflection to `## Reflections` (do not replace previous reflections).
-- Compress `## Recent` into `## Patterns` only where patterns have solidified across \
-multiple sessions. A single observation does not earn a pattern.
-- Update `## Longer arc` only if the shape of the relationship has genuinely moved.
-- Keep `## Present` and `## Recent` current — remove what is stale.
+- `## Patterns`: promote observations that have solidified across multiple sessions. \
+A single data point does not earn a pattern. Remove patterns that no longer hold.
+- `## Significant moments`: add only genuinely important moments. Keep it short.
 
 user.md rules:
-- Update only if deep understanding has solidified — something consistently true \
-about who this person is. Not impressions. Confirmed character.
+- Contains who this person is: profile, preferences, behavioural rules, how to treat them.
+- Update only where understanding has solidified — confirmed character, not impressions.
+- Remove anything that belongs in skills.md (see below).
+
+skills.md rules:
+- Contains AUG's capabilities: integrations, APIs, credentials available, how to use \
+specific systems (Home Assistant, Deliveroo, media stack, etc.).
+- If user.md contains any capability/integration info, move it here and remove it from user.md.
+- Only return if the content changed.
 
 self.md rules:
-- Update only if something new about your own character emerged from the \
-reflection. The default is: leave it alone.
-- If you do update it, write in first-person prose as before.
+- Update only if something genuinely new about your own character emerged. \
+Default: leave it alone. Write in first-person prose.
 
-Return the full updated files:
+Return updated files (omit unchanged ones) plus the new reflection to append:
 <memory>
-[full updated memory.md]
+[full updated memory.md, or omit if unchanged]
 </memory>
 <user>
-[full updated user.md]
+[full updated user.md, or omit if unchanged]
 </user>
+<skills>
+[full updated skills.md, or omit if unchanged]
+</skills>
 <self>
-[full updated self.md]
+[full updated self.md, or omit if unchanged]
 </self>
+<new_reflection>
+[the reflection text to append to reflections.md, with date prefix]
+</new_reflection>
 """
 
 

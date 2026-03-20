@@ -12,7 +12,7 @@ from aug.core.tools.run_bash import _check_blacklist
 
 
 def test_note_creates_file(tmp_path: Path) -> None:
-    with patch("aug.core.tools.note.MEMORY_DIR", tmp_path):
+    with patch("aug.core.memory.MEMORY_DIR", tmp_path):
         result = note.invoke({"content": "user prefers dark mode"})
 
     assert result == "Noted."
@@ -21,7 +21,7 @@ def test_note_creates_file(tmp_path: Path) -> None:
 
 
 def test_note_appends(tmp_path: Path) -> None:
-    with patch("aug.core.tools.note.MEMORY_DIR", tmp_path):
+    with patch("aug.core.memory.MEMORY_DIR", tmp_path):
         note.invoke({"content": "first note"})
         note.invoke({"content": "second note"})
 
@@ -31,7 +31,7 @@ def test_note_appends(tmp_path: Path) -> None:
 
 
 def test_note_includes_timestamp(tmp_path: Path) -> None:
-    with patch("aug.core.tools.note.MEMORY_DIR", tmp_path):
+    with patch("aug.core.memory.MEMORY_DIR", tmp_path):
         note.invoke({"content": "timestamped"})
 
     notes = (tmp_path / "notes.md").read_text()

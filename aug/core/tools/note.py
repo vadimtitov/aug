@@ -1,10 +1,8 @@
 """Note tool — lightweight mid-conversation memory capture."""
 
-from datetime import UTC, datetime
-
 from langchain_core.tools import tool
 
-from aug.core.memory import MEMORY_DIR
+from aug.core.memory import append_note
 
 
 @tool
@@ -22,8 +20,5 @@ def note(content: str) -> str:
     Args:
         content: Brief note to save.
     """
-    now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
-    path = MEMORY_DIR / "notes.md"
-    current = path.read_text() if path.exists() else ""
-    path.write_text(current + f"\n[{now}] {content}\n")
+    append_note(content)
     return "Noted."

@@ -39,7 +39,7 @@ def _model() -> str:
 
 
 async def run_light_consolidation() -> None:
-    """Nightly pass: fold notes into memory.md and user.md."""
+    """Nightly pass: fold notes into context.md and user.md."""
     notes = _read("notes.md")
     if not notes.strip():
         logger.info("Light consolidation: no notes, skipping.")
@@ -54,8 +54,9 @@ async def run_light_consolidation() -> None:
             HumanMessage(
                 content=CONSOLIDATION_LIGHT_PROMPT.format(
                     notes=notes,
-                    memory=_read("memory.md"),
+                    context=_read("context.md"),
                     user=_read("user.md"),
+                    skills=_read("skills.md"),
                     now=now,
                 )
             ),
@@ -63,10 +64,12 @@ async def run_light_consolidation() -> None:
     )
 
     text = response.content
-    if updated := _extract("memory", text):
-        _write("memory.md", updated)
+    if updated := _extract("context", text):
+        _write("context.md", updated)
     if updated := _extract("user", text):
         _write("user.md", updated)
+    if updated := _extract("skills", text):
+        _write("skills.md", updated)
 
     _write("notes.md", "")
     _record("light")
@@ -85,8 +88,10 @@ async def run_deep_consolidation() -> None:
             HumanMessage(
                 content=CONSOLIDATION_DEEP_REFLECT_PROMPT.format(
                     self_md=_read("self.md"),
-                    memory=_read("memory.md"),
                     user=_read("user.md"),
+                    context=_read("context.md"),
+                    memory=_read("memory.md"),
+                    reflections=_read("reflections.md"),
                     notes=_read("notes.md"),
                     now=now,
                 )
@@ -105,6 +110,7 @@ async def run_deep_consolidation() -> None:
                     self_md=_read("self.md"),
                     memory=_read("memory.md"),
                     user=_read("user.md"),
+                    skills=_read("skills.md"),
                     now=now,
                 )
             ),
@@ -116,8 +122,13 @@ async def run_deep_consolidation() -> None:
         _write("memory.md", updated)
     if updated := _extract("user", text):
         _write("user.md", updated)
+    if updated := _extract("skills", text):
+        _write("skills.md", updated)
     if updated := _extract("self", text):
         _write("self.md", updated)
+    if new_reflection := _extract("new_reflection", text):
+        existing = _read("reflections.md")
+        _write("reflections.md", (existing + "\n\n" + new_reflection).strip())
 
     _write("notes.md", "")
     _record("deep")
