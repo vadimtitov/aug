@@ -98,9 +98,11 @@ Update the files based on the notes. Rules:
 Add genuinely notable things to Recent — not everything, only what has weight. \
 Volatile — trim stale entries freely.
 - `user.md`: facts about who this person is — profile, preferences, behavioural rules.
-- `skills.md`: capabilities AUG has been given — integrations, APIs, credentials available, \
-how to use specific systems (e.g. Home Assistant, Deliveroo, media stack). \
-NOT the user's profile. If a note says "you have X API / token / can do Y", it goes here.
+- `skills.md`: one `##` section per named integration or capability (e.g. `## Home Assistant`, \
+`## Deliveroo`, `## Amazon`, `## Portainer`). Each section contains everything needed to use \
+that skill: endpoints, credentials/secrets, operational rules, typical defaults. \
+NOT the user's profile. If a note says "you have X API / token / can do Y", it goes here. \
+Do not group unrelated skills under a generic heading — each gets its own named section.
 - Be concise. A well-chosen sentence beats a paragraph. Only return files that changed.
 
 Return updated files (omit unchanged ones):
@@ -151,8 +153,11 @@ Read everything carefully.
 {notes}
 </notes>
 
-Write a free reflection. What has shifted? What has solidified into patterns? \
-What stands out about this person or this relationship?
+Write a free reflection. Cover all of:
+- What has shifted about this person or the relationship?
+- What has solidified into patterns?
+- Has your sense of your own role, character, or identity evolved? \
+Does the current <self> still feel accurate, or has something about it aged badly or grown?
 
 Write in the first person, as the agent. Genuine thinking — not a summary. \
 This will inform what gets updated next.
@@ -186,6 +191,9 @@ Current files:
 Based on your reflection, update the files.
 
 memory.md rules:
+- Must contain ONLY `## Patterns` and `## Significant moments`. Nothing else.
+- If it currently contains `## Reflections`, `## Longer arc`, `## Present`, or `## Recent`, \
+strip those sections entirely — they belong elsewhere and must not remain here.
 - `## Patterns`: promote observations that have solidified across multiple sessions. \
 A single data point does not earn a pattern. Remove patterns that no longer hold.
 - `## Significant moments`: add only genuinely important moments. Keep it short.
@@ -196,14 +204,18 @@ user.md rules:
 - Remove anything that belongs in skills.md (see below).
 
 skills.md rules:
-- Contains AUG's capabilities: integrations, APIs, credentials available, how to use \
-specific systems (Home Assistant, Deliveroo, media stack, etc.).
-- If user.md contains any capability/integration info, move it here and remove it from user.md.
+- One `##` section per named integration or capability (e.g. `## Home Assistant`, \
+`## Deliveroo`, `## Amazon`, `## Portainer`, `## Spotify`). Each section contains \
+everything needed to use that skill: endpoints, secrets, operational rules, defaults.
+- If user.md contains any capability/integration info, move it here.
+- If skills.md has generic grouping headings (e.g. "Integrations and infrastructure", \
+"Accounts and secrets"), restructure into named per-skill sections.
 - Only return if the content changed.
 
 self.md rules:
-- Update only if something genuinely new about your own character emerged. \
-Default: leave it alone. Write in first-person prose.
+- Update if your sense of identity, role, or character has shifted — not just refined, \
+but actually moved. Also update if the current text feels stale or no longer accurate.
+- Write in first-person prose. Do not add meta-commentary about the update.
 
 Return updated files (omit unchanged ones) plus the new reflection to append:
 <memory>

@@ -42,6 +42,7 @@ from aug.api.interfaces.base import (
     TextContent,
 )
 from aug.config import get_settings
+from aug.core.consolidation import run_deep_consolidation, run_light_consolidation
 from aug.core.events import (
     AgentEvent,
     ChatModelStreamEvent,
@@ -265,6 +266,7 @@ class TelegramInterface(BaseInterface[Update]):
 
     def build_bot(self) -> Application:
         bot_app = Application.builder().token(get_settings().TELEGRAM_BOT_TOKEN).build()  # type: ignore[arg-type]
+        bot_app.add_handler(CommandHandler("clear", self._handle_clear))
         bot_app.add_handler(
             ConversationHandler(
                 entry_points=[CommandHandler("secret", self._secret_start)],
@@ -279,9 +281,10 @@ class TelegramInterface(BaseInterface[Update]):
                 fallbacks=[],
             )
         )
-        bot_app.add_handler(CommandHandler("clear", self._handle_clear))
         bot_app.add_handler(CommandHandler("version", self._handle_version))
         bot_app.add_handler(CommandHandler("prompt", self._handle_prompt))
+        bot_app.add_handler(CommandHandler("consolidate", self._handle_consolidate))
+        bot_app.add_handler(CommandHandler("consolidate_deep", self._handle_consolidate_deep))
         bot_app.add_handler(
             CallbackQueryHandler(self._handle_version_callback, pattern=r"^version:")
         )
@@ -311,6 +314,8 @@ class TelegramInterface(BaseInterface[Update]):
                 ("secret", "Store a secret"),
                 ("clear", "Start a new conversation"),
                 ("prompt", "Export current system prompt as a file"),
+                ("consolidate", "Run memory consolidation now"),
+                ("consolidate_deep", "Run deep (weekly) memory consolidation now"),
             ]
         )
         await self._bot_app.start()
@@ -404,6 +409,33 @@ class TelegramInterface(BaseInterface[Update]):
         file = io.BytesIO(prompt_text.encode())
         file.name = "system_prompt.txt"
         await update.message.reply_document(document=file, filename="system_prompt.txt")  # type: ignore[union-attr]
+
+    async def _handle_consolidate(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat_id = update.effective_chat.id  # type: ignore[union-attr]
+        if not _is_allowed(chat_id):
+            return
+        await update.message.reply_text("Running memory consolidation...")  # type: ignore[union-attr]
+        try:
+            ran = await run_light_consolidation()
+            msg = "Done." if ran else "Nothing to consolidate — no notes."
+            await update.message.reply_text(msg)  # type: ignore[union-attr]
+        except Exception:
+            logger.exception("Manual consolidation failed")
+            await update.message.reply_text("Consolidation failed — check logs.")  # type: ignore[union-attr]
+
+    async def _handle_consolidate_deep(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        chat_id = update.effective_chat.id  # type: ignore[union-attr]
+        if not _is_allowed(chat_id):
+            return
+        await update.message.reply_text("Running deep consolidation...")  # type: ignore[union-attr]
+        try:
+            await run_deep_consolidation()
+            await update.message.reply_text("Done.")  # type: ignore[union-attr]
+        except Exception:
+            logger.exception("Manual deep consolidation failed")
+            await update.message.reply_text("Deep consolidation failed — check logs.")  # type: ignore[union-attr]
 
     async def _secret_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         if not _is_allowed(update.effective_chat.id):  # type: ignore[union-attr]

@@ -38,13 +38,13 @@ def _model() -> str:
     return get_setting("consolidation", "model", default=_DEFAULT_MODEL)
 
 
-async def run_light_consolidation() -> None:
-    """Nightly pass: fold notes into context.md and user.md."""
+async def run_light_consolidation() -> bool:
+    """Nightly pass: fold notes into context.md and user.md. Returns True if it ran."""
     notes = _read("notes.md")
     if not notes.strip():
         logger.info("Light consolidation: no notes, skipping.")
         _record("light")
-        return
+        return False
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     llm = build_chat_model(_model(), temperature=0.3)
@@ -74,6 +74,7 @@ async def run_light_consolidation() -> None:
     _write("notes.md", "")
     _record("light")
     logger.info("Light consolidation complete.")
+    return True
 
 
 async def run_deep_consolidation() -> None:

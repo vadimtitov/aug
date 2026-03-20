@@ -88,7 +88,7 @@ def test_append_note_ring_buffer(tmp_path: Path) -> None:
             for i in range(7):
                 append_note(f"note {i}")
 
-    lines = [l for l in (tmp_path / "notes.md").read_text().splitlines() if l.strip()]
+    lines = [ln for ln in (tmp_path / "notes.md").read_text().splitlines() if ln.strip()]
     assert len(lines) == 5
     assert "note 2" in lines[0]
     assert "note 6" in lines[-1]

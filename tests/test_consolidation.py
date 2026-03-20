@@ -4,7 +4,16 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from aug.core.consolidation import _extract, _iso_date, _iso_week, _read, _write, run_light_consolidation
+import pytest
+
+from aug.core.consolidation import (
+    _extract,
+    _iso_date,
+    _iso_week,
+    _read,
+    _write,
+    run_light_consolidation,
+)
 
 # ---------------------------------------------------------------------------
 # _extract
@@ -89,9 +98,6 @@ def _mock_llm(response_text: str) -> MagicMock:
     llm = MagicMock()
     llm.ainvoke = AsyncMock(return_value=MagicMock(content=response_text))
     return llm
-
-
-import pytest
 
 
 @pytest.mark.asyncio
