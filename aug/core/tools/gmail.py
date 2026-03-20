@@ -137,7 +137,7 @@ async def gmail_search(query: str, max_results: int = 10, account: str = "primar
     except RuntimeError as e:
         return str(e)
     except Exception as e:
-        logger.error("gmail_search failed: %s", e)
+        logger.exception("gmail_search failed")
         return f"Gmail search failed: {e}"
 
 
@@ -164,7 +164,7 @@ async def gmail_read_thread(thread_id: str, account: str = "primary") -> str:
     except RuntimeError as e:
         return str(e)
     except Exception as e:
-        logger.error("gmail_read_thread failed: %s", e)
+        logger.exception("gmail_read_thread failed")
         return f"Failed to read thread {thread_id!r}: {e}"
 
 
@@ -190,7 +190,7 @@ async def gmail_send(to: str, subject: str, body: str, account: str = "primary")
     except RuntimeError as e:
         return str(e)
     except Exception as e:
-        logger.error("gmail_send failed: %s", e)
+        logger.exception("gmail_send failed")
         return f"Failed to send email: {e}"
 
 
@@ -217,5 +217,5 @@ async def gmail_draft(to: str, subject: str, body: str, account: str = "primary"
     except RuntimeError as e:
         return str(e)
     except Exception as e:
-        logger.error("gmail_draft failed: %s", e)
+        logger.exception("gmail_draft failed")
         return f"Failed to create draft: {e}"

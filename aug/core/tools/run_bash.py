@@ -33,7 +33,7 @@ def run_bash(command: str) -> str:
     if error := _check_blacklist(command):
         return error
 
-    logger.info("run_bash: %s", command)
+    logger.info("run_bash cmd=%.120r", command)
 
     result = subprocess.run(
         ["hushed", "run", "--", "bash", "-c", command],
@@ -41,6 +41,12 @@ def run_bash(command: str) -> str:
         text=True,
         timeout=_TIMEOUT,
     )
+    if result.returncode != 0:
+        logger.warning(
+            "run_bash exit_code=%d stderr=%.200r", result.returncode, result.stderr.strip()
+        )
+    else:
+        logger.debug("run_bash exit_code=0")
     output = (result.stdout + result.stderr).strip()
     return output or "(no output)"
 

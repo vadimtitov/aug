@@ -53,11 +53,11 @@ def brave_search(query: str) -> str:
             logger.debug("brave_search status=%d", response.status_code)
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
-            logger.error("brave_search HTTP error: %s — body: %s", e, e.response.text)
+            logger.exception("brave_search HTTP error — body: %s", e.response.text[:200])
             return f"Search failed: HTTP {e.response.status_code}."
-        except httpx.RequestError as e:
-            logger.error("brave_search request failed: %s", e)
-            return f"Search failed: {e}."
+        except httpx.RequestError:
+            logger.exception("brave_search request failed")
+            return "Search failed: network error."
         finally:
             _last_request_at = time.monotonic()
 

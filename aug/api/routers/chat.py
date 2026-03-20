@@ -15,7 +15,7 @@ from aug.api.security import require_api_key
 from aug.core.events import ChatModelStreamEvent
 from aug.core.registry import get_agent, list_agents
 from aug.core.state import AgentState
-from aug.utils.logging import set_correlation_id
+from aug.utils.logging import set_correlation_id, set_thread_id
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ def _validate_agent(agent: str) -> None:
 async def invoke(body: ChatRequest, request: Request) -> ChatResponse:
     """Run the agent and return the full response as JSON."""
     set_correlation_id(str(uuid4())[:8])
+    set_thread_id(body.thread_id)
     _validate_agent(body.agent)
     checkpointer = _get_checkpointer(request)
     agent = get_agent(body.agent)
@@ -78,6 +79,7 @@ async def invoke(body: ChatRequest, request: Request) -> ChatResponse:
 async def stream(body: ChatRequest, request: Request) -> StreamingResponse:
     """Run the agent and stream the response as Server-Sent Events."""
     set_correlation_id(str(uuid4())[:8])
+    set_thread_id(body.thread_id)
     _validate_agent(body.agent)
     checkpointer = _get_checkpointer(request)
     agent = get_agent(body.agent)

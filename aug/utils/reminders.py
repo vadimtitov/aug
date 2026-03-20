@@ -76,6 +76,7 @@ async def _fire_due_reminders(app: FastAPI) -> None:
             """
         )
 
+    logger.debug("reminder_check pending=%d", len(rows))
     for row in rows:
         reminder_id = row["id"]
         retry_count = row["retry_count"]

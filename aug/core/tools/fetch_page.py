@@ -36,10 +36,10 @@ async def _fetch_one(client: httpx.AsyncClient, url: str) -> str:
         logger.info("fetch_page url=%s extracted %d chars", url, len(text))
         return f"[{url}]\n{text}"
     except httpx.HTTPStatusError as e:
-        logger.warning("fetch_page url=%s HTTP %d", url, e.response.status_code)
+        logger.warning("fetch_page url=%s HTTP %d", url, e.response.status_code, exc_info=True)
         return f"[{url}]: HTTP error {e.response.status_code}."
     except Exception as e:
-        logger.warning("fetch_page url=%s error: %s", url, e)
+        logger.warning("fetch_page url=%s error: %s", url, e, exc_info=True)
         return f"[{url}]: failed to fetch — {e}."
 
 

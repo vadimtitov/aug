@@ -11,6 +11,7 @@ The base class owns the full pipeline: preprocess → agent → deliver.
 import base64
 import io
 import logging
+import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Literal
@@ -29,7 +30,7 @@ from aug.config import get_settings
 from aug.core.events import AgentEvent, ChatModelStreamEvent
 from aug.core.registry import get_agent
 from aug.core.state import AgentState
-from aug.utils.logging import set_correlation_id
+from aug.utils.logging import set_correlation_id, set_thread_id
 from aug.utils.notify import register_notification_target
 
 logger = logging.getLogger(__name__)
@@ -117,9 +118,17 @@ class BaseInterface[ContextT](ABC):
         incoming = await self.receive_message(context)
         if incoming is None:
             return
+        set_thread_id(incoming.thread_id)
         register_notification_target(incoming.thread_id, incoming.interface, incoming.sender_id)
         content = await _preprocess(incoming.parts)
         stream = _stream_agent(content, incoming, self._checkpointer)
+        t0 = time.monotonic()
+        logger.info(
+            "request_start thread=%s interface=%s agent=%s",
+            incoming.thread_id,
+            incoming.interface,
+            incoming.agent_version,
+        )
         try:
             await self.send_stream(stream, context)
         except psycopg.OperationalError:
@@ -141,6 +150,10 @@ class BaseInterface[ContextT](ABC):
         except Exception:
             logger.exception("Unhandled error in agent pipeline")
             await self.send_message("Sorry, something went wrong.", context)
+        finally:
+            logger.info(
+                "request_end thread=%s duration=%.2fs", incoming.thread_id, time.monotonic() - t0
+            )
 
 
 # ---------------------------------------------------------------------------

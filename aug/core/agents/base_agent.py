@@ -1,5 +1,7 @@
 """Base class for all AUG agents."""
 
+import logging
+import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 
@@ -9,8 +11,10 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
-from aug.core.events import AgentEvent, parse_event
+from aug.core.events import AgentEvent, ToolEndEvent, ToolStartEvent, parse_event
 from aug.core.state import AgentState, AgentStateUpdate
+
+logger = logging.getLogger(__name__)
 
 
 class BaseAgent(ABC):
@@ -56,10 +60,24 @@ class BaseAgent(ABC):
             self._compiled_graph = self._build(checkpointer)
         full_config: RunnableConfig = {"recursion_limit": self.recursion_limit, **config}
         raw_stream = self._compiled_graph.astream_events(state, config=full_config, version="v2")
+        tool_start_times: dict[str, float] = {}
         async for raw in raw_stream:
             event = parse_event(raw)
-            if event is not None:
-                yield event
+            if event is None:
+                continue
+            match event:
+                case ToolStartEvent(run_id=run_id, tool_name=tool_name, args=args):
+                    tool_start_times[run_id] = time.monotonic()
+                    logger.info("tool_start tool=%s args=%.120r", tool_name, args)
+                case ToolEndEvent(run_id=run_id, tool_name=tool_name, error=error):
+                    elapsed = time.monotonic() - tool_start_times.pop(run_id, time.monotonic())
+                    if error:
+                        logger.warning(
+                            "tool_end tool=%s duration=%.2fs error=True", tool_name, elapsed
+                        )
+                    else:
+                        logger.info("tool_end tool=%s duration=%.2fs", tool_name, elapsed)
+            yield event
 
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
         """Prepare state before the LLM is called."""
