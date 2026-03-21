@@ -9,8 +9,8 @@ from textwrap import dedent
 
 from pydantic import BaseModel
 
-from aug.core.memory import MEMORY_DIR
 from aug.core.state import AgentState
+from aug.utils.data import MEMORY_DIR
 
 
 class InterfacePrompts(BaseModel):

@@ -20,8 +20,7 @@ aug/
 │   │   ├── llm.py              ← build_chat_model() factory — always ChatOpenAI → LiteLLM proxy
 │   │   ├── state.py            ← AgentState + AgentStateUpdate (Pydantic models)
 │   │   ├── prompts.py          ← build_system_prompt() — assembles full system prompt from memory files + state
-│   │   ├── memory.py           ← MEMORY_DIR, init_memory_files(), default file content
-│   │   ├── consolidation.py    ← light (nightly) and deep (weekly) memory consolidation
+│   │   ├── memory.py           ← Memory file init, append_note(), light + deep consolidation, scheduler
 │   │   ├── registry.py         ← Agent registry + compiled-graph cache
 │   │   ├── agents/
 │   │   │   ├── base_agent.py   ← BaseAgent ABC with agentic loop in build()
@@ -42,7 +41,7 @@ aug/
 │       ├── db.py               ← asyncpg pool + schema bootstrap
 │       ├── storage.py          ← File storage abstraction
 │       ├── logging.py          ← JSON (prod) / human-readable (dev) structured logging
-│       ├── data.py             ← read_data_file() / write_data_file() — /app/data volume access
+│       ├── data.py             ← DATA_DIR, MEMORY_DIR, read_data_file() / write_data_file()
 │       └── user_settings.py    ← per-user settings; get_setting() / set_setting() with nested path
 ├── tests/
 ├── docs/

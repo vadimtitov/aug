@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from aug.core.consolidation import (
+from aug.core.memory import (
     _extract,
     _iso_date,
     _iso_week,
@@ -66,25 +66,25 @@ def test_iso_week_none() -> None:
 
 
 def test_read_returns_empty_for_missing_file(tmp_path: Path) -> None:
-    with patch("aug.core.consolidation.MEMORY_DIR", tmp_path):
+    with patch("aug.core.memory.MEMORY_DIR", tmp_path):
         assert _read("nonexistent.md") == ""
 
 
 def test_read_returns_stripped_content(tmp_path: Path) -> None:
     (tmp_path / "memory.md").write_text("  hello  \n\n")
-    with patch("aug.core.consolidation.MEMORY_DIR", tmp_path):
+    with patch("aug.core.memory.MEMORY_DIR", tmp_path):
         assert _read("memory.md") == "hello"
 
 
 def test_write_creates_file(tmp_path: Path) -> None:
-    with patch("aug.core.consolidation.MEMORY_DIR", tmp_path):
+    with patch("aug.core.memory.MEMORY_DIR", tmp_path):
         _write("memory.md", "new content")
     assert (tmp_path / "memory.md").read_text() == "new content\n"
 
 
 def test_write_overwrites(tmp_path: Path) -> None:
     (tmp_path / "notes.md").write_text("old")
-    with patch("aug.core.consolidation.MEMORY_DIR", tmp_path):
+    with patch("aug.core.memory.MEMORY_DIR", tmp_path):
         _write("notes.md", "")
     assert (tmp_path / "notes.md").read_text() == "\n"
 
@@ -104,10 +104,10 @@ def _mock_llm(response_text: str) -> MagicMock:
 async def test_light_consolidation_skips_when_no_notes(tmp_path: Path) -> None:
     (tmp_path / "notes.md").write_text("")
     with (
-        patch("aug.core.consolidation.MEMORY_DIR", tmp_path),
-        patch("aug.core.consolidation.build_chat_model") as mock_build,
-        patch("aug.core.consolidation.get_setting", return_value=None),
-        patch("aug.core.consolidation.set_setting"),
+        patch("aug.core.memory.MEMORY_DIR", tmp_path),
+        patch("aug.core.memory.build_chat_model") as mock_build,
+        patch("aug.core.memory.get_setting", return_value=None),
+        patch("aug.core.memory.set_setting"),
     ):
         await run_light_consolidation()
         mock_build.assert_not_called()
@@ -123,10 +123,10 @@ async def test_light_consolidation_writes_context_and_user(tmp_path: Path) -> No
     response = "<context>## Present\nfocused on cats\n## Recent\n</context><user>Likes cats.</user>"
 
     with (
-        patch("aug.core.consolidation.MEMORY_DIR", tmp_path),
-        patch("aug.core.consolidation.build_chat_model", return_value=_mock_llm(response)),
-        patch("aug.core.consolidation.get_setting", return_value=None),
-        patch("aug.core.consolidation.set_setting"),
+        patch("aug.core.memory.MEMORY_DIR", tmp_path),
+        patch("aug.core.memory.build_chat_model", return_value=_mock_llm(response)),
+        patch("aug.core.memory.get_setting", return_value=None),
+        patch("aug.core.memory.set_setting"),
     ):
         await run_light_consolidation()
 
@@ -145,10 +145,10 @@ async def test_light_consolidation_writes_skills(tmp_path: Path) -> None:
     response = "<skills>Home Assistant: HA_URL + HASS_TOKEN. Query entity IDs before use.</skills>"
 
     with (
-        patch("aug.core.consolidation.MEMORY_DIR", tmp_path),
-        patch("aug.core.consolidation.build_chat_model", return_value=_mock_llm(response)),
-        patch("aug.core.consolidation.get_setting", return_value=None),
-        patch("aug.core.consolidation.set_setting"),
+        patch("aug.core.memory.MEMORY_DIR", tmp_path),
+        patch("aug.core.memory.build_chat_model", return_value=_mock_llm(response)),
+        patch("aug.core.memory.get_setting", return_value=None),
+        patch("aug.core.memory.set_setting"),
     ):
         await run_light_consolidation()
 
@@ -166,10 +166,10 @@ async def test_light_consolidation_skips_missing_tags(tmp_path: Path) -> None:
     response = "<context>updated context</context>"  # user and skills omitted
 
     with (
-        patch("aug.core.consolidation.MEMORY_DIR", tmp_path),
-        patch("aug.core.consolidation.build_chat_model", return_value=_mock_llm(response)),
-        patch("aug.core.consolidation.get_setting", return_value=None),
-        patch("aug.core.consolidation.set_setting"),
+        patch("aug.core.memory.MEMORY_DIR", tmp_path),
+        patch("aug.core.memory.build_chat_model", return_value=_mock_llm(response)),
+        patch("aug.core.memory.get_setting", return_value=None),
+        patch("aug.core.memory.set_setting"),
     ):
         await run_light_consolidation()
 

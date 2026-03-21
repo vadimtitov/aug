@@ -42,7 +42,6 @@ from aug.api.interfaces.base import (
     TextContent,
 )
 from aug.config import get_settings
-from aug.core.consolidation import run_deep_consolidation, run_light_consolidation
 from aug.core.events import (
     AgentEvent,
     ChatModelStreamEvent,
@@ -50,6 +49,7 @@ from aug.core.events import (
     ToolProgressEvent,
     ToolStartEvent,
 )
+from aug.core.memory import run_deep_consolidation, run_light_consolidation
 from aug.core.prompts import build_system_prompt
 from aug.core.registry import list_agents
 from aug.core.state import AgentState
