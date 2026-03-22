@@ -310,9 +310,9 @@ class TelegramInterface(BaseInterface[Update]):
         await self._bot_app.initialize()
         await self._bot_app.bot.set_my_commands(
             [
+                ("clear", "Start a new conversation"),
                 ("version", "Switch agent version"),
                 ("secret", "Store a secret"),
-                ("clear", "Start a new conversation"),
                 ("prompt", "Export current system prompt as a file"),
                 ("consolidate", "Run memory consolidation now"),
                 ("consolidate_deep", "Run deep (weekly) memory consolidation now"),
