@@ -8,6 +8,7 @@ Each frontend (Telegram, REST API, etc.) subclasses BaseInterface[ContextT] and 
 The base class owns the full pipeline: preprocess → agent → deliver.
 """
 
+import asyncio
 import base64
 import io
 import logging
@@ -23,12 +24,14 @@ from langchain_core.messages import HumanMessage
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import GraphRecursionError
+from langgraph.types import Command
 from openai import AsyncOpenAI, RateLimitError
 from pydantic import BaseModel
 
 from aug.config import get_settings
 from aug.core.events import AgentEvent, ChatModelStreamEvent
 from aug.core.registry import get_agent
+from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, MessageContent, run_registry
 from aug.core.state import AgentState
 from aug.utils.logging import set_correlation_id, set_thread_id
 from aug.utils.notify import register_notification_target
@@ -113,19 +116,45 @@ class BaseInterface[ContextT](ABC):
         raise NotImplementedError
 
     async def run(self, context: ContextT) -> None:
-        """Full pipeline: receive → preprocess → agent → deliver."""
-        set_correlation_id(str(uuid4())[:8])
+        """Route: inject into active run or start a new one."""
         incoming = await self.receive_message(context)
         if incoming is None:
             return
+        set_correlation_id(str(uuid4())[:8])
+
+        # Preprocess before the lock — may be slow (Whisper, geocoding) but needed for both paths.
+        content = await _preprocess(incoming.parts)
+
+        async with run_registry.thread_lock(incoming.thread_id):
+            existing = run_registry.get(incoming.thread_id)
+            if existing and existing.active and not existing.user_requested_stop.is_set():
+                existing.inject_message(content)
+                return
+
+            # No active run — start a new one, cancelling any stale one.
+            if existing and existing.active:
+                existing.user_requested_stop.set()
+            run = AgentRun()
+            run_registry.set(incoming.thread_id, run)
+
+        await self._execute_run(run, incoming, content, context)
+
+    async def _execute_run(
+        self,
+        run: AgentRun,
+        incoming: IncomingMessage,
+        content: MessageContent,
+        context: ContextT,
+    ) -> None:
+        """Execute the full agent pipeline for a newly started run."""
         set_thread_id(incoming.thread_id)
         register_notification_target(incoming.thread_id, incoming.interface, incoming.sender_id)
-        content = await _preprocess(incoming.parts)
-        stream = _stream_agent(content, incoming, self._checkpointer)
+        stream = _agent_stream(content, incoming, self._checkpointer, run)
         t0 = time.monotonic()
         logger.info(
-            "request_start thread=%s interface=%s agent=%s",
+            "request_start thread=%s run=%s interface=%s agent=%s",
             incoming.thread_id,
+            run.id,
             incoming.interface,
             incoming.agent_version,
         )
@@ -151,9 +180,22 @@ class BaseInterface[ContextT](ABC):
             logger.exception("Unhandled error in agent pipeline")
             await self.send_message("Sorry, something went wrong.", context)
         finally:
+            run.active = False
+            run_registry.pop(incoming.thread_id)
             logger.info(
-                "request_end thread=%s duration=%.2fs", incoming.thread_id, time.monotonic() - t0
+                "request_end thread=%s run=%s duration=%.2fs",
+                incoming.thread_id,
+                run.id,
+                time.monotonic() - t0,
             )
+
+    def stop_run(self, thread_id: str) -> bool:
+        """Stop the active run for a thread. Returns True if there was one."""
+        run = run_registry.get(thread_id)
+        if run and run.active:
+            run.request_stop()
+            return True
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +203,71 @@ class BaseInterface[ContextT](ABC):
 # ---------------------------------------------------------------------------
 
 
-async def _preprocess(parts: list[ContentPart]) -> str | list:
+async def _agent_stream(
+    content: MessageContent,
+    message: IncomingMessage,
+    checkpointer: BaseCheckpointSaver,
+    run: AgentRun,
+) -> AsyncIterator[AgentEvent]:
+    """Streaming generator that loops across LangGraph interrupt boundaries.
+
+    On the first pass the graph receives an AgentState with the user's message.
+    After each interrupt_after=["call_tools"] pause the graph is resumed with
+    either a Command(update=…) carrying an injected HumanMessage, or None to
+    simply continue.  The loop exits when the graph finishes or cancel is set.
+    """
+    agent = get_agent(message.agent_version)
+    config: RunnableConfig = {
+        "configurable": {
+            "thread_id": message.thread_id,
+            AGENT_RUN_CONFIG_KEY: run,
+        }
+    }
+
+    graph_input: AgentState | Command | None = AgentState(
+        messages=[HumanMessage(content=content)],
+        thread_id=message.thread_id,
+        interface=message.interface,
+    )
+
+    while True:
+        async for event in agent.astream_events(graph_input, config, checkpointer):
+            if run.user_requested_stop.is_set():
+                return
+            yield event
+
+        if run.user_requested_stop.is_set():
+            return
+
+        # Determine whether the graph finished or paused at interrupt_after=["call_tools"].
+        graph_state = await agent.aget_state(config, checkpointer)
+        if not graph_state.next:
+            return  # graph reached END naturally
+
+        # Graph paused — check for a queued soft interrupt.
+        try:
+            injection = run.pending_agent_injection.get_nowait()
+            logger.info("soft_interrupt thread=%s run=%s", message.thread_id, run.id)
+            graph_input = Command(update={"messages": [HumanMessage(content=injection)]})
+        except asyncio.QueueEmpty:
+            graph_input = None  # resume from where the graph left off
+
+
+async def _collect(stream: AsyncIterator[AgentEvent]) -> str:
+    text = ""
+    async for event in stream:
+        match event:
+            case ChatModelStreamEvent(delta=delta) if delta:
+                text += delta
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Private: preprocessing utilities
+# ---------------------------------------------------------------------------
+
+
+async def _preprocess(parts: list[ContentPart]) -> MessageContent:
     blocks = []
     for part in parts:
         if isinstance(part, TextContent):
@@ -185,35 +291,6 @@ async def _preprocess(parts: list[ContentPart]) -> str | list:
     if text_only:
         return "\n\n".join(b["text"] for b in blocks)
     return blocks
-
-
-def _stream_agent(
-    content: str | list,
-    message: IncomingMessage,
-    checkpointer: BaseCheckpointSaver,
-) -> AsyncIterator[AgentEvent]:
-    agent = get_agent(message.agent_version)
-    state = AgentState(
-        messages=[HumanMessage(content=content)],
-        thread_id=message.thread_id,
-        interface=message.interface,
-    )
-    config: RunnableConfig = {"configurable": {"thread_id": message.thread_id}}
-    return agent.astream_events(state, config, checkpointer)
-
-
-async def _collect(stream: AsyncIterator[AgentEvent]) -> str:
-    text = ""
-    async for event in stream:
-        match event:
-            case ChatModelStreamEvent(delta=delta) if delta:
-                text += delta
-    return text
-
-
-# ---------------------------------------------------------------------------
-# Private: preprocessing utilities
-# ---------------------------------------------------------------------------
 
 
 async def _transcribe(data: bytes, mime_type: str) -> str:

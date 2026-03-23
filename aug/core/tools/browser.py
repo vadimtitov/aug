@@ -1,22 +1,27 @@
 """Browser tool — remote-controlled Chromium via browser-use and CDP."""
 
+import asyncio
 import base64
 import logging
 import mimetypes
 import os
 import socket
 from pathlib import Path
+from typing import Annotated
 from urllib.parse import urlparse, urlunparse
 
 from browser_use import Agent, Browser
 from browser_use.agent.views import AgentOutput
 from browser_use.browser.views import BrowserStateSummary
 from browser_use.llm import ChatOpenAI as BrowserLLM
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
+from langchain_core.tools.base import InjectedToolArg
 
 from aug.config import get_settings
 from aug.core.events import send_tool_progress_update
 from aug.core.prompts import BROWSER_TASK_CONSTRAINTS
+from aug.core.run import AGENT_RUN_CONFIG_KEY, TOOL_STOP_SENTINEL
 from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
 from aug.utils.user_settings import get_setting
 
@@ -26,23 +31,11 @@ _DEFAULT_MODEL = "gpt-5.1"
 _DOWNLOADS_DIR = "/app/browser-downloads"
 
 
-def _model() -> str:
-    return get_setting("tools", "browser", "model", default=_DEFAULT_MODEL)
-
-
-def _llm() -> BrowserLLM:
-    settings = get_settings()
-    return BrowserLLM(
-        model=_model(),
-        api_key=settings.LLM_API_KEY,
-        base_url=settings.LLM_BASE_URL,
-        frequency_penalty=None,
-    )
-
-
 @tool(response_format="content_and_artifact")
 async def browser(
-    task: str, secrets: dict[str, str] | None = None
+    task: str,
+    secrets: dict[str, str] | None = None,
+    config: Annotated[RunnableConfig, InjectedToolArg] = None,
 ) -> tuple[str, ToolOutput | None]:
     """Control a web browser to complete a task.
 
@@ -68,8 +61,23 @@ async def browser(
         return "Browser tool is not available — BROWSER_CDP_URL is not configured.", None
 
     sensitive_data = _resolve_secrets(secrets)
+    run_channel = (config or {}).get("configurable", {}).get(AGENT_RUN_CONFIG_KEY)
+
+    # Mutable reference so _step_callback can update the agent's task after creation.
+    agent_holder: list[Agent] = []
 
     async def _step_callback(state: BrowserStateSummary, output: AgentOutput, step: int) -> None:
+        if run_channel:
+            try:
+                instruction = run_channel.pending_tool_instruction.get_nowait()
+                if instruction is TOOL_STOP_SENTINEL:
+                    raise _BrowserStopped()
+                # Steer: append the user's instruction to the running task.
+                if agent_holder:
+                    agent_holder[0].task += f"\n\nUser update at step {step}: {instruction}"
+                logger.info("browser task updated at step %d: %.80r", step, instruction)
+            except asyncio.QueueEmpty:
+                pass
         goal = output.next_goal or ""
         netloc = urlparse(state.url).netloc or state.url
         text = f"Step {step} · {netloc}"
@@ -90,6 +98,7 @@ async def browser(
             extend_system_message=BROWSER_TASK_CONSTRAINTS,
             use_vision="auto",
         )
+        agent_holder.append(agent)
         history = await agent.run()
         if history.is_done() and history.final_result():
             after = set(downloads_dir.iterdir()) if downloads_dir.exists() else set()
@@ -111,11 +120,31 @@ async def browser(
             f"Errors: {error_summary}. Do NOT assume success — tell the user it failed and why."
         )
         return msg, None
+    except _BrowserStopped:
+        return "Browser task was stopped by user request.", None
     except Exception as e:
-        logger.error("browser tool failed: %s", e)
+        logger.exception("browser tool failed")
         return f"Browser task failed: {e}", None
     finally:
         await b.stop()
+
+
+class _BrowserStopped(Exception):
+    """Raised inside _step_callback to abort a browser run mid-task."""
+
+
+def _model() -> str:
+    return get_setting("tools", "browser", "model", default=_DEFAULT_MODEL)
+
+
+def _llm() -> BrowserLLM:
+    settings = get_settings()
+    return BrowserLLM(
+        model=_model(),
+        api_key=settings.LLM_API_KEY,
+        base_url=settings.LLM_BASE_URL,
+        frequency_penalty=None,
+    )
 
 
 def _resolve_secrets(secrets: dict[str, str] | None) -> dict[str, str]:

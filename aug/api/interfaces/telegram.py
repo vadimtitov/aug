@@ -14,7 +14,8 @@ import io
 import logging
 import re
 import subprocess
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from functools import wraps
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
@@ -86,6 +87,26 @@ _TOOL_NAMES = {
 _ARG_TRUNCATE = 50
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 _SECRET_NAME, _SECRET_VALUE = range(2)
+
+
+def _is_allowed(chat_id: int) -> bool:
+    allowed = get_settings().allowed_chat_ids
+    return not allowed or chat_id in allowed
+
+
+def _restricted(handler: Callable) -> Callable:
+    """Decorator: silently drop updates from chats not on the allow-list.
+
+    Apply to every command handler so auth is enforced at the boundary and
+    cannot be accidentally omitted from a new handler.
+    """
+
+    @wraps(handler)
+    async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_chat and _is_allowed(update.effective_chat.id):
+            return await handler(self, update, context)
+
+    return wrapper
 
 
 class TelegramInterface(BaseInterface[Update]):
@@ -265,8 +286,14 @@ class TelegramInterface(BaseInterface[Update]):
     # ------------------------------------------------------------------
 
     def build_bot(self) -> Application:
-        bot_app = Application.builder().token(get_settings().TELEGRAM_BOT_TOKEN).build()  # type: ignore[arg-type]
+        bot_app = (  # type: ignore[arg-type]
+            Application.builder()
+            .token(get_settings().TELEGRAM_BOT_TOKEN)
+            .concurrent_updates(True)
+            .build()
+        )
         bot_app.add_handler(CommandHandler("clear", self._handle_clear))
+        bot_app.add_handler(CommandHandler("stop", self._handle_stop))
         bot_app.add_handler(
             ConversationHandler(
                 entry_points=[CommandHandler("secret", self._secret_start)],
@@ -311,6 +338,7 @@ class TelegramInterface(BaseInterface[Update]):
         await self._bot_app.bot.set_my_commands(
             [
                 ("clear", "Start a new conversation"),
+                ("stop", "Stop the current run"),
                 ("version", "Switch agent version"),
                 ("secret", "Store a secret"),
                 ("prompt", "Export current system prompt as a file"),
@@ -349,18 +377,23 @@ class TelegramInterface(BaseInterface[Update]):
     # Command handlers
     # ------------------------------------------------------------------
 
+    @_restricted
+    async def _handle_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat_id = update.effective_chat.id  # type: ignore[union-attr]
+        stopped = self.stop_run(_thread_id(chat_id))
+        msg = "Stopping..." if stopped else "Nothing is running."
+        await update.message.reply_text(msg)  # type: ignore[union-attr]
+
+    @_restricted
     async def _handle_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        if not _is_allowed(chat_id):
-            return
         current = get_setting("telegram", "chats", str(chat_id), "session", default=0)
         set_setting("telegram", "chats", str(chat_id), "session", value=current + 1)
         await update.message.reply_text("Context cleared. Starting fresh.")  # type: ignore[union-attr]
 
+    @_restricted
     async def _handle_version(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        if not _is_allowed(chat_id):
-            return
         current = get_setting("telegram", "chats", str(chat_id), "agent", default="default")
         agents = [a for a in list_agents() if a != "fake"]
         buttons = [
@@ -377,6 +410,7 @@ class TelegramInterface(BaseInterface[Update]):
             reply_markup=InlineKeyboardMarkup(buttons),
         )
 
+    @_restricted
     async def _handle_version_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -385,8 +419,6 @@ class TelegramInterface(BaseInterface[Update]):
             return
         await query.answer()
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        if not _is_allowed(chat_id):
-            return
         agent_name = query.data.split(":", 1)[1]  # type: ignore[union-attr]
         if agent_name not in list_agents():
             await query.edit_message_text("Unknown version.")
@@ -396,10 +428,9 @@ class TelegramInterface(BaseInterface[Update]):
             f"Switched to <code>{_escape(agent_name)}</code>.", parse_mode="HTML"
         )
 
+    @_restricted
     async def _handle_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        if not _is_allowed(chat_id):
-            return
         state = AgentState(
             messages=[],
             thread_id=_thread_id(chat_id),
@@ -410,10 +441,8 @@ class TelegramInterface(BaseInterface[Update]):
         file.name = "system_prompt.txt"
         await update.message.reply_document(document=file, filename="system_prompt.txt")  # type: ignore[union-attr]
 
+    @_restricted
     async def _handle_consolidate(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        if not _is_allowed(chat_id):
-            return
         await update.message.reply_text("Running memory consolidation...")  # type: ignore[union-attr]
         try:
             ran = await run_light_consolidation()
@@ -423,12 +452,10 @@ class TelegramInterface(BaseInterface[Update]):
             logger.exception("Manual consolidation failed")
             await update.message.reply_text("Consolidation failed — check logs.")  # type: ignore[union-attr]
 
+    @_restricted
     async def _handle_consolidate_deep(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        if not _is_allowed(chat_id):
-            return
         await update.message.reply_text("Running deep consolidation...")  # type: ignore[union-attr]
         try:
             await run_deep_consolidation()
@@ -437,9 +464,8 @@ class TelegramInterface(BaseInterface[Update]):
             logger.exception("Manual deep consolidation failed")
             await update.message.reply_text("Deep consolidation failed — check logs.")  # type: ignore[union-attr]
 
+    @_restricted
     async def _secret_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        if not _is_allowed(update.effective_chat.id):  # type: ignore[union-attr]
-            return ConversationHandler.END
         msg = await update.message.reply_text("Enter secret name:")  # type: ignore[union-attr]
         context.user_data["secret_msgs"] = [update.message.message_id, msg.message_id]  # type: ignore[union-attr]
         return _SECRET_NAME
@@ -482,11 +508,6 @@ def build_interface(checkpointer: BaseCheckpointSaver) -> TelegramInterface:
 # ---------------------------------------------------------------------------
 # Private utilities
 # ---------------------------------------------------------------------------
-
-
-def _is_allowed(chat_id: int) -> bool:
-    allowed = get_settings().allowed_chat_ids
-    return not allowed or chat_id in allowed
 
 
 def _thread_id(chat_id: int) -> str:

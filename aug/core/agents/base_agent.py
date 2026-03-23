@@ -4,12 +4,14 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from typing import Any
 
 from langchain_core.runnables.config import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
+from langgraph.types import StateSnapshot
 
 from aug.core.events import AgentEvent, ToolEndEvent, ToolStartEvent, parse_event
 from aug.core.state import AgentState, AgentStateUpdate
@@ -27,6 +29,10 @@ class BaseAgent(ABC):
                             no tool calls
                                |
                         [postprocess] -> END
+
+    The graph is compiled with ``interrupt_after=["call_tools"]`` so that
+    _agent_stream in base.py can check for soft interrupts and inject new
+    HumanMessages between tool rounds via Command(update=…).
 
     Hooks:
         preprocess()  — override to modify state before the LLM is called
@@ -52,7 +58,7 @@ class BaseAgent(ABC):
 
     async def astream_events(
         self,
-        state: AgentState,
+        state: AgentState | Any,
         config: RunnableConfig,
         checkpointer: BaseCheckpointSaver,
     ) -> AsyncIterator[AgentEvent]:
@@ -78,6 +84,13 @@ class BaseAgent(ABC):
                     else:
                         logger.info("tool_end tool=%s duration=%.2fs", tool_name, elapsed)
             yield event
+
+    async def aget_state(
+        self, config: RunnableConfig, checkpointer: BaseCheckpointSaver
+    ) -> StateSnapshot:
+        if self._compiled_graph is None:
+            self._compiled_graph = self._build(checkpointer)
+        return await self._compiled_graph.aget_state(config)
 
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
         """Prepare state before the LLM is called."""
@@ -108,4 +121,4 @@ class BaseAgent(ABC):
         graph.add_conditional_edges("call_model", self._should_continue)
         graph.add_edge("call_tools", "call_model")
         graph.add_edge("postprocess", END)
-        return graph.compile(checkpointer=checkpointer)
+        return graph.compile(checkpointer=checkpointer, interrupt_after=["call_tools"])
