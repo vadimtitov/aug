@@ -21,7 +21,7 @@ from langchain_core.tools.base import InjectedToolArg
 from aug.config import get_settings
 from aug.core.events import send_tool_progress_update
 from aug.core.prompts import BROWSER_TASK_CONSTRAINTS
-from aug.core.run import AGENT_RUN_CONFIG_KEY, TOOL_STOP_SENTINEL
+from aug.core.run import AGENT_RUN_CONFIG_KEY, MessageContent
 from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
 from aug.utils.user_settings import get_setting
 
@@ -61,29 +61,32 @@ async def browser(
         return "Browser tool is not available — BROWSER_CDP_URL is not configured.", None
 
     sensitive_data = _resolve_secrets(secrets)
-    run_channel = (config or {}).get("configurable", {}).get(AGENT_RUN_CONFIG_KEY)
+    run = (config or {}).get("configurable", {}).get(AGENT_RUN_CONFIG_KEY)
 
-    # Mutable reference so _step_callback can update the agent's task after creation.
-    agent_holder: list[Agent] = []
+    # Forward reference — populated after Agent is created below.
+    agent_ref: list[Agent] = []
 
     async def _step_callback(state: BrowserStateSummary, output: AgentOutput, step: int) -> None:
-        if run_channel:
-            try:
-                instruction = run_channel.pending_tool_instruction.get_nowait()
-                if instruction is TOOL_STOP_SENTINEL:
-                    raise _BrowserStopped()
-                # Steer: append the user's instruction to the running task.
-                if agent_holder:
-                    agent_holder[0].task += f"\n\nUser update at step {step}: {instruction}"
-                logger.info("browser task updated at step %d: %.80r", step, instruction)
-            except asyncio.QueueEmpty:
-                pass
+        # Drain any user messages that arrived mid-run and inject them into the
+        # browser agent's context so it can adapt without losing progress.
+        if run and agent_ref and run.pending_agent_injection.qsize() > 0:
+            messages: list[MessageContent] = []
+            while True:
+                try:
+                    messages.append(run.pending_agent_injection.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+            agent_ref[0].add_new_task(_format_injected_messages(messages))
+
         goal = output.next_goal or ""
         netloc = urlparse(state.url).netloc or state.url
         text = f"Step {step} · {netloc}"
         if goal:
             text += f"\n{goal}"
         await send_tool_progress_update(text)
+
+    async def _should_stop() -> bool:
+        return run is not None and run.user_requested_stop.is_set()
 
     downloads_dir = Path(_DOWNLOADS_DIR)
     before = set(downloads_dir.iterdir()) if downloads_dir.exists() else set()
@@ -95,10 +98,11 @@ async def browser(
             browser=b,
             sensitive_data=sensitive_data or None,
             register_new_step_callback=_step_callback,
+            register_should_stop_callback=_should_stop,
             extend_system_message=BROWSER_TASK_CONSTRAINTS,
             use_vision="auto",
         )
-        agent_holder.append(agent)
+        agent_ref.append(agent)
         history = await agent.run()
         if history.is_done() and history.final_result():
             after = set(downloads_dir.iterdir()) if downloads_dir.exists() else set()
@@ -113,6 +117,10 @@ async def browser(
                 )
             output = ToolOutput(text=history.final_result(), attachments=attachments)
             return str(output), output
+
+        if run and run.user_requested_stop.is_set():
+            return _stopped_summary(agent), None
+
         errors = history.errors() if history.has_errors() else []
         error_summary = "; ".join(str(e) for e in errors[-3:]) if errors else "unknown reason"
         msg = (
@@ -120,17 +128,11 @@ async def browser(
             f"Errors: {error_summary}. Do NOT assume success — tell the user it failed and why."
         )
         return msg, None
-    except _BrowserStopped:
-        return "Browser task was stopped by user request.", None
     except Exception as e:
         logger.exception("browser tool failed")
         return f"Browser task failed: {e}", None
     finally:
         await b.stop()
-
-
-class _BrowserStopped(Exception):
-    """Raised inside _step_callback to abort a browser run mid-task."""
 
 
 def _model() -> str:
@@ -186,6 +188,51 @@ def _path_to_attachment(path: str) -> Attachment:
     if mime.startswith("image/"):
         return ImageAttachment(data=data, mime_type=mime)
     return FileAttachment(data=data, filename=Path(path).name)
+
+
+def _format_injected_messages(messages: list[MessageContent]) -> str:
+    """Convert queued user messages to a string for add_new_task().
+
+    Extracts text from each message (multimodal content loses non-text parts,
+    which is acceptable — images can't be injected as browser task context).
+    """
+    parts = []
+    for msg in messages:
+        if isinstance(msg, str):
+            parts.append(msg)
+        else:
+            text = "\n".join(b["text"] for b in msg if b.get("type") == "text")
+            if text:
+                parts.append(text)
+    combined = "\n\n".join(parts)
+    return f"[User sent this message while you were working]: {combined}"
+
+
+def _stopped_summary(agent: Agent) -> str:
+    """Build a rich handoff string when the browser task is explicitly stopped."""
+    history = agent.history
+    n = history.number_of_steps()
+    parts: list[str] = [f"Browser task was stopped after {n} steps."]
+
+    thoughts = history.model_thoughts()
+    if thoughts:
+        last = thoughts[-1]
+        if last.memory:
+            parts.append(
+                f"\nProgress summary (browser agent's own accumulated notes):\n{last.memory}"
+            )
+        if last.next_goal:
+            parts.append(f"\nWas about to: {last.next_goal}")
+
+    urls = [u for u in history.urls() if u]
+    if urls:
+        parts.append(f"\nLast page: {urls[-1]}")
+
+    extracted = history.extracted_content()
+    if extracted:
+        parts.append("\nContent extracted before stopping:\n" + "\n".join(extracted))
+
+    return "\n".join(parts)
 
 
 def _is_ip_or_localhost(host: str) -> bool:

@@ -15,28 +15,15 @@ MessageContent = str | list[dict[str, Any]]
 AGENT_RUN_CONFIG_KEY = "agent_run"
 
 
-class StopSignal:
-    """Sentinel placed on pending_tool_instruction by request_stop() to signal tools to abort.
-
-    Using an object instead of a string prevents collision with actual user messages.
-    """
-
-
-TOOL_STOP_SENTINEL = StopSignal()
-
-
 @dataclass
 class AgentRun:
     """Control plane for a single in-flight agent run.
 
     id                       — unique ID for this run (for logging/correlation).
-    user_requested_stop      — set to hard-stop the run; the streaming loop
-                               checks this flag between every yielded event.
+    user_requested_stop      — set to hard-stop the run; checked by the streaming
+                               loop and by tools between execution steps.
     pending_agent_injection  — content queued here is injected as a new HumanMessage
                                at the next interrupt_after=[call_tools] pause point.
-    pending_tool_instruction — text queued here is readable by tools that support
-                               mid-execution steering (e.g. browser), checked
-                               between steps via the tool's progress callback.
     active                   — False once the run has cleaned up; guards against
                                stale injections.
     """
@@ -44,24 +31,15 @@ class AgentRun:
     id: str = field(default_factory=lambda: str(uuid4())[:8])
     user_requested_stop: asyncio.Event = field(default_factory=asyncio.Event)
     pending_agent_injection: asyncio.Queue[MessageContent] = field(default_factory=asyncio.Queue)
-    pending_tool_instruction: asyncio.Queue[str | StopSignal] = field(default_factory=asyncio.Queue)
     active: bool = True
 
     def inject_message(self, content: MessageContent) -> None:
-        """Forward user content into the active run.
-
-        Always queued for the agent loop (next interrupt pause).
-        Only queued for tool steering if content is plain text — multimodal
-        content is not actionable as a tool instruction.
-        """
+        """Queue user content for injection at the next agent pause point."""
         self.pending_agent_injection.put_nowait(content)
-        if isinstance(content, str):
-            self.pending_tool_instruction.put_nowait(content)
 
     def request_stop(self) -> None:
         """Signal the run to stop at the earliest opportunity."""
         self.user_requested_stop.set()
-        self.pending_tool_instruction.put_nowait(TOOL_STOP_SENTINEL)
 
 
 class RunRegistry:

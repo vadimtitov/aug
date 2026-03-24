@@ -30,6 +30,7 @@ from pydantic import BaseModel
 
 from aug.config import get_settings
 from aug.core.events import AgentEvent, ChatModelStreamEvent
+from aug.core.prompts import MID_RUN_INJECTION_PREFIX
 from aug.core.registry import get_agent
 from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, MessageContent, run_registry
 from aug.core.state import AgentState
@@ -189,6 +190,19 @@ class BaseInterface[ContextT](ABC):
                 time.monotonic() - t0,
             )
 
+        # A message that arrived during the final streaming phase (no interrupt point available)
+        # sits unconsumed on the queue. Start a new run for it now.
+        async with run_registry.thread_lock(incoming.thread_id):
+            try:
+                leftover = run.pending_agent_injection.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            new_run = AgentRun()
+            run_registry.set(incoming.thread_id, new_run)
+
+        logger.info("leftover_injection thread=%s new_run=%s", incoming.thread_id, new_run.id)
+        await self._execute_run(new_run, incoming, leftover, context)
+
     def stop_run(self, thread_id: str) -> bool:
         """Stop the active run for a thread. Returns True if there was one."""
         run = run_registry.get(thread_id)
@@ -248,9 +262,19 @@ async def _agent_stream(
         try:
             injection = run.pending_agent_injection.get_nowait()
             logger.info("soft_interrupt thread=%s run=%s", message.thread_id, run.id)
-            graph_input = Command(update={"messages": [HumanMessage(content=injection)]})
+            graph_input = Command(
+                update={"messages": [HumanMessage(content=_frame_injection(injection))]}
+            )
         except asyncio.QueueEmpty:
             graph_input = None  # resume from where the graph left off
+
+
+def _frame_injection(content: MessageContent) -> MessageContent:
+    """Prepend MID_RUN_INJECTION_PREFIX so the LLM knows not to abandon its current task."""
+    if isinstance(content, str):
+        return MID_RUN_INJECTION_PREFIX + content
+    # Multimodal: prepend a text block before the existing blocks.
+    return [{"type": "text", "text": MID_RUN_INJECTION_PREFIX}, *content]
 
 
 async def _collect(stream: AsyncIterator[AgentEvent]) -> str:

@@ -14,7 +14,7 @@ from aug.api.schemas.chat import ChatRequest, ChatResponse
 from aug.api.security import require_api_key
 from aug.core.events import ChatModelStreamEvent
 from aug.core.registry import get_agent, list_agents
-from aug.core.run import TOOL_STOP_SENTINEL, run_registry
+from aug.core.run import run_registry
 from aug.core.state import AgentState
 from aug.utils.logging import set_correlation_id, set_thread_id
 
@@ -120,5 +120,4 @@ async def cancel_run(thread_id: str) -> None:
     run = run_registry.get(thread_id)
     if run and run.active:
         logger.info("cancel_run thread=%s run=%s", thread_id, run.id)
-        run.user_requested_stop.set()
-        run.pending_tool_instruction.put_nowait(TOOL_STOP_SENTINEL)
+        run.request_stop()

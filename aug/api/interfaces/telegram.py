@@ -202,16 +202,19 @@ class TelegramInterface(BaseInterface[Update]):
                         run_id=run_id, tool_name=tool_name, args=args, parent_ids=parent_ids
                     ):
                         text = _format_tool_call(tool_name, args, done=False)
-                        tool_msg = await msg.reply_text(  # type: ignore[union-attr]
-                            text, parse_mode="HTML", link_preview_options=_NO_PREVIEW
-                        )
-                        step_holder: list[str] = [""]
-                        spin = asyncio.create_task(
-                            _spinner_task(tool_msg, tool_name, args, step_holder)
-                        )
-                        tool_msgs[run_id] = (tool_name, args, tool_msg, spin, step_holder)
-                        for pid in parent_ids:
-                            progress_index[pid] = run_id
+                        try:
+                            tool_msg = await msg.reply_text(  # type: ignore[union-attr]
+                                text, parse_mode="HTML", link_preview_options=_NO_PREVIEW
+                            )
+                            step_holder: list[str] = [""]
+                            spin = asyncio.create_task(
+                                _spinner_task(tool_msg, tool_name, args, step_holder)
+                            )
+                            tool_msgs[run_id] = (tool_name, args, tool_msg, spin, step_holder)
+                            for pid in parent_ids:
+                                progress_index[pid] = run_id
+                        except RetryAfter:
+                            pass  # flood control — skip status message, run continues
                         if stream_msg is not None and accumulated_text:
                             try:
                                 await stream_msg.edit_text(
@@ -228,7 +231,7 @@ class TelegramInterface(BaseInterface[Update]):
                             (progress_index[pid] for pid in parent_ids if pid in progress_index),
                             None,
                         )
-                        if tool_run_id:
+                        if tool_run_id and tool_run_id in tool_msgs:
                             tool_name, args, tool_msg, _, step_holder = tool_msgs[tool_run_id]
                             step_holder[0] = step
                     case ToolEndEvent(
