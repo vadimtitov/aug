@@ -29,12 +29,28 @@ compelling (OpenClaw has a large library). Two angles:
 
 ---
 
-## Memory system overhaul
+## Browser agent context gap
 
-Current memory dumps too much into the prompt; a lot of it is duplicated. Needs review:
-- Share the current system prompt with Claude Code and ask for suggested solutions.
-- Possible directions: retrieval-based memory (embed + similarity search instead of full
-  dump), tiered memory (hot/warm/cold), deduplication pass during consolidation.
+The browser agent operates in isolation — it only sees what the main agent explicitly
+passes in its task prompt. The main agent has to predict upfront what context the browser
+will need (credentials, addresses, preferences, operational rules), which isn't always
+possible. This creates a structural gap.
+
+Potential directions:
+- **Richer initial context injection** — automatically prepend relevant sections from
+  `skills.md` (e.g. Deliveroo, Amazon) and `user.md` to every browser task, so the
+  browser agent has standard operational context without the main agent having to think
+  about it.
+- **Browser-to-main interruption** — allow the browser agent to pause its own run and
+  surface a question or blocker back to the main agent (e.g. "I need the OTP code" or
+  "Which address should I use?"). Requires a callback or structured yield mechanism in
+  the browser tool interface.
+- **Dynamic context requests** — the browser agent detects that it is missing something
+  (e.g. hits a login form with no credentials in scope) and requests specific context from
+  the main agent rather than failing or guessing.
+- **Shared tool access** — give the browser agent access to a read-only subset of AUG's
+  tools (e.g. a `lookup_secret` or `get_user_preference` tool) so it can self-resolve
+  gaps without interrupting the main agent.
 
 ---
 

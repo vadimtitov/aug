@@ -3,6 +3,7 @@
 from pathlib import Path
 
 DATA_DIR = Path("/app/data")
+MEMORY_DIR = DATA_DIR / "memory"
 
 
 def read_data_file(name: str) -> str:

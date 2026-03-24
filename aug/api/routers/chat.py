@@ -14,6 +14,7 @@ from aug.api.schemas.chat import ChatRequest, ChatResponse
 from aug.api.security import require_api_key
 from aug.core.events import ChatModelStreamEvent
 from aug.core.registry import get_agent, list_agents
+from aug.core.run import run_registry
 from aug.core.state import AgentState
 from aug.utils.logging import set_correlation_id, set_thread_id
 
@@ -111,3 +112,12 @@ async def stream(body: ChatRequest, request: Request) -> StreamingResponse:
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/{thread_id}/run/cancel", status_code=status.HTTP_204_NO_CONTENT)
+async def cancel_run(thread_id: str) -> None:
+    """Cancel the currently active agent run for a thread, if any."""
+    run = run_registry.get(thread_id)
+    if run and run.active:
+        logger.info("cancel_run thread=%s run=%s", thread_id, run.id)
+        run.request_stop()

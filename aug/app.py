@@ -24,8 +24,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from aug.api.interfaces.telegram import TelegramInterface
 from aug.api.routers import chat, files, gmail_auth, threads
 from aug.config import get_settings
-from aug.core.consolidation import start_consolidation_scheduler
-from aug.core.memory import init_memory_files
+from aug.core.memory import init_memory_files, start_consolidation_scheduler
 from aug.utils.db import create_pool
 from aug.utils.logging import configure_logging, set_correlation_id
 from aug.utils.reminders import start_reminder_loop

@@ -9,8 +9,8 @@ from textwrap import dedent
 
 from pydantic import BaseModel
 
-from aug.core.memory import MEMORY_DIR
 from aug.core.state import AgentState
+from aug.utils.data import MEMORY_DIR
 
 
 class InterfacePrompts(BaseModel):
@@ -323,6 +323,11 @@ LEGACY_SYSTEM_PROMPT = (
     "and you treat the user as an intelligent adult. "
     "When multiple tools are needed, call them simultaneously rather than one at a time."
 )
+
+# Prepended to messages injected mid-run at interrupt_after=["call_tools"] pause points.
+# Gives the LLM context that this arrived while it was working, without prescribing what to do.
+# The LLM decides based on content: steer if it's a correction, stop if the user wants to cancel.
+MID_RUN_INJECTION_PREFIX = "[Message from user while you were working]: "
 
 
 def _section(tag: str, content: str) -> str:
