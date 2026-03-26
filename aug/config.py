@@ -65,6 +65,24 @@ class Settings(BaseSettings):
     # Browser tool — CDP URL of the remote Chromium instance
     BROWSER_CDP_URL: str | None = None
 
+    # Home Assistant (optional — HA reflex disabled if absent)
+    # Accepts HASS_URL, HA_URL, or HOMEASSISTANT_URL; HASS_TOKEN or HOMEASSISTANT_TOKEN
+    HASS_URL: str | None = None
+    HA_URL: str | None = None
+    HOMEASSISTANT_URL: str | None = None
+    HASS_TOKEN: str | None = None
+    HOMEASSISTANT_TOKEN: str | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def ha_url(self) -> str | None:
+        return (self.HASS_URL or self.HA_URL or self.HOMEASSISTANT_URL or "").rstrip("/") or None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def ha_token(self) -> str | None:
+        return self.HASS_TOKEN or self.HOMEASSISTANT_TOKEN or None
+
     @model_validator(mode="after")
     def _validate_paired_settings(self) -> "Settings":
         if bool(self.GMAIL_CLIENT_ID) != bool(self.GMAIL_CLIENT_SECRET):

@@ -14,6 +14,7 @@ from langgraph.prebuilt import ToolNode
 from langgraph.types import StateSnapshot
 
 from aug.core.events import AgentEvent, ToolEndEvent, ToolStartEvent, parse_event
+from aug.core.reflexes import Reflex
 from aug.core.state import AgentState, AgentStateUpdate
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ class BaseAgent(ABC):
     """
 
     tools: list[BaseTool] = []
+    reflexes: list[Reflex] = []
     recursion_limit: int = 25
 
     def __init__(self) -> None:
@@ -97,7 +99,7 @@ class BaseAgent(ABC):
         return AgentStateUpdate()
 
     @abstractmethod
-    def respond(self, state: AgentState) -> AgentStateUpdate:
+    async def respond(self, state: AgentState) -> AgentStateUpdate:
         """Call the LLM and return its response (including any tool call requests)."""
 
     def postprocess(self, state: AgentState) -> AgentStateUpdate:

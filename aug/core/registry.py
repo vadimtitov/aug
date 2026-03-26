@@ -7,6 +7,7 @@ from aug.core.agents.base_agent import BaseAgent
 from aug.core.agents.chat_agent import AugAgent, TimeAwareChatAgent
 from aug.core.agents.fake_agent import FakeAgent
 from aug.core.prompts import LEGACY_SYSTEM_PROMPT
+from aug.core.reflexes.homeassistant import homeassistant_reflex
 from aug.core.tools.brave_search import brave_search
 from aug.core.tools.browser import browser
 from aug.core.tools.fetch_page import fetch_page
@@ -287,6 +288,57 @@ _REGISTRY.update(
         "v7_gpt54": AugAgent(
             model="gpt-5.4",
             tools=_V7_TOOLS,
+            temperature=1.0,
+            recursion_limit=100,
+        ),
+    }
+)
+
+
+_V8_TOOLS = [*_V7_TOOLS]
+_V8_REFLEXES = [homeassistant_reflex("gemini-2.5-flash-lite")]
+
+_REGISTRY.update(
+    {
+        "v8_claude": AugAgent(
+            model="claude-sonnet-4-6",
+            tools=_V8_TOOLS,
+            reflexes=_V8_REFLEXES,
+            temperature=1.0,
+            recursion_limit=100,
+        ),
+        "v8_gpt4o": AugAgent(
+            model="gpt-4o",
+            tools=_V8_TOOLS,
+            reflexes=_V8_REFLEXES,
+            temperature=1.0,
+            recursion_limit=100,
+        ),
+        "v8_gpt41": AugAgent(
+            model="gpt-4.1",
+            tools=_V8_TOOLS,
+            reflexes=_V8_REFLEXES,
+            temperature=1.0,
+            recursion_limit=100,
+        ),
+        "v8_gpt51": AugAgent(
+            model="gpt-5.1",
+            tools=_V8_TOOLS,
+            reflexes=_V8_REFLEXES,
+            temperature=1.0,
+            recursion_limit=100,
+        ),
+        "v8_gemini_flash": AugAgent(
+            model="gemini-2.5-flash",
+            tools=_V8_TOOLS,
+            reflexes=_V8_REFLEXES,
+            temperature=1.0,
+            recursion_limit=100,
+        ),
+        "v8_gemini_pro": AugAgent(
+            model="gemini-2.5-pro",
+            tools=_V8_TOOLS,
+            reflexes=_V8_REFLEXES,
             temperature=1.0,
             recursion_limit=100,
         ),

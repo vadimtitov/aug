@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from aug.config import get_settings
 from aug.core.events import AgentEvent, ChatModelStreamEvent
 from aug.core.prompts import MID_RUN_INJECTION_PREFIX
+from aug.core.reflexes import Reflex, ReflexOutput, run_reflexes
 from aug.core.registry import get_agent
 from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, MessageContent, run_registry
 from aug.core.state import AgentState
@@ -146,10 +147,30 @@ class BaseInterface[ContextT](ABC):
         incoming: IncomingMessage,
         content: MessageContent,
         context: ContextT,
+        fire_reflexes: bool = True,
     ) -> None:
         """Execute the full agent pipeline for a newly started run."""
         set_thread_id(incoming.thread_id)
         register_notification_target(incoming.thread_id, incoming.interface, incoming.sender_id)
+
+        agent = get_agent(incoming.agent_version)
+
+        # Fire reflexes in parallel with the agent run.  The task injects results
+        # into the run as soon as they're available so the agent can pick them up
+        # at the next interrupt_after=["call_tools"] pause — rather than always
+        # landing as a leftover follow-up run after the agent has finished.
+        # Reflexes only fire for real user input — not for system-injected follow-up runs.
+        reflex_task: asyncio.Task[list[ReflexOutput]] | None = None
+        if agent.reflexes and fire_reflexes:
+            query = (
+                content
+                if isinstance(content, str)
+                else " ".join(b["text"] for b in content if b.get("type") == "text")
+            )
+            reflex_task = asyncio.create_task(
+                self._run_reflexes_and_inject(agent.reflexes, query, run, context)
+            )
+
         stream = _agent_stream(content, incoming, self._checkpointer, run)
         t0 = time.monotonic()
         logger.info(
@@ -190,6 +211,12 @@ class BaseInterface[ContextT](ABC):
                 time.monotonic() - t0,
             )
 
+        # Ensure the reflex task has completed and its inject has been placed.
+        # If the reflex finished mid-run the inject was already consumed there;
+        # if it finished after, it now sits in the leftover queue below.
+        if reflex_task is not None:
+            await reflex_task
+
         # A message that arrived during the final streaming phase (no interrupt point available)
         # sits unconsumed on the queue. Start a new run for it now.
         async with run_registry.thread_lock(incoming.thread_id):
@@ -201,7 +228,7 @@ class BaseInterface[ContextT](ABC):
             run_registry.set(incoming.thread_id, new_run)
 
         logger.info("leftover_injection thread=%s new_run=%s", incoming.thread_id, new_run.id)
-        await self._execute_run(new_run, incoming, leftover, context)
+        await self._execute_run(new_run, incoming, leftover, context, fire_reflexes=False)
 
     def stop_run(self, thread_id: str) -> bool:
         """Stop the active run for a thread. Returns True if there was one."""
@@ -210,6 +237,30 @@ class BaseInterface[ContextT](ABC):
             run.request_stop()
             return True
         return False
+
+    async def _run_reflexes_and_inject(
+        self,
+        reflexes: list[Reflex],
+        query: str,
+        run: AgentRun,
+        context: ContextT,
+    ) -> list[ReflexOutput]:
+        """Run reflexes and inject each result into the run immediately on completion.
+
+        By injecting as soon as the reflex finishes (rather than after the agent
+        finishes), the inject lands in the pending queue while the agent may still
+        be running — making it available at the next interrupt_after=["call_tools"]
+        pause point instead of always becoming a leftover follow-up run.
+        """
+        results = await run_reflexes(reflexes, query, [])
+        for result in results:
+            run.inject_message(result.inject)
+            if result.display:
+                try:
+                    await self.send_message(result.display, context)
+                except Exception:
+                    logger.warning("reflex_display_failed", exc_info=True)
+        return results
 
 
 # ---------------------------------------------------------------------------
