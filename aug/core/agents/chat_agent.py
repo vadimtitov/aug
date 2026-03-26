@@ -9,6 +9,7 @@ from langchain_core.tools import BaseTool
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.llm import build_chat_model
 from aug.core.prompts import INTERFACE_PROMPTS, build_system_prompt
+from aug.core.reflexes import Reflex
 from aug.core.state import AgentState, AgentStateUpdate
 from aug.utils.logging import log_token_usage
 
@@ -37,6 +38,7 @@ class ChatAgent(BaseAgent):
         *,
         system_prompt: str = "",
         tools: list[BaseTool] | None = None,
+        reflexes: list[Reflex] | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
         max_retries: int = 2,
@@ -45,6 +47,7 @@ class ChatAgent(BaseAgent):
     ) -> None:
         super().__init__()
         self.tools = tools or []
+        self.reflexes = reflexes or []
         self._system_prompt = system_prompt
         self._model_name = model
         self._llm = build_chat_model(
@@ -65,12 +68,12 @@ class ChatAgent(BaseAgent):
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
         return AgentStateUpdate(system_prompt=self._build_system_prompt(state))
 
-    def respond(self, state: AgentState) -> AgentStateUpdate:
+    async def respond(self, state: AgentState) -> AgentStateUpdate:
         messages = _drop_orphaned_tool_calls(state.messages)
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
-        response: AIMessage = self._llm.invoke(messages)
+        response: AIMessage = await self._llm.ainvoke(messages)
         log_token_usage(response)
         return AgentStateUpdate(messages=[response])
 
@@ -102,6 +105,7 @@ class AugAgent(BaseAgent):
         model: str,
         *,
         tools: list[BaseTool] | None = None,
+        reflexes: list[Reflex] | None = None,
         temperature: float = 0.7,
         max_tokens: int | None = None,
         max_retries: int = 2,
@@ -111,6 +115,7 @@ class AugAgent(BaseAgent):
     ) -> None:
         super().__init__()
         self.tools = tools or []
+        self.reflexes = reflexes or []
         self.recursion_limit = recursion_limit
         self._model_name = model
         self._llm = build_chat_model(
@@ -131,12 +136,12 @@ class AugAgent(BaseAgent):
             return AgentStateUpdate(system_prompt=prompt, messages=[stamped])
         return AgentStateUpdate(system_prompt=prompt)
 
-    def respond(self, state: AgentState) -> AgentStateUpdate:
+    async def respond(self, state: AgentState) -> AgentStateUpdate:
         messages = _drop_orphaned_tool_calls(state.messages)
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
-        response: AIMessage = self._llm.invoke(messages)
+        response: AIMessage = await self._llm.ainvoke(messages)
         log_token_usage(response)
         return AgentStateUpdate(messages=[response])
 

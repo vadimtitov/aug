@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 import markdown as md
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Update
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, MessageLimit
 from telegram.error import BadRequest, RetryAfter
 from telegram.ext import (
     Application,
@@ -86,6 +86,7 @@ _TOOL_NAMES = {
 }
 _ARG_TRUNCATE = 50
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
+_TG_MAX_LEN = MessageLimit.MAX_TEXT_LENGTH
 _SECRET_NAME, _SECRET_VALUE = range(2)
 
 
@@ -188,7 +189,7 @@ class TelegramInterface(BaseInterface[Update]):
                                 accumulated_text, link_preview_options=_NO_PREVIEW
                             )
                             last_stream_edit = now
-                        elif now - last_stream_edit >= 0.3:
+                        elif now - last_stream_edit >= 0.3 and len(accumulated_text) <= _TG_MAX_LEN:
                             try:
                                 await stream_msg.edit_text(
                                     accumulated_text, link_preview_options=_NO_PREVIEW
@@ -257,32 +258,37 @@ class TelegramInterface(BaseInterface[Update]):
                                     await _send_attachment(msg, attachment)  # type: ignore[arg-type]
 
             if accumulated_text:
-                final_text = _to_html(accumulated_text)
-                try:
-                    if stream_msg is not None:
-                        await stream_msg.edit_text(
-                            final_text, parse_mode="HTML", link_preview_options=_NO_PREVIEW
-                        )
-                    else:
+                chunks = _chunk(accumulated_text)
+                for i, chunk in enumerate(chunks):
+                    html = _to_html(chunk)
+                    try:
+                        if i == 0 and stream_msg is not None:
+                            await stream_msg.edit_text(
+                                html, parse_mode="HTML", link_preview_options=_NO_PREVIEW
+                            )
+                        else:
+                            await msg.reply_text(  # type: ignore[union-attr]
+                                html, parse_mode="HTML", link_preview_options=_NO_PREVIEW
+                            )
+                    except RetryAfter as e:
+                        await asyncio.sleep(e.retry_after)
                         await msg.reply_text(  # type: ignore[union-attr]
-                            final_text, parse_mode="HTML", link_preview_options=_NO_PREVIEW
+                            html, parse_mode="HTML", link_preview_options=_NO_PREVIEW
                         )
-                except RetryAfter as e:
-                    await asyncio.sleep(e.retry_after)
-                    await msg.reply_text(  # type: ignore[union-attr]
-                        final_text, parse_mode="HTML", link_preview_options=_NO_PREVIEW
-                    )
-                except BadRequest as e:
-                    if "not modified" not in str(e).lower():
-                        logger.warning("Failed to send HTML, falling back to plain", exc_info=True)
-                        await msg.reply_text(accumulated_text, link_preview_options=_NO_PREVIEW)  # type: ignore[union-attr]
+                    except BadRequest as e:
+                        if "not modified" not in str(e).lower():
+                            logger.warning(
+                                "Failed to send HTML, falling back to plain", exc_info=True
+                            )
+                            await msg.reply_text(chunk, link_preview_options=_NO_PREVIEW)  # type: ignore[union-attr]
 
         finally:
             stop_typing.set()
             typing_task.cancel()
 
     async def send_message(self, message: str, context: Update) -> None:
-        await context.message.reply_text(message)  # type: ignore[union-attr]
+        for chunk in _chunk(message):
+            await context.message.reply_text(chunk)  # type: ignore[union-attr]
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -660,3 +666,26 @@ def _to_html(text: str) -> str:
 
 def _escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _chunk(text: str) -> list[str]:
+    """Split text into chunks that fit within Telegram's message length limit.
+
+    Prefers splitting at paragraph boundaries, then line boundaries, then
+    hard-cuts at the limit as a last resort.
+    """
+    if len(text) <= _TG_MAX_LEN:
+        return [text]
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > _TG_MAX_LEN:
+        split = remaining.rfind("\n\n", 0, _TG_MAX_LEN)
+        if split == -1:
+            split = remaining.rfind("\n", 0, _TG_MAX_LEN)
+        if split == -1:
+            split = _TG_MAX_LEN
+        chunks.append(remaining[:split].strip())
+        remaining = remaining[split:].strip()
+    if remaining:
+        chunks.append(remaining)
+    return [c for c in chunks if c]

@@ -16,7 +16,7 @@ _FAKE_RESPONSE = "[AUG] Hello from the fake agent. No LLM connected."
 
 
 class FakeAgent(BaseAgent):
-    def respond(self, state: AgentState) -> AgentStateUpdate:
+    async def respond(self, state: AgentState) -> AgentStateUpdate:
         return AgentStateUpdate(messages=[AIMessage(content=_FAKE_RESPONSE)])
 
     def build(self, checkpointer: BaseCheckpointSaver) -> CompiledGraph:
