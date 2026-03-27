@@ -70,7 +70,7 @@ def homeassistant_reflex(model: str = _DEFAULT_MODEL) -> Reflex:
             logger.warning("ha_reflex_skip reason=no_entities")
             return None
 
-        actions = await _decide(query, _format_entities(entities), model)
+        actions = await _decide(query, _format_entities(entities), history, model)
         if not actions:
             logger.info("ha_reflex_skip reason=no_action_decided")
             return None
@@ -170,13 +170,20 @@ def _format_entities(entities: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def _decide(query: str, entities_text: str, model: str) -> list[_HAAction]:
+async def _decide(
+    query: str, entities_text: str, history: list[MessageContent], model: str
+) -> list[_HAAction]:
     llm = build_chat_model(model=model, temperature=0).with_structured_output(
         _HADecision, method="function_calling"
     )
+    history_text = (
+        "\n\nRecent conversation:\n" + "\n".join(f"  {m}" for m in history if isinstance(m, str))
+        if history
+        else ""
+    )
     messages = [
         SystemMessage(content=HA_REFLEX_SYSTEM_PROMPT),
-        HumanMessage(content=f"Entities:\n{entities_text}\n\nQuery: {query}"),
+        HumanMessage(content=f"Entities:\n{entities_text}{history_text}\n\nQuery: {query}"),
     ]
     result: _HADecision = await llm.ainvoke(messages)
     return result.actions

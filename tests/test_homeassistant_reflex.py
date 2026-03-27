@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from aug.core.reflexes.homeassistant import (
     ALLOWED_DOMAINS,
     _credentials,
+    _decide,
     _fetch_entities,
     _format_entities,
     _HAAction,
@@ -225,6 +226,54 @@ async def test_reflex_returns_none_when_entities_empty():
         result = await homeassistant_reflex("turn on lights", [])
 
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _decide — history included in prompt
+# ---------------------------------------------------------------------------
+
+
+async def test_decide_includes_history_in_llm_prompt() -> None:
+    """History should appear in the HumanMessage content sent to the LLM."""
+    captured_messages: list = []
+
+    mock_llm = MagicMock()
+    mock_llm.ainvoke = AsyncMock(
+        side_effect=lambda msgs: captured_messages.extend(msgs) or MagicMock(actions=[])
+    )
+    mock_structured = MagicMock()
+    mock_structured.ainvoke = mock_llm.ainvoke
+
+    history = ["User: turn on kitchen light", "Assistant: Done."]
+
+    with patch(
+        "aug.core.reflexes.homeassistant.build_chat_model",
+        return_value=MagicMock(with_structured_output=MagicMock(return_value=mock_structured)),
+    ):
+        await _decide("now turn it off", "light.kitchen (Kitchen) [on]", history, "test-model")
+
+    human_msg = next(m for m in captured_messages if hasattr(m, "content") and "Query" in m.content)
+    assert "User: turn on kitchen light" in human_msg.content
+    assert "Assistant: Done." in human_msg.content
+    assert "now turn it off" in human_msg.content
+
+
+async def test_decide_omits_history_section_when_empty() -> None:
+    captured_messages: list = []
+
+    mock_structured = MagicMock()
+    mock_structured.ainvoke = AsyncMock(
+        side_effect=lambda msgs: captured_messages.extend(msgs) or MagicMock(actions=[])
+    )
+
+    with patch(
+        "aug.core.reflexes.homeassistant.build_chat_model",
+        return_value=MagicMock(with_structured_output=MagicMock(return_value=mock_structured)),
+    ):
+        await _decide("turn on kitchen", "light.kitchen (Kitchen) [off]", [], "test-model")
+
+    human_msg = next(m for m in captured_messages if hasattr(m, "content") and "Query" in m.content)
+    assert "Recent conversation" not in human_msg.content
 
 
 # ---------------------------------------------------------------------------
