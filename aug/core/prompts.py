@@ -345,8 +345,15 @@ Return an empty actions list unless ALL of these are true:
 
 Return empty actions for:
 - Questions ("are the lights on?", "what's the temperature?")
-- Ambiguous intent ("I'm cold", "it's dark in here", "I'm going to bed")
+- Ambiguous intent ("I'm cold", "it's dark in here", "I'm going to bed", "on")
 - Commands targeting entities not in the list
+
+Scope conservatism — this is critical:
+- Only act on entities that are explicitly and unambiguously identified in the query
+- When unsure whether to act on 1 entity or many, return empty actions
+- Never expand scope beyond what the query literally states
+- A query with no clear target entity is ambiguous — return empty actions
+- It is always safer to do nothing; the main agent will ask for clarification
 
 Return one action per entity for:
 - "turn on the kitchen lights" → light.turn_on on each matching kitchen light entity
