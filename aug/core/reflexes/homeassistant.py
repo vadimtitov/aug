@@ -12,6 +12,7 @@ Model is configurable at registration time via homeassistant_reflex(model=...).
 """
 
 import logging
+import random
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
@@ -29,6 +30,58 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MODEL = "gemini-2.5-flash-lite"
 
 _client: HomeAssistantClient | None = None
+
+_DISPLAY_PHRASES = [
+    "Flipping switches...",
+    "Telling your home what to do.",
+    "Negotiating with your house.",
+    "Your house complies.",
+    "Bossing your devices around.",
+    "Poking the smart home...",
+    "Whispering to your devices...",
+    "Pulling levers behind the scenes...",
+    "Waking up your house...",
+    "Convincing your home to cooperate...",
+    "Commanding the castle.",
+    "Herding your smart devices...",
+    "Persuading your home...",
+    "Reminding your home who's in charge.",
+    "Overriding your home's free will...",
+    "Sending your home a strongly-worded message.",
+    "Putting your home to work.",
+    "Summoning the home spirits...",
+    "Wrangling your smart home...",
+    "Pulling strings at home base...",
+    "Reaching into the walls...",
+    "Running home sorcery...",
+    "Enforcing your will upon the house.",
+    "Prodding your castle into action.",
+    "Channeling your inner home overlord.",
+    "Flexing some home control.",
+    "Talking your home through it...",
+    "Making the house dance.",
+    "Dispatching orders to the castle.",
+    "Nudging the machinery...",
+    "Adjusting your domain.",
+    "Exerting dominion over your home.",
+    "Tickling the home network...",
+    "Wrestling with your smart home.",
+    "Taming the house.",
+    "Doing home things.",
+    "Manipulating your domestic environment.",
+    "Running home witchcraft...",
+    "Instructing your home in no uncertain terms.",
+    "Making your dwelling comply.",
+    "Asserting control over the household.",
+    "Bothering your home network...",
+    "Having a word with your house.",
+    "Telling the house what's what.",
+    "Poking things until they move.",
+    "Nudging your home into submission.",
+    "Running home errands you didn't have to lift a finger for.",
+    "Delegating to the house.",
+    "Making your home earn its keep.",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +134,7 @@ def homeassistant_reflex(model: str = _DEFAULT_MODEL) -> Reflex:
         )
         return ReflexOutput(
             inject=f"Home Assistant executed{partial}:\n{lines}",
-            display=f"🏠 Home Assistant{partial}",
+            display=f"🪄 {random.choice(_DISPLAY_PHRASES)}{partial}",
         )
 
     _reflex.__name__ = "homeassistant_reflex"

@@ -317,7 +317,7 @@ async def test_reflex_calls_service_and_returns_output():
     assert result is not None
     assert "light.turn_on" in result.inject
     assert "light.kitchen" in result.inject
-    assert result.display == "🏠 Home Assistant"
+    assert result.display.startswith("🪄 ")
     mock_client.call_service.assert_awaited_once_with("light.turn_on", "light.kitchen", {})
 
 
