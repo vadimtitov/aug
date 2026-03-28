@@ -2,8 +2,11 @@
 
 import asyncio
 import time
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+from aug.api.interfaces.base import _recent_history
 from aug.core.reflexes import Reflex, ReflexOutput, run_reflexes
 
 # ---------------------------------------------------------------------------
@@ -77,6 +80,73 @@ async def test_run_reflexes_swallows_timeout() -> None:
     results = await run_reflexes([slow_reflex, good], "query", [], reflex_timeout=0.05)
     assert len(results) == 1
     assert results[0].inject == "fast"
+
+
+# ---------------------------------------------------------------------------
+# run_reflexes — all run in parallel
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# _recent_history
+# ---------------------------------------------------------------------------
+
+
+def _make_agent(messages: list) -> MagicMock:
+    snapshot = MagicMock()
+    snapshot.values = {"messages": messages}
+    agent = MagicMock()
+    agent.aget_state = AsyncMock(return_value=snapshot)
+    return agent
+
+
+async def test_recent_history_returns_empty_for_new_thread() -> None:
+    agent = _make_agent([])
+    result = await _recent_history(agent, "thread-1", MagicMock())
+    assert result == []
+
+
+async def test_recent_history_labels_human_and_ai_messages() -> None:
+    agent = _make_agent(
+        [
+            HumanMessage(content="turn on the kitchen light"),
+            AIMessage(content="Done, kitchen light is on."),
+        ]
+    )
+    result = await _recent_history(agent, "thread-1", MagicMock())
+    assert result == [
+        "User: turn on the kitchen light",
+        "Assistant: Done, kitchen light is on.",
+    ]
+
+
+async def test_recent_history_filters_tool_messages() -> None:
+    agent = _make_agent(
+        [
+            HumanMessage(content="search something"),
+            ToolMessage(content="[result]", tool_call_id="x"),
+            AIMessage(content="Here is what I found."),
+        ]
+    )
+    result = await _recent_history(agent, "thread-1", MagicMock())
+    assert len(result) == 2
+    assert all("Tool" not in r for r in result)
+
+
+async def test_recent_history_returns_last_n() -> None:
+    messages = [HumanMessage(content=f"msg {i}") for i in range(10)]
+    agent = _make_agent(messages)
+    result = await _recent_history(agent, "thread-1", MagicMock(), n=3)
+    assert len(result) == 3
+    assert "msg 7" in result[0]
+    assert "msg 9" in result[2]
+
+
+async def test_recent_history_returns_empty_on_aget_state_failure() -> None:
+    agent = MagicMock()
+    agent.aget_state = AsyncMock(side_effect=RuntimeError("db down"))
+    result = await _recent_history(agent, "thread-1", MagicMock())
+    assert result == []
 
 
 # ---------------------------------------------------------------------------

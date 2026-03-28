@@ -20,7 +20,7 @@ from uuid import uuid4
 
 import httpx
 import psycopg
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import GraphRecursionError
@@ -29,6 +29,7 @@ from openai import AsyncOpenAI, RateLimitError
 from pydantic import BaseModel
 
 from aug.config import get_settings
+from aug.core.agents.base_agent import BaseAgent
 from aug.core.events import AgentEvent, ChatModelStreamEvent
 from aug.core.prompts import MID_RUN_INJECTION_PREFIX
 from aug.core.reflexes import Reflex, ReflexOutput, run_reflexes
@@ -167,8 +168,9 @@ class BaseInterface[ContextT](ABC):
                 if isinstance(content, str)
                 else " ".join(b["text"] for b in content if b.get("type") == "text")
             )
+            history = await _recent_history(agent, incoming.thread_id, self._checkpointer)
             reflex_task = asyncio.create_task(
-                self._run_reflexes_and_inject(agent.reflexes, query, run, context)
+                self._run_reflexes_and_inject(agent.reflexes, query, history, run, context)
             )
 
         stream = _agent_stream(content, incoming, self._checkpointer, run)
@@ -242,6 +244,7 @@ class BaseInterface[ContextT](ABC):
         self,
         reflexes: list[Reflex],
         query: str,
+        history: list[MessageContent],
         run: AgentRun,
         context: ContextT,
     ) -> list[ReflexOutput]:
@@ -252,7 +255,7 @@ class BaseInterface[ContextT](ABC):
         be running — making it available at the next interrupt_after=["call_tools"]
         pause point instead of always becoming a leftover follow-up run.
         """
-        results = await run_reflexes(reflexes, query, [])
+        results = await run_reflexes(reflexes, query, history)
         for result in results:
             run.inject_message(result.inject)
             if result.display:
@@ -318,6 +321,35 @@ async def _agent_stream(
             )
         except asyncio.QueueEmpty:
             graph_input = None  # resume from where the graph left off
+
+
+async def _recent_history(
+    agent: BaseAgent,
+    thread_id: str,
+    checkpointer: BaseCheckpointSaver,
+    n: int = 3,
+) -> list[MessageContent]:
+    """Return the last *n* human/AI messages from the thread's checkpoint as labeled strings."""
+    config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+    try:
+        snapshot = await agent.aget_state(config, checkpointer)
+    except Exception:
+        logger.warning("history_fetch_failed thread=%s", thread_id, exc_info=True)
+        return []
+    messages = (snapshot.values or {}).get("messages", [])
+    filtered = [m for m in messages if isinstance(m, (HumanMessage, AIMessage))]
+    result: list[MessageContent] = []
+    for msg in filtered[-n:]:
+        prefix = "User" if isinstance(msg, HumanMessage) else "Assistant"
+        if isinstance(msg.content, str):
+            result.append(f"{prefix}: {msg.content}")
+        elif isinstance(msg.content, list):
+            texts = [
+                b["text"] for b in msg.content if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            if texts:
+                result.append(f"{prefix}: {' '.join(texts)}")
+    return result
 
 
 def _frame_injection(content: MessageContent) -> MessageContent:

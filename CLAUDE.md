@@ -42,6 +42,7 @@ aug/
 │       ├── storage.py          ← File storage abstraction
 │       ├── logging.py          ← JSON (prod) / human-readable (dev) structured logging
 │       ├── data.py             ← DATA_DIR, MEMORY_DIR, read_data_file() / write_data_file()
+│       ├── homeassistant.py    ← HomeAssistantClient: typed HA REST+WebSocket client with entity cache
 │       └── user_settings.py    ← per-user settings; get_setting() / set_setting() with nested path
 ├── tests/
 ├── docs/
@@ -216,6 +217,20 @@ only when there is a clear, immediate reason.
 - **All imports at the top of the file** — no inline imports inside functions. Solve circular imports by restructuring modules, not by deferring imports.
 - **Private functions at the bottom** — public API first, helpers (`_prefixed`) last.
 - **No unnecessary abstractions** — three similar lines beat a premature helper.
+
+## Module and class design
+
+- **Separate concerns by layer.** Client code (how to talk to an API) belongs in `utils/`. Orchestration code (what to do with the data) belongs in `core/`. When both live in the same file, neither is clean. See `aug/utils/homeassistant.py` + `aug/core/reflexes/homeassistant.py` as the canonical example.
+
+- **State belongs to objects, not modules.** If you find yourself writing `_thing: SomeType`, `_thing_at: float`, and `_thing_lock: asyncio.Lock | None` at module level — stop. Those are instance variables. Create a class.
+
+- **Use types everywhere.** Named dataclasses (`@dataclass(frozen=True)`) instead of raw `dict`. Typed method signatures. Makes code self-documenting and lets the type checker catch mistakes.
+
+- **The public interface should read like English.** `client.get_entities(label="aug")` is obvious. Ten private helpers with interleaved global state are not. If you have to explain what a function does, the abstraction is wrong.
+
+- **Ask "what layer does this belong to?" before writing.** Every function should have an obvious home. If you're hesitating, the module boundary is probably wrong.
+
+- **The smell test:** if you see scattered `_foo`, `_foo_at`, `_foo_lock` globals — that's a missing class. If you see client logic mixed with orchestration logic in one file — that's a missing module split.
 
 ---
 

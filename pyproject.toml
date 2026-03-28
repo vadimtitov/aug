@@ -26,6 +26,7 @@ dependencies = [
     "browser-use>=0.12.2",
     "google-auth-oauthlib>=1.2",
     "google-api-python-client>=2.100",
+    "websockets>=13.0",
 ]
 
 [dependency-groups]
