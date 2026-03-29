@@ -2,17 +2,16 @@
 
 File layout:
   self.md        — AUG's identity, updated by deep consolidation.
-  user.md        — Who the user is: profile, preferences, behavioural rules.
-  skills.md      — AUG's capabilities: one ## section per named integration.
+  user.md        — Who the user is: profile, preferences, behavioural rules, env facts.
   context.md     — Volatile: Present + Recent. Replaced by light consolidation.
   memory.md      — Stable: Patterns + Significant moments.
   reflections.md — Deep consolidation diary. Never loaded at runtime.
   notes.md       — Ring buffer of raw notes. Cleared after each consolidation.
 
 Consolidation schedule (background asyncio loop, checks hourly):
-  Light (nightly, 03:00 UTC)  — folds notes into context.md / user.md / skills.md.
+  Light (nightly, 03:00 UTC)  — folds notes into context.md / user.md.
   Deep  (weekly,  04:00 UTC)  — reflects across all files; updates memory.md,
-                                 self.md, skills.md, appends to reflections.md.
+                                 self.md, user.md, appends to reflections.md.
 """
 
 import asyncio
@@ -52,7 +51,6 @@ def init_memory_files() -> None:
     _init("user.md", _USER_MD)
     _init("context.md", _CONTEXT_MD)
     _init("memory.md", _MEMORY_MD)
-    _init("skills.md", "")
     _init("reflections.md", "")
     _init("notes.md", "")
 
@@ -75,7 +73,7 @@ def append_note(content: str) -> None:
 
 
 async def run_light_consolidation() -> bool:
-    """Nightly pass: fold notes into context.md, user.md, skills.md.
+    """Nightly pass: fold notes into context.md, user.md.
 
     Returns True if it ran, False if there were no notes to process.
     """
@@ -95,7 +93,6 @@ async def run_light_consolidation() -> bool:
                     notes=notes,
                     context=_read("context.md"),
                     user=_read("user.md"),
-                    skills=_read("skills.md"),
                     now=now,
                 )
             ),
@@ -107,8 +104,6 @@ async def run_light_consolidation() -> bool:
         _write("context.md", updated)
     if updated := _extract("user", text):
         _write("user.md", updated)
-    if updated := _extract("skills", text):
-        _write("skills.md", updated)
 
     _write("notes.md", "")
     _record("light")
@@ -150,7 +145,6 @@ async def run_deep_consolidation() -> None:
                     self_md=_read("self.md"),
                     memory=_read("memory.md"),
                     user=_read("user.md"),
-                    skills=_read("skills.md"),
                     now=now,
                 )
             ),
@@ -162,8 +156,6 @@ async def run_deep_consolidation() -> None:
         _write("memory.md", updated)
     if updated := _extract("user", text):
         _write("user.md", updated)
-    if updated := _extract("skills", text):
-        _write("skills.md", updated)
     if updated := _extract("self", text):
         _write("self.md", updated)
     if new_reflection := _extract("new_reflection", text):
