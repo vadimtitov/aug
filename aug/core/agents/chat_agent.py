@@ -87,7 +87,7 @@ class TimeAwareChatAgent(ChatAgent):
         prompt = self._build_system_prompt(state)
         last = state.messages[-1] if state.messages else None
         if isinstance(last, HumanMessage):
-            stamped = HumanMessage(content=f"[{now}] {last.content}", id=last.id)
+            stamped = HumanMessage(content=_stamp(last.content, now), id=last.id)
             return AgentStateUpdate(system_prompt=prompt, messages=[stamped])
         return AgentStateUpdate(system_prompt=prompt)
 
@@ -132,7 +132,7 @@ class AugAgent(BaseAgent):
         prompt = build_system_prompt(state)
         last = state.messages[-1] if state.messages else None
         if isinstance(last, HumanMessage):
-            stamped = HumanMessage(content=f"[{now}] {last.content}", id=last.id)
+            stamped = HumanMessage(content=_stamp(last.content, now), id=last.id)
             return AgentStateUpdate(system_prompt=prompt, messages=[stamped])
         return AgentStateUpdate(system_prompt=prompt)
 
@@ -144,6 +144,13 @@ class AugAgent(BaseAgent):
         response: AIMessage = await self._llm.ainvoke(messages)
         log_token_usage(response)
         return AgentStateUpdate(messages=[response])
+
+
+def _stamp(content: str | list, now: str) -> str | list:
+    """Prepend a timestamp to a message without destroying multimodal content."""
+    if isinstance(content, str):
+        return f"[{now}] {content}"
+    return [{"type": "text", "text": f"[{now}]"}, *content]
 
 
 def _drop_orphaned_tool_calls(messages: list[AnyMessage]) -> list[AnyMessage]:
