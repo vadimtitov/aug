@@ -118,7 +118,6 @@ async def test_light_consolidation_writes_context_and_user(tmp_path: Path) -> No
     (tmp_path / "notes.md").write_text("[2026-01-01] user likes cats")
     (tmp_path / "context.md").write_text("## Present\n\n## Recent\n")
     (tmp_path / "user.md").write_text("Nothing known.")
-    (tmp_path / "skills.md").write_text("")
 
     response = "<context>## Present\nfocused on cats\n## Recent\n</context><user>Likes cats.</user>"
 
@@ -136,13 +135,13 @@ async def test_light_consolidation_writes_context_and_user(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_light_consolidation_writes_skills(tmp_path: Path) -> None:
+async def test_light_consolidation_writes_env_facts_to_user(tmp_path: Path) -> None:
+    """Operational/env facts (previously skills.md) now go into user.md."""
     (tmp_path / "notes.md").write_text("[2026-01-01] you have Home Assistant at HA_URL")
     (tmp_path / "context.md").write_text("## Present\n\n## Recent\n")
     (tmp_path / "user.md").write_text("Nothing known.")
-    (tmp_path / "skills.md").write_text("")
 
-    response = "<skills>Home Assistant: HA_URL + HASS_TOKEN. Query entity IDs before use.</skills>"
+    response = "<user>Home Assistant: HA_URL + HASS_TOKEN. Query entity IDs before use.</user>"
 
     with (
         patch("aug.core.memory.MEMORY_DIR", tmp_path),
@@ -152,7 +151,7 @@ async def test_light_consolidation_writes_skills(tmp_path: Path) -> None:
     ):
         await run_light_consolidation()
 
-    assert "Home Assistant" in (tmp_path / "skills.md").read_text()
+    assert "Home Assistant" in (tmp_path / "user.md").read_text()
 
 
 @pytest.mark.asyncio
@@ -161,9 +160,8 @@ async def test_light_consolidation_skips_missing_tags(tmp_path: Path) -> None:
     (tmp_path / "notes.md").write_text("[2026-01-01] something minor")
     (tmp_path / "context.md").write_text("original context")
     (tmp_path / "user.md").write_text("original user")
-    (tmp_path / "skills.md").write_text("original skills")
 
-    response = "<context>updated context</context>"  # user and skills omitted
+    response = "<context>updated context</context>"  # user omitted
 
     with (
         patch("aug.core.memory.MEMORY_DIR", tmp_path),
@@ -175,4 +173,3 @@ async def test_light_consolidation_skips_missing_tags(tmp_path: Path) -> None:
 
     assert "updated context" in (tmp_path / "context.md").read_text()
     assert (tmp_path / "user.md").read_text() == "original user"
-    assert (tmp_path / "skills.md").read_text() == "original skills"

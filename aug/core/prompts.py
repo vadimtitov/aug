@@ -58,7 +58,6 @@ def build_system_prompt(state: AgentState) -> str:
         ("self", self_content),
         ("approach", _APPROACH),
         ("user", _read("user.md")),
-        ("skills", _read("skills.md")),
         ("context", _read("context.md")),
         ("memory", _read("memory.md")),
         ("notes", _read("notes.md")),
@@ -93,20 +92,13 @@ Current files:
 <user>
 {user}
 </user>
-<skills>
-{skills}
-</skills>
-
 Update the files based on the notes. Rules:
 - `context.md` (Present + Recent): replace Present with the user's current focus. \
 Add genuinely notable things to Recent — not everything, only what has weight. \
 Volatile — trim stale entries freely.
-- `user.md`: facts about who this person is — profile, preferences, behavioural rules.
-- `skills.md`: one `##` section per named integration or capability (e.g. `## Home Assistant`, \
-`## Deliveroo`, `## Amazon`, `## Portainer`). Each section contains everything needed to use \
-that skill: endpoints, credentials/secrets, operational rules, typical defaults. \
-NOT the user's profile. If a note says "you have X API / token / can do Y", it goes here. \
-Do not group unrelated skills under a generic heading — each gets its own named section.
+- `user.md`: everything worth knowing about this person — who they are, how they think, \
+their preferences and rules, their environment, their tools and systems, their accounts. \
+If it would help AUG serve them better next time, it goes here.
 - Be concise. A well-chosen sentence beats a paragraph. Only return files that changed.
 
 Return updated files (omit unchanged ones):
@@ -116,9 +108,6 @@ Return updated files (omit unchanged ones):
 <user>
 [full updated user.md, or omit if unchanged]
 </user>
-<skills>
-[full updated skills.md, or omit if unchanged]
-</skills>
 """
 
 CONSOLIDATION_DEEP_SYSTEM = """\
@@ -188,10 +177,6 @@ Current files:
 {user}
 </user>
 
-<skills>
-{skills}
-</skills>
-
 Based on your reflection, update the files.
 
 memory.md rules:
@@ -203,18 +188,10 @@ A single data point does not earn a pattern. Remove patterns that no longer hold
 - `## Significant moments`: add only genuinely important moments. Keep it short.
 
 user.md rules:
-- Contains who this person is: profile, preferences, behavioural rules, how to treat them.
-- Update only where understanding has solidified — confirmed character, not impressions.
-- Remove anything that belongs in skills.md (see below).
-
-skills.md rules:
-- One `##` section per named integration or capability (e.g. `## Home Assistant`, \
-`## Deliveroo`, `## Amazon`, `## Portainer`, `## Spotify`). Each section contains \
-everything needed to use that skill: endpoints, secrets, operational rules, defaults.
-- If user.md contains any capability/integration info, move it here.
-- If skills.md has generic grouping headings (e.g. "Integrations and infrastructure", \
-"Accounts and secrets"), restructure into named per-skill sections.
-- Only return if the content changed.
+- Contains everything worth knowing about this person — who they are, how they think, \
+their preferences and rules, their environment, their tools and systems, their accounts. \
+If user.md currently has a separate skills/integrations section, merge it in here.
+- Update only where understanding has solidified — confirmed facts, not fleeting impressions.
 
 self.md rules:
 - Update if your sense of identity, role, or character has shifted — not just refined, \
@@ -228,9 +205,6 @@ Return updated files (omit unchanged ones) plus the new reflection to append:
 <user>
 [full updated user.md, or omit if unchanged]
 </user>
-<skills>
-[full updated skills.md, or omit if unchanged]
-</skills>
 <self>
 [full updated self.md, or omit if unchanged]
 </self>

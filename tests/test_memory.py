@@ -39,14 +39,6 @@ def test_init_memory_md_has_sections(tmp_path: Path) -> None:
     assert "Recent" in (memory_dir / "context.md").read_text()
 
 
-def test_init_creates_skills_file(tmp_path: Path) -> None:
-    memory_dir = tmp_path / "memory"
-    with patch("aug.core.memory.MEMORY_DIR", memory_dir):
-        init_memory_files()
-
-    assert (memory_dir / "skills.md").exists()
-
-
 def test_init_does_not_overwrite_existing(tmp_path: Path) -> None:
     memory_dir = tmp_path / "memory"
     memory_dir.mkdir()

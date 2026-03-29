@@ -69,24 +69,14 @@ def test_no_memory_system_section(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Skills section — conditional
+# Skills section — removed
 # ---------------------------------------------------------------------------
 
 
-def test_skills_absent_when_empty(tmp_path: Path) -> None:
-    prompt = _build(tmp_path, files={"skills.md": ""})
+def test_skills_section_not_in_prompt(tmp_path: Path) -> None:
+    """skills.md is deprecated — <skills> section must never appear in system prompt."""
+    prompt = _build(tmp_path, files={"skills.md": "some leftover skills content"})
     assert "<skills>" not in prompt
-
-
-def test_skills_absent_when_missing(tmp_path: Path) -> None:
-    prompt = _build(tmp_path)
-    assert "<skills>" not in prompt
-
-
-def test_skills_present_when_non_empty(tmp_path: Path) -> None:
-    prompt = _build(tmp_path, files={"skills.md": "Home Assistant: HA_URL + HASS_TOKEN"})
-    assert "<skills>" in prompt
-    assert "Home Assistant" in prompt
 
 
 # ---------------------------------------------------------------------------

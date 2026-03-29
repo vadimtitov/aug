@@ -37,10 +37,9 @@ will need (credentials, addresses, preferences, operational rules), which isn't 
 possible. This creates a structural gap.
 
 Potential directions:
-- **Richer initial context injection** — automatically prepend relevant sections from
-  `skills.md` (e.g. Deliveroo, Amazon) and `user.md` to every browser task, so the
-  browser agent has standard operational context without the main agent having to think
-  about it.
+- **Richer initial context injection** — automatically prepend relevant skill files
+  and `user.md` to every browser task, so the browser agent has standard operational
+  context without the main agent having to think about it.
 - **Browser-to-main interruption** — allow the browser agent to pause its own run and
   surface a question or blocker back to the main agent (e.g. "I need the OTP code" or
   "Which address should I use?"). Requires a callback or structured yield mechanism in
