@@ -6,7 +6,7 @@ Polling runs as a background task started during FastAPI lifespan — no public
 URL or webhook registration needed. If TELEGRAM_BOT_TOKEN is not set the bot
 is silently disabled.
 
-Supported input types: text, voice (transcribed), photos, location.
+Supported input types: text, voice (transcribed), audio, photos, stickers, documents, location.
 """
 
 import asyncio
@@ -17,6 +17,7 @@ import subprocess
 from collections.abc import AsyncIterator, Callable
 from functools import wraps
 from html.parser import HTMLParser
+from pathlib import Path
 from urllib.parse import urlparse
 
 import markdown as md
@@ -35,9 +36,8 @@ from telegram.ext import (
 )
 
 from aug.api.interfaces.base import (
-    AudioContent,
     BaseInterface,
-    ImageContent,
+    FileContent,
     IncomingMessage,
     LocationContent,
     TextContent,
@@ -55,6 +55,7 @@ from aug.core.prompts import build_system_prompt
 from aug.core.registry import list_agents
 from aug.core.state import AgentState
 from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
+from aug.utils.data import UPLOADS_DIR
 from aug.utils.user_settings import get_setting, set_setting
 
 logger = logging.getLogger(__name__)
@@ -127,20 +128,79 @@ class TelegramInterface(BaseInterface[Update]):
         if not _is_allowed(chat_id):
             return None
 
+        thread_id = _thread_id(chat_id)
+        upload_dir = UPLOADS_DIR / thread_id
+
         parts = []
         if msg.voice:
-            file = await msg.voice.get_file()
-            parts.append(AudioContent(data=bytes(await file.download_as_bytearray())))
+            tg_file = await msg.voice.get_file()
+            data = bytes(await tg_file.download_as_bytearray())
+            filename = f"voice_{msg.voice.file_unique_id}.ogg"
+            mime_type = msg.voice.mime_type or "audio/ogg"
+            parts.append(
+                FileContent.from_bytes(
+                    data,
+                    path=str(upload_dir / filename),
+                    mime_type=mime_type,
+                    transcribe=True,
+                )
+            )
+        elif msg.audio:
+            tg_file = await msg.audio.get_file()
+            data = bytes(await tg_file.download_as_bytearray())
+            filename = _safe_filename(msg.audio.file_name or f"audio_{msg.audio.file_unique_id}")
+            mime_type = msg.audio.mime_type or "audio/mpeg"
+            parts.append(
+                FileContent.from_bytes(
+                    data,
+                    path=str(upload_dir / filename),
+                    mime_type=mime_type,
+                )
+            )
+            if msg.caption:
+                parts.append(TextContent(text=msg.caption))
         elif msg.photo:
-            file = await msg.photo[-1].get_file()
-            parts.append(ImageContent(data=bytes(await file.download_as_bytearray())))
+            tg_file = await msg.photo[-1].get_file()
+            data = bytes(await tg_file.download_as_bytearray())
+            filename = f"photo_{msg.photo[-1].file_unique_id}.jpg"
+            parts.append(
+                FileContent.from_bytes(
+                    data,
+                    path=str(upload_dir / filename),
+                    mime_type="image/jpeg",
+                )
+            )
             if msg.caption:
                 parts.append(TextContent(text=msg.caption))
         elif msg.sticker:
-            file = await msg.sticker.get_file()
-            parts.append(ImageContent(data=bytes(await file.download_as_bytearray())))
+            tg_file = await msg.sticker.get_file()
+            data = bytes(await tg_file.download_as_bytearray())
+            filename = f"sticker_{msg.sticker.file_unique_id}.webp"
+            parts.append(
+                FileContent.from_bytes(
+                    data,
+                    path=str(upload_dir / filename),
+                    mime_type="image/webp",
+                )
+            )
             if msg.sticker.emoji:
                 parts.append(TextContent(text=f"[sticker: {msg.sticker.emoji}]"))
+        elif msg.document:
+            tg_file = await msg.document.get_file()
+            data = bytes(await tg_file.download_as_bytearray())
+            filename = _safe_filename(
+                msg.document.file_name or f"document_{msg.document.file_unique_id}"
+            )
+            mime_type = msg.document.mime_type or "application/octet-stream"
+            parts.append(
+                FileContent.from_bytes(
+                    data,
+                    path=str(upload_dir / filename),
+                    mime_type=mime_type,
+                )
+            )
+            if msg.caption:
+                parts.append(TextContent(text=msg.caption))
         elif msg.location:
             parts.append(
                 LocationContent(latitude=msg.location.latitude, longitude=msg.location.longitude)
@@ -157,7 +217,7 @@ class TelegramInterface(BaseInterface[Update]):
             parts=parts,
             interface="telegram",
             sender_id=str(chat_id),
-            thread_id=_thread_id(chat_id),
+            thread_id=thread_id,
             agent_version=get_setting(
                 "telegram", "chats", str(chat_id), "agent", default="default"
             ),
@@ -522,6 +582,17 @@ def build_interface(checkpointer: BaseCheckpointSaver) -> TelegramInterface:
 def _thread_id(chat_id: int) -> str:
     session = get_setting("telegram", "chats", str(chat_id), "session", default=0)
     return f"tg-{chat_id}-{session}"
+
+
+def _safe_filename(filename: str) -> str:
+    """Return a filesystem-safe version of *filename*.
+
+    Strips any path components (prevents traversal) and replaces characters
+    that could cause issues on Linux filesystems. Truncates to 200 chars.
+    """
+    name = Path(filename).name  # strip any directory components
+    safe = re.sub(r"[^\w.\-]", "_", name)
+    return safe[:200] if safe else "file"
 
 
 def _format_tool_call(

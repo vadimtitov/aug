@@ -30,6 +30,16 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.optional-dependencies]
+# Python packages available to the agent via run_bash and tools.
+# Installed in Docker via: uv sync --extra agent-tools
+agent-tools = [
+    "pandas>=2.0",
+    "pillow>=10.0",
+    "matplotlib>=3.8",
+    "pytesseract>=0.3",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",

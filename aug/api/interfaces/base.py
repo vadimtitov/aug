@@ -8,13 +8,15 @@ Each frontend (Telegram, REST API, etc.) subclasses BaseInterface[ContextT] and 
 The base class owns the full pipeline: preprocess → agent → deliver.
 """
 
+from __future__ import annotations
+
 import asyncio
-import base64
 import io
 import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
@@ -26,7 +28,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 from openai import AsyncOpenAI, RateLimitError
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 
 from aug.config import get_settings
 from aug.core.agents.base_agent import BaseAgent
@@ -51,14 +53,57 @@ class TextContent(BaseModel):
     text: str
 
 
-class AudioContent(BaseModel):
-    data: bytes
-    mime_type: str = "audio/ogg"
+class FileContent(BaseModel):
+    """A file received from any interface, persisted to disk and optionally cached in memory.
 
+    Always construct via ``FileContent.from_bytes()`` when you have the raw bytes.
+    The plain constructor is reserved for Pydantic deserialisation (e.g. checkpoints)
+    where only the field values are available — ``read()`` will fall back to disk in that case.
 
-class ImageContent(BaseModel):
-    data: bytes
-    mime_type: str = "image/jpeg"
+    Attributes:
+        path:       Absolute path where the file is stored on disk.
+        mime_type:  MIME type of the file (e.g. ``"image/jpeg"``).
+        transcribe: If True, ``_preprocess`` will transcribe the audio to text
+                    (intended for voice notes, not music/general audio files).
+    """
+
+    path: str
+    mime_type: str
+    transcribe: bool = False
+    _cache: bytes | None = PrivateAttr(default=None)
+
+    @property
+    def filename(self) -> str:
+        return Path(self.path).name
+
+    @classmethod
+    def from_bytes(
+        cls,
+        data: bytes,
+        *,
+        path: str,
+        mime_type: str,
+        transcribe: bool = False,
+    ) -> FileContent:
+        """Write *data* to *path* and return a FileContent with bytes cached in memory."""
+        obj = cls(path=path, mime_type=mime_type, transcribe=transcribe)
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_bytes(data)
+        obj._cache = data
+        return obj
+
+    def read(self) -> bytes:
+        """Return file bytes, using the in-memory cache when available.
+
+        Falls back to reading from disk if the cache is empty (e.g. after
+        deserialisation from a checkpoint).
+
+        Raises:
+            FileNotFoundError: if the file is not on disk and not cached.
+        """
+        if self._cache is None:
+            self._cache = Path(self.path).read_bytes()
+        return self._cache
 
 
 class LocationContent(BaseModel):
@@ -66,7 +111,7 @@ class LocationContent(BaseModel):
     longitude: float
 
 
-ContentPart = TextContent | AudioContent | ImageContent | LocationContent
+ContentPart = TextContent | FileContent | LocationContent
 
 
 class IncomingMessage(BaseModel):
@@ -379,17 +424,23 @@ async def _preprocess(parts: list[ContentPart]) -> MessageContent:
     for part in parts:
         if isinstance(part, TextContent):
             blocks.append({"type": "text", "text": part.text})
-        elif isinstance(part, AudioContent):
-            transcript = await _transcribe(part.data, part.mime_type)
-            blocks.append({"type": "text", "text": transcript})
-        elif isinstance(part, ImageContent):
-            encoded = base64.b64encode(part.data).decode()
-            blocks.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{part.mime_type};base64,{encoded}"},
-                }
-            )
+        elif isinstance(part, FileContent):
+            if part.mime_type.startswith("image/"):
+                blocks.append({"type": "text", "text": f"[[img:{part.path}|{part.mime_type}]]"})
+            elif part.transcribe:
+                transcript = await _transcribe(part.read(), part.mime_type)
+                blocks.append({"type": "text", "text": transcript})
+                blocks.append({"type": "text", "text": f"[Audio saved to: {part.path}]"})
+            else:
+                blocks.append(
+                    {
+                        "type": "text",
+                        "text": (
+                            f"[File uploaded: {part.filename}"
+                            f" ({part.mime_type}) — saved to {part.path}]"
+                        ),
+                    }
+                )
         elif isinstance(part, LocationContent):
             text = await _geocode(part.latitude, part.longitude)
             blocks.append({"type": "text", "text": text})
