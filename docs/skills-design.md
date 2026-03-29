@@ -103,12 +103,100 @@ On error returns an error string.
 
 ## Implementation plan
 
-1. **Deprecate `skills.md`** — remove from `init_memory_files()`, consolidation I/O, and system prompt builder
-2. **Update consolidation prompts** — remove `<skills>` input/output tags and instructions from both light and deep prompts; add note that operational facts belong in `user.md`
+1. ✅ **Deprecate `skills.md`** — remove from `init_memory_files()`, consolidation I/O, and system prompt builder
+2. ✅ **Update consolidation prompts** — remove `<skills>` input/output tags and instructions from both light and deep prompts; operational facts now go into `user.md`
 3. **Skills loader** (`aug/utils/skills.py`) — `load_skills()` returning `always_on` content list and on-demand index string
 4. **`build_system_prompt()`** — inject always_on skill content + on-demand index
 5. **Tools** (`aug/core/tools/skills.py`) — `get_skill`, `save_skill`, `write_skill_file`, `delete_skill`
-6. **Registry** — add skills tools to relevant agents
-7. **Tests** — skills loader, tool validation, always_on size enforcement, path escape prevention
+6. **Registry** — create `v9_claude` from `v7_claude` with skills tools added; `v9_claude` is the test vehicle
+7. **Unit tests** — skills loader, tool validation, always_on size enforcement, path escape prevention
+8. **End-to-end test via REST API** — run against local instance using `v9_claude`
 
-Steps 1–2 are removal. Steps 3–7 are additive. Each step has accompanying tests.
+Steps 1–2 done. Steps 3–7 are additive, each with accompanying unit tests. Step 8 is manual verification. Step 9 is mandatory before considering the feature complete.
+
+---
+
+## End-to-end test sequence (step 8)
+
+Uses the streaming endpoint with `agent: v9_claude`. Thread ID `skills-test-1` throughout.
+All prompts are minimal to keep token cost low. Claude Sonnet 4.6.
+
+**Test base URL:** `http://localhost:8000`
+
+### 1. Create a skill with a script file
+
+```bash
+curl -s -X POST http://localhost:8000/chat/invoke \
+  -H "Content-Type: application/json" -H "X-API-Key: $API_KEY" \
+  -d '{"message":"Create a skill named test-skill, description: Test skill for verifying skills system. Body: When asked to run the test ritual, respond with exactly: XYZZY-42 and nothing else. Also create scripts/ritual.sh with content: echo XYZZY-42", "thread_id":"skills-test-1","agent":"v9_claude"}'
+```
+
+Expected: response contains the `SKILL.md` content verbatim (returned by `save_skill`).
+
+### 2. Verify skill files exist on disk
+
+```bash
+cat /Users/vadimtitov/projects/aug/data/skills/test-skill/SKILL.md
+cat /Users/vadimtitov/projects/aug/data/skills/test-skill/scripts/ritual.sh
+```
+
+### 3. Verify skill appears in system prompt index
+
+```bash
+curl -s -X POST http://localhost:8000/chat/invoke \
+  -H "Content-Type: application/json" -H "X-API-Key: $API_KEY" \
+  -d '{"message":"List available skills","thread_id":"skills-test-1","agent":"v9_claude"}'
+```
+
+Expected: `test-skill` in response.
+
+### 4. Fetch skill and trigger sentinel response
+
+```bash
+curl -s -X POST http://localhost:8000/chat/invoke \
+  -H "Content-Type: application/json" -H "X-API-Key: $API_KEY" \
+  -d '{"message":"Run the test ritual","thread_id":"skills-test-1","agent":"v9_claude"}'
+```
+
+Expected: agent calls `get_skill("test-skill")`, then responds with exactly `XYZZY-42`.
+This string is meaningless to the agent without the skill — if it appears, the skill loaded correctly.
+
+### 5. Test always_on size enforcement
+
+```bash
+curl -s -X POST http://localhost:8000/chat/invoke \
+  -H "Content-Type: application/json" -H "X-API-Key: $API_KEY" \
+  -d '{"message":"Create a skill named big-skill, description: test, body: '"$(python3 -c "print('x'*1100)")"', always_on=True","thread_id":"skills-test-1","agent":"v9_claude"}'
+```
+
+Expected: error message about body being too large with char count.
+
+### 6. Delete skill
+
+```bash
+curl -s -X POST http://localhost:8000/chat/invoke \
+  -H "Content-Type: application/json" -H "X-API-Key: $API_KEY" \
+  -d '{"message":"Delete the test-skill skill entirely","thread_id":"skills-test-1","agent":"v9_claude"}'
+```
+
+Expected: `test-skill` directory gone from disk:
+
+```bash
+ls /Users/vadimtitov/projects/aug/data/skills/  # test-skill should not appear
+```
+
+---
+
+## Step 9: Self PR review
+
+After E2E tests pass, run `git diff main` and critically review all changes against these dimensions before considering the feature complete:
+
+1. **Correctness** — Does the logic handle all edge cases? Empty skills dir, malformed SKILL.md, missing frontmatter fields, concurrent writes, skills dir not yet created.
+2. **Security** — Path traversal in `write_skill_file`. Name validation completeness. No ability to write outside `/app/data/skills/`.
+3. **Error handling** — Every failure path returns a clear, unambiguous error string. No silent failures. No exceptions leaking to the agent as empty strings.
+4. **Consistency** — Naming, return types, and docstrings consistent with existing tools in the codebase.
+5. **Prompt quality** — Index format in system prompt is clear and actionable. Agent can reliably decide when to call `get_skill`.
+6. **Test coverage** — Unit tests cover validation edge cases, not just happy paths. No tests that pass by accident.
+7. **Dead code / leftovers** — No debug prints, no commented-out code, no unused imports, no stale references to `skills.md`.
+
+Address any findings before shipping.

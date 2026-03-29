@@ -27,7 +27,7 @@ from aug.utils.user_settings import get_setting
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "gemini-2.5-flash-lite"
+_DEFAULT_MODEL = "gemini-2.5-flash"
 
 _client: HomeAssistantClient | None = None
 

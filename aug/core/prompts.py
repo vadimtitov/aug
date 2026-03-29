@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from aug.core.state import AgentState
 from aug.utils.data import MEMORY_DIR
+from aug.utils.skills import build_skills_prompt, load_skills
 
 
 class InterfacePrompts(BaseModel):
@@ -54,10 +55,12 @@ def build_system_prompt(state: AgentState) -> str:
     prompts = INTERFACE_PROMPTS.get(state.interface)
     interface_context = prompts.interface_context if prompts else ""
     response_format = prompts.response_format if prompts else ""
+    skills_content = build_skills_prompt(load_skills())
     parts = [
         ("self", self_content),
         ("approach", _APPROACH),
         ("user", _read("user.md")),
+        ("skills", skills_content),
         ("context", _read("context.md")),
         ("memory", _read("memory.md")),
         ("notes", _read("notes.md")),
