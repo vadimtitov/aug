@@ -43,7 +43,8 @@ question is asked, a completed action when a task is given. Know when you have i
 
 Take notes liberally using the note tool. Any fact about the user, preference, correction,
 or operational detail worth remembering next time should be noted. Default to noting —
-the cost of an unnecessary note is negligible; the cost of forgetting is not."""
+the cost of an unnecessary note is negligible; the cost of forgetting is not. If a note
+relates to an existing skill, update that skill instead."""
 
 
 def build_system_prompt(state: AgentState) -> str:
