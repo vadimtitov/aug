@@ -159,7 +159,7 @@ async def test_gmail_search_no_token():
         with patch("aug.core.tools.gmail.get_settings") as mock_settings:
             mock_settings.return_value.base_url = "http://localhost:8012"
             result = await gmail_search.ainvoke({"query": "test"})
-    assert "not connected" in result
+    assert "GMAIL AUTH FAILED" in result
     assert "http://localhost:8012/auth/gmail" in result
 
 
@@ -216,7 +216,7 @@ async def test_gmail_read_thread_no_token():
         with patch("aug.core.tools.gmail.get_settings") as mock_settings:
             mock_settings.return_value.base_url = "http://localhost:8012"
             result = await gmail_read_thread.ainvoke({"thread_id": "t1"})
-    assert "not connected" in result
+    assert "GMAIL AUTH FAILED" in result
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +251,7 @@ async def test_gmail_send_no_token():
                     "body": "Hello",
                 }
             )
-    assert "not connected" in result
+    assert "GMAIL AUTH FAILED" in result
 
 
 @pytest.mark.asyncio
@@ -301,7 +301,7 @@ async def test_gmail_draft_no_token():
                     "body": "Body",
                 }
             )
-    assert "not connected" in result
+    assert "GMAIL AUTH FAILED" in result
 
 
 @pytest.mark.asyncio

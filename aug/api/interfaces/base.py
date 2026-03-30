@@ -8,13 +8,15 @@ Each frontend (Telegram, REST API, etc.) subclasses BaseInterface[ContextT] and 
 The base class owns the full pipeline: preprocess → agent → deliver.
 """
 
+from __future__ import annotations
+
 import asyncio
-import base64
 import io
 import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
@@ -51,14 +53,39 @@ class TextContent(BaseModel):
     text: str
 
 
-class AudioContent(BaseModel):
-    data: bytes
-    mime_type: str = "audio/ogg"
+class FileContent(BaseModel):
+    """A file received from any interface, persisted to disk.
 
+    Attributes:
+        path:       Absolute path where the file is stored on disk.
+        mime_type:  MIME type of the file (e.g. ``"image/jpeg"``).
+        transcribe: If True, ``_preprocess`` will transcribe the audio to text
+                    (intended for voice notes, not music/general audio files).
+    """
 
-class ImageContent(BaseModel):
-    data: bytes
-    mime_type: str = "image/jpeg"
+    path: str
+    mime_type: str
+    transcribe: bool = False
+
+    @property
+    def filename(self) -> str:
+        return Path(self.path).name
+
+    async def write(self, data: bytes) -> None:
+        """Write *data* to ``path``, creating parent directories as needed."""
+        await asyncio.to_thread(self._write_sync, data)
+
+    def _write_sync(self, data: bytes) -> None:
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        Path(self.path).write_bytes(data)
+
+    async def read(self) -> bytes:
+        """Read file bytes from disk.
+
+        Raises:
+            FileNotFoundError: if the file is not on disk.
+        """
+        return await asyncio.to_thread(Path(self.path).read_bytes)
 
 
 class LocationContent(BaseModel):
@@ -66,7 +93,7 @@ class LocationContent(BaseModel):
     longitude: float
 
 
-ContentPart = TextContent | AudioContent | ImageContent | LocationContent
+ContentPart = TextContent | FileContent | LocationContent
 
 
 class IncomingMessage(BaseModel):
@@ -379,17 +406,23 @@ async def _preprocess(parts: list[ContentPart]) -> MessageContent:
     for part in parts:
         if isinstance(part, TextContent):
             blocks.append({"type": "text", "text": part.text})
-        elif isinstance(part, AudioContent):
-            transcript = await _transcribe(part.data, part.mime_type)
-            blocks.append({"type": "text", "text": transcript})
-        elif isinstance(part, ImageContent):
-            encoded = base64.b64encode(part.data).decode()
-            blocks.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{part.mime_type};base64,{encoded}"},
-                }
-            )
+        elif isinstance(part, FileContent):
+            if part.mime_type.startswith("image/"):
+                blocks.append({"type": "text", "text": f"[[img:{part.path}|{part.mime_type}]]"})
+            elif part.transcribe:
+                transcript = await _transcribe(await part.read(), part.mime_type)
+                blocks.append({"type": "text", "text": transcript})
+                blocks.append({"type": "text", "text": f"[Audio saved to: {part.path}]"})
+            else:
+                blocks.append(
+                    {
+                        "type": "text",
+                        "text": (
+                            f"[File uploaded: {part.filename}"
+                            f" ({part.mime_type}) — saved to {part.path}]"
+                        ),
+                    }
+                )
         elif isinstance(part, LocationContent):
             text = await _geocode(part.latitude, part.longitude)
             blocks.append({"type": "text", "text": text})

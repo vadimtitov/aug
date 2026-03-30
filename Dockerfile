@@ -3,13 +3,24 @@ FROM python:3.12-slim
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
-# System tools + hushed (https://github.com/vadimtitov/hushed).
-# hushed stores secrets on disk and redacts their values from all process output.
-# The main goal: prevent secrets from appearing in any text the LLM could see
-# (tool output, logs, shell responses, crash traces, etc.).
+# --- Service dependencies ---
+# hushed (https://github.com/vadimtitov/hushed) stores secrets on disk and redacts
+# their values from all process output — prevents secrets leaking into LLM context.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl git jq procps \
+        curl git procps \
     && curl -fsSL https://raw.githubusercontent.com/vadimtitov/hushed/main/install.sh | bash \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# --- Agent tools: system utilities available to the agent via run_bash ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        pandoc \
+        imagemagick \
+        tesseract-ocr \
+        poppler-utils \
+        ghostscript \
+        libimage-exiftool-perl \
+        jq \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Non-root user created early so we can chown correctly
@@ -21,14 +32,14 @@ WORKDIR /app
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Install dependencies first (layer-cached until pyproject.toml changes)
-COPY pyproject.toml ./
-RUN uv sync --no-dev --no-install-project
+COPY pyproject.toml uv.lock ./
+RUN uv sync --no-dev --no-install-project --extra agent-tools
 
 # Copy application source
 COPY aug/ ./aug/
 
 # Install the project itself, then hand ownership to appuser
-RUN uv sync --no-dev && \
+RUN uv sync --no-dev --extra agent-tools && \
     mkdir -p /app/browser-downloads && \
     chown -R appuser:appuser /app
 

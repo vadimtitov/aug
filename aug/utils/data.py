@@ -4,6 +4,7 @@ from pathlib import Path
 
 DATA_DIR = Path("/app/data")
 MEMORY_DIR = DATA_DIR / "memory"
+UPLOADS_DIR = DATA_DIR / "uploads"
 
 
 def read_data_file(name: str) -> str:

@@ -7,9 +7,11 @@ import logging
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from email.mime.text import MIMEText
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from langchain_core.tools import tool
 
 from aug.api.routers.gmail_auth import load_token, save_token
@@ -20,15 +22,35 @@ logger = logging.getLogger(__name__)
 _SCOPES = ["https://mail.google.com/"]
 
 
+class GmailAuthError(Exception):
+    """Raised when Gmail credentials are missing or have been revoked."""
+
+
 def _auth_link(account: str) -> str:
     base = get_settings().base_url
     return f"{base}/auth/gmail?account={account}"
 
 
+def _is_auth_error(exc: Exception) -> bool:
+    if isinstance(exc, (GmailAuthError, RefreshError)):
+        return True
+    if isinstance(exc, HttpError) and exc.resp.status in (401, 403):
+        return True
+    return False
+
+
+def _auth_error_message(account: str) -> str:
+    return (
+        f"GMAIL AUTH FAILED for account '{account}'. "
+        f"The token has expired or been revoked. "
+        f"The user MUST re-authorize by visiting: {_auth_link(account)}"
+    )
+
+
 def _get_credentials(account: str) -> Credentials:
     token_data = load_token(account)
     if not token_data:
-        raise RuntimeError(
+        raise GmailAuthError(
             f"Gmail account '{account}' is not connected. Authorize here: {_auth_link(account)}"
         )
     creds = Credentials(
@@ -41,7 +63,7 @@ def _get_credentials(account: str) -> Credentials:
     )
     if creds.expired and creds.refresh_token:
         logger.info("gmail: refreshing token for account=%r", account)
-        creds.refresh(Request())
+        creds.refresh(Request())  # raises RefreshError if token revoked — caught by _is_auth_error
         save_token(
             account,
             {
@@ -134,9 +156,9 @@ async def gmail_search(query: str, max_results: int = 10, account: str = "primar
                 f"Subject: {headers.get('subject', '(no subject)')}"
             )
         return f"Found {len(lines)} message(s):\n" + "\n".join(lines)
-    except RuntimeError as e:
-        return str(e)
     except Exception as e:
+        if _is_auth_error(e):
+            return _auth_error_message(account)
         logger.exception("gmail_search failed")
         return f"Gmail search failed: {e}"
 
@@ -161,9 +183,9 @@ async def gmail_read_thread(thread_id: str, account: str = "primary") -> str:
         for i, msg in enumerate(messages, 1):
             parts.append(f"\n--- Message {i} ---\n{_format_message(msg)}")
         return "\n".join(parts)
-    except RuntimeError as e:
-        return str(e)
     except Exception as e:
+        if _is_auth_error(e):
+            return _auth_error_message(account)
         logger.exception("gmail_read_thread failed")
         return f"Failed to read thread {thread_id!r}: {e}"
 
@@ -187,9 +209,9 @@ async def gmail_send(to: str, subject: str, body: str, account: str = "primary")
         svc.users().messages().send(userId="me", body={"raw": raw}).execute()
         logger.info("gmail_send: sent to=%r subject=%r account=%r", to, subject, account)
         return f"Email sent to {to!r} with subject {subject!r}."
-    except RuntimeError as e:
-        return str(e)
     except Exception as e:
+        if _is_auth_error(e):
+            return _auth_error_message(account)
         logger.exception("gmail_send failed")
         return f"Failed to send email: {e}"
 
@@ -214,8 +236,8 @@ async def gmail_draft(to: str, subject: str, body: str, account: str = "primary"
         draft_id = draft.get("id", "unknown")
         logger.info("gmail_draft: created draft_id=%r account=%r", draft_id, account)
         return f"Draft created (ID: {draft_id}) to {to!r} with subject {subject!r}."
-    except RuntimeError as e:
-        return str(e)
     except Exception as e:
+        if _is_auth_error(e):
+            return _auth_error_message(account)
         logger.exception("gmail_draft failed")
         return f"Failed to create draft: {e}"
