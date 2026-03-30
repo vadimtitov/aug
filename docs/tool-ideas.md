@@ -15,7 +15,7 @@ Telegram photos and stickers are both handled.
 ## Image generation ✅
 Generate images from text prompts.
 Tool: `generate_image(prompt)` — uses LiteLLM proxy.
-Model configured via `IMAGE_GEN_MODEL` env var (default: dall-e-3).
+Model configured via `IMAGE_GEN_MODEL` env var (default: gpt-image-1.5).
 Returns image as attachment sent directly to the user.
 
 ## Portainer ✅

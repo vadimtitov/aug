@@ -242,6 +242,11 @@ INTERFACE_PROMPTS: dict[str, InterfacePrompts] = {
 
             In plain text, escape: & → &amp;  < → &lt;  > → &gt;
 
+            When you send images or files via tools (generate_image, edit_image,
+            respond_with_file), do NOT reference them in your text using markdown
+            syntax like ![...](...) or [filename](path) — they are delivered as
+            Telegram attachments automatically. Just write your comment as plain text.
+
             Tables are not supported. Use labeled lists instead:
 
             WRONG:

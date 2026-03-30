@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     GMAIL_CLIENT_SECRET: str | None = None
 
     # Image generation via LiteLLM proxy
-    IMAGE_GEN_MODEL: str = "dall-e-3"
+    IMAGE_GEN_MODEL: str = "gpt-image-1.5"
 
     # Portainer (optional — portainer tools disabled if absent)
     PORTAINER_URL: str | None = None

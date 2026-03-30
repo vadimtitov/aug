@@ -78,6 +78,7 @@ _TOOL_NAMES = {
     "gmail_draft": "Draft email",
     "respond_with_file": "Send file",
     "generate_image": "Generate image",
+    "edit_image": "Edit image",
     "portainer_list_containers": "Portainer",
     "portainer_container_logs": "Portainer logs",
     "portainer_container_action": "Portainer action",
@@ -498,7 +499,7 @@ class TelegramInterface(BaseInterface[Update]):
 
     @_restricted
     async def _handle_skills(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        index = load_skills()
+        index = await asyncio.to_thread(load_skills)
         all_skills = index.always_on + index.on_demand
         if not all_skills:
             await update.message.reply_text("No skills found.")  # type: ignore[union-attr]
@@ -534,9 +535,11 @@ class TelegramInterface(BaseInterface[Update]):
         )
         msg = update.effective_message
         for f in files:
-            data = io.BytesIO(f.read_bytes())
+            file_bytes = await asyncio.to_thread(f.read_bytes)
             rel = f.relative_to(skill_dir)
-            await msg.reply_document(document=data, filename=str(rel))  # type: ignore[union-attr]
+            await msg.reply_document(  # type: ignore[union-attr]
+                document=io.BytesIO(file_bytes), filename=str(rel)
+            )
 
     @_restricted
     async def _handle_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
