@@ -15,7 +15,7 @@ from aug.core.tools.output import ImageAttachment, ToolOutput
 
 logger = logging.getLogger(__name__)
 
-ImageSize = Literal["1024x1024", "1792x1024", "1024x1792"]
+ImageSize = Literal["1024x1024", "1536x1024", "1024x1536", "auto"]
 
 
 @tool(response_format="content_and_artifact")
@@ -30,8 +30,8 @@ async def generate_image(
 
     Args:
         prompt: Detailed description of the image to generate.
-        size:   Image dimensions — "1024x1024" (square), "1792x1024" (landscape),
-                or "1024x1792" (portrait). Default: square.
+        size:   Image dimensions — "1024x1024" (square), "1536x1024" (landscape),
+                "1024x1536" (portrait), or "auto". Default: square.
         n:      Number of images to generate (1–3). Default: 1.
     """
     n = max(1, min(n, 3))
@@ -47,7 +47,6 @@ async def generate_image(
             model=model,
             prompt=prompt,
             size=size,
-            response_format="b64_json",
             n=n,
         )
     except Exception as e:
@@ -101,7 +100,8 @@ async def edit_image(
     Args:
         source_path: Absolute path to the source image on disk.
         prompt:      Description of the desired edit or transformation.
-        size:        Output dimensions. Default: "1024x1024".
+        size:        Output dimensions — "1024x1024", "1536x1024", "1024x1536", or "auto".
+                     Default: "1024x1024".
     """
     resolved = Path(source_path).resolve()
     if not resolved.exists():
