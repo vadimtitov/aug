@@ -4,7 +4,7 @@
   <tr>
     <td>
 
-**Aug** is a self-hosted personal AI assistant that talks to you via Telegram or REST, ships with powerful tools, doesn't reveal your secrets to the LLM ([hushed](https://github.com/vadimtitov/hushed)), and has a persistent memory system that builds a real picture of you and self across time. Works with any OpenAI-compatible API.
+**Aug** is a self-hosted personal AI assistant that talks to you via Telegram or REST, ships with powerful tools, doesn't reveal your secrets to the LLM ([hushed](https://github.com/vadimtitov/hushed)), and has a persistent memory system that builds a real picture of you and itself across time. Works with any OpenAI-compatible API.
 
 *Work in progress.*
 
@@ -16,24 +16,35 @@
 
 ## Memory
 
-Three plain-text files on disk, injected into the system prompt at runtime, updated by background jobs. No embeddings, no retrieval — everything fits in context.
+The agent effectively writes its own system prompt. Five plain-text files on disk are injected into every conversation alongside hardcoded instructions — the agent reads them as context and writes back to them over time via background jobs and mid-conversation notes.
 
-| File | What it is |
-|------|------------|
-| `self.md` | The agent's identity: character, values, how it relates to you. Changes rarely — only through weekly reflection, never mid-conversation. |
-| `user.md` | Who you are. Biographical facts, core traits. Slow-moving by design. |
-| `memory.md` | Everything else: *Present*, *Recent*, *Patterns*, *Significant moments*, *Reflections*, *Longer arc*. |
+| File | What it is | Updated |
+|------|------------|---------|
+| `notes.md` | Raw notes captured mid-conversation, pending consolidation | During conversation |
+| `user.md` | Who you are — biographical facts, traits, preferences, environment | Nightly |
+| `context.md` | Current focus and recent activity. Volatile — stale entries trimmed freely | Nightly |
+| `self.md` | The agent's identity: character, values, how it relates to you | Weekly |
+| `memory.md` | Patterns and significant moments that have solidified across sessions | Weekly |
 
-Mid-conversation, the agent uses the `note` tool to capture things worth remembering. A nightly job folds notes into `memory.md`. A weekly deep consolidation compresses *Recent* into *Patterns*, updates the longer arc, and — rarely — evolves `self.md`.
-
-See [docs/memory-design.md](docs/memory-design.md) for the full design rationale.
+The `note` tool is the write mechanism during a conversation. A nightly job folds notes into `context.md` and `user.md`. A weekly deep consolidation promotes patterns into `memory.md` and — rarely — evolves `self.md`.
 
 
-## Browser
 
-AUG can control a real Chrome browser — log into websites, fill forms, add items to baskets, anything you'd do manually. Sessions persist so you log in once and it works from then on.
+## Tools
 
-See [docs/browser-tool.md](docs/browser-tool.md) for setup, credentials, 2FA, and security notes.
+| Tool | What it does |
+|------|-------------|
+| Web search | Search the web via [Brave Search API](https://brave.com/search/api/) |
+| Browser | Control a real Chrome browser — log in, fill forms, navigate, screenshot, download files. Powered by [browser-use](https://github.com/browser-use/browser-use). See [setup guide](docs/browser-tool.md). |
+| Shell | Run bash commands inside the container with secret injection and a command blocklist |
+| Gmail | Search, read, send, and draft emails across multiple accounts. See [setup guide](docs/gmail-setup.md). |
+| Image generation | Generate images from text (`IMAGE_GEN_MODEL`, default: gpt-image-1.5) |
+| Image editing | Transform or edit an image you've sent |
+| Files | Send files to the agent, it saves them to disk, processes via shell tools, and can send files back |
+| Reminders | Set one-off or recurring reminders |
+| Skills | User-defined persistent instructions following the [agentskills.io](https://agentskills.io/specification) spec. See [design doc](docs/skills-design.md). |
+| Home Assistant | Control smart home devices via reflexes (runs in parallel with the agent) |
+| Portainer | List, inspect, and manage Docker containers and stacks. See [setup guide](docs/portainer-setup.md). |
 
 
 ## Installation
@@ -47,7 +58,7 @@ The primary deployment path. Add the repo in Portainer under *Stacks → Reposit
 Includes a Postgres container, good for development:
 
 ```bash
-git clone https://github.com/your-username/aug.git
+git clone https://github.com/vadimtitov/aug.git
 cd aug
 cp .env.example .env  # fill in API_KEY, LLM_*, DATABASE_URL
 docker compose up --build
@@ -81,6 +92,14 @@ Interactive docs at `http://localhost:8000/docs`.
 | `TELEGRAM_BOT_TOKEN` | No | Telegram bot; disabled if absent |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | No | Comma-separated allowed chat IDs. Unset = all chats allowed. Get yours from `@userinfobot`. |
 | `BRAVE_API_KEY` | No | Enables web search |
+| `IMAGE_GEN_MODEL` | No | Image generation model via LiteLLM (default: `gpt-image-1.5`) |
+| `GMAIL_CLIENT_ID` | No | Gmail OAuth client ID (pair with `GMAIL_CLIENT_SECRET`) |
+| `GMAIL_CLIENT_SECRET` | No | Gmail OAuth client secret |
+| `BROWSER_CDP_URL` | No | Chrome DevTools Protocol URL for browser tool, e.g. `ws://chrome:9222` |
+| `PORTAINER_URL` | No | Portainer instance URL |
+| `PORTAINER_API_TOKEN` | No | Portainer API token |
+| `HASS_URL` | No | Home Assistant URL |
+| `HASS_TOKEN` | No | Home Assistant long-lived access token |
 | `DEBUG` | No | `true` → human-readable logs; `false` (default) → JSON |
 
 

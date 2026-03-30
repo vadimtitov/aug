@@ -114,10 +114,4 @@ You can also open port 3012 at any time to watch Chrome directly. If AUG is mid-
 
 ## Changing the browser model
 
-The browser sub-agent uses `gemini-2.5-flash` by default. To change it, set via the AUG settings API or Telegram tooling:
-
-```json
-{ "tools": { "browser": { "model": "gpt-4.1" } } }
-```
-
-`gpt-4.1` and `gpt-4o` are the most reliable choices for complex multi-step tasks.
+The browser sub-agent uses `gemini-2.5-flash` by default. `gpt-4.1` and `gpt-4o` are the most reliable choices for complex multi-step tasks. Ask the agent to change it or update your settings directly.
