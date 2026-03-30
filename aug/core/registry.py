@@ -11,7 +11,7 @@ from aug.core.tools.brave_search import brave_search
 from aug.core.tools.browser import browser
 from aug.core.tools.fetch_page import fetch_page
 from aug.core.tools.gmail import gmail_draft, gmail_read_thread, gmail_search, gmail_send
-from aug.core.tools.image_gen import generate_image
+from aug.core.tools.image_gen import edit_image, generate_image
 from aug.core.tools.note import note
 from aug.core.tools.portainer import (
     portainer_container_action,
@@ -40,6 +40,7 @@ _V7_TOOLS = [
     gmail_draft,
     respond_with_file,
     generate_image,
+    edit_image,
     portainer_list_containers,
     portainer_container_logs,
     portainer_container_action,

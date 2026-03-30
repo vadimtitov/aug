@@ -1,5 +1,6 @@
 """Unit tests for the generate_image tool."""
 
+import base64
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,34 +14,24 @@ def _invoke(prompt: str):
     )
 
 
-def _mock_openai_response(url="https://example.com/image.png"):
+def _mock_openai_response_b64(data: bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100):
     img_data = MagicMock()
-    img_data.url = url
+    img_data.b64_json = base64.b64encode(data).decode()
+    img_data.url = None
     response = MagicMock()
     response.data = [img_data]
-    return response
+    return response, data
 
 
 @pytest.mark.asyncio
 async def test_generate_image_success():
-    img_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
-
-    mock_http = AsyncMock()
-    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
-    mock_http.__aexit__ = AsyncMock(return_value=False)
-    mock_img_resp = MagicMock()
-    mock_img_resp.raise_for_status = MagicMock()
-    mock_img_resp.content = img_bytes
-    mock_http.get = AsyncMock(return_value=mock_img_resp)
+    response, img_bytes = _mock_openai_response_b64()
 
     mock_openai = AsyncMock()
     mock_openai.images = AsyncMock()
-    mock_openai.images.generate = AsyncMock(return_value=_mock_openai_response())
+    mock_openai.images.generate = AsyncMock(return_value=response)
 
-    with (
-        patch("aug.core.tools.image_gen.AsyncOpenAI", return_value=mock_openai),
-        patch("aug.core.tools.image_gen.httpx.AsyncClient", return_value=mock_http),
-    ):
+    with patch("aug.core.tools.image_gen.AsyncOpenAI", return_value=mock_openai):
         result = await _invoke("a red cat")
 
     assert "a red cat" in result.content
@@ -62,7 +53,7 @@ async def test_generate_image_openai_error():
 
 
 @pytest.mark.asyncio
-async def test_generate_image_no_url():
+async def test_generate_image_no_data():
     response = MagicMock()
     response.data = []
 
@@ -73,5 +64,5 @@ async def test_generate_image_no_url():
     with patch("aug.core.tools.image_gen.AsyncOpenAI", return_value=mock_openai):
         result = await _invoke("empty")
 
-    assert "url" in result.content.lower()
+    assert "did not return" in result.content.lower()
     assert not result.artifact.attachments

@@ -39,6 +39,7 @@ _BANNER = r"""
   ██╔══██║██║   ██║██║   ██║
   ██║  ██║╚██████╔╝╚██████╔╝
   ╚═╝  ╚═╝ ╚═════╝  ╚═════╝
+
 """
 
 
@@ -85,7 +86,9 @@ async def lifespan(app: FastAPI):
         consolidation_task = await start_consolidation_scheduler()
         reminder_task = start_reminder_loop(app)
 
-        sys.stderr.write(_BANNER)
+        sys.stdout.flush()
+        sys.stdout.write(_BANNER)
+        sys.stdout.flush()
         settings = get_settings()
         logger.info(
             "AUG startup complete — version=%s telegram=%s brave=%s gmail=%s portainer=%s",

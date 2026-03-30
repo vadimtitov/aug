@@ -31,6 +31,11 @@ class _ContextFilter(logging.Filter):
         return True
 
 
+class _HealthCheckFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "GET /health" not in record.getMessage()
+
+
 _token_logger = logging.getLogger("aug.tokens")
 
 
@@ -65,3 +70,5 @@ def configure_logging(debug: bool = False) -> None:
 
     for noisy in ("httpx", "httpcore", "asyncio"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())

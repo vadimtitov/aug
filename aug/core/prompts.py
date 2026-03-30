@@ -43,7 +43,8 @@ question is asked, a completed action when a task is given. Know when you have i
 
 Take notes liberally using the note tool. Any fact about the user, preference, correction,
 or operational detail worth remembering next time should be noted. Default to noting —
-the cost of an unnecessary note is negligible; the cost of forgetting is not."""
+the cost of an unnecessary note is negligible; the cost of forgetting is not. If a note
+relates to an existing skill, update that skill instead."""
 
 
 def build_system_prompt(state: AgentState) -> str:
@@ -241,6 +242,11 @@ INTERFACE_PROMPTS: dict[str, InterfacePrompts] = {
             - <blockquote>quote</blockquote>
 
             In plain text, escape: & → &amp;  < → &lt;  > → &gt;
+
+            When you send images or files via tools (generate_image, edit_image,
+            respond_with_file), do NOT reference them in your text using markdown
+            syntax like ![...](...) or [filename](path) — they are delivered as
+            Telegram attachments automatically. Just write your comment as plain text.
 
             Tables are not supported. Use labeled lists instead:
 

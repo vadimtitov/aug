@@ -15,7 +15,8 @@ def note(content: str) -> str:
     if you think "I might want to know this next time", note it.
 
     Keep each note brief and self-contained. A separate process folds notes
-    into persistent memory later.
+    into persistent memory later. If the note relates to an existing skill,
+    update that skill instead.
 
     Args:
         content: Brief note to save.

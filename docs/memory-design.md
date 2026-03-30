@@ -1,5 +1,7 @@
 # Memory Design — AUG Personal Assistant
 
+> **⚠️ Outdated.** This document reflects an earlier version of the memory system and is no longer accurate. It is kept for historical reference only.
+
 ## Goal
 
 Build an AI personal assistant that feels genuinely human over months and years of use.

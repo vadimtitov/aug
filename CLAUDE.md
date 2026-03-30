@@ -245,7 +245,7 @@ only when there is a clear, immediate reason.
 | `TELEGRAM_BOT_TOKEN` | No | Bot disabled if absent |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | No | Comma-separated chat IDs allowed to use the bot. If unset, all chats are allowed. Get your ID from `@userinfobot` |
 | `BRAVE_API_KEY` | No | Web search tool disabled if absent |
-| `IMAGE_GEN_MODEL` | No | Image generation model via LiteLLM (default: `dall-e-3`) |
+| `IMAGE_GEN_MODEL` | No | Image generation model via LiteLLM (default: `gpt-image-1.5`) |
 | `PORTAINER_URL` | No | Portainer instance URL, e.g. `http://portainer:9000` |
 | `PORTAINER_API_TOKEN` | No | Portainer API token (generate in Portainer → Account Settings) |
 | `PORTAINER_ENDPOINT_ID` | No | Portainer environment ID (default: `1`) |

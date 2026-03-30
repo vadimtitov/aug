@@ -80,7 +80,7 @@ Then refer to it in prompts: *"check my work email for invoices"*.
 
 ## 6. Use it
 
-Switch to an agent that has Gmail tools (e.g. `v4_claude`) and just ask:
+Just ask:
 
 > "Do I have any unread emails from this week?"
 > "Draft a reply to the last email from John saying I'll be there"

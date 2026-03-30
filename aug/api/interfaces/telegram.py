@@ -56,6 +56,7 @@ from aug.core.registry import list_agents
 from aug.core.state import AgentState
 from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
 from aug.utils.data import UPLOADS_DIR
+from aug.utils.skills import SKILLS_DIR, load_skills
 from aug.utils.user_settings import get_setting, set_setting
 
 logger = logging.getLogger(__name__)
@@ -65,10 +66,6 @@ _TOOL_NAMES = {
     "brave_search": "Search",
     "fetch_page": "Fetch",
     "run_bash": "Bash",
-    "remember": "Remember",
-    "recall": "Recall",
-    "update_memory": "Memory",
-    "forget": "Forget",
     "browser": "Browser",
     "note": "Note",
     "gmail_search": "Gmail",
@@ -77,6 +74,7 @@ _TOOL_NAMES = {
     "gmail_draft": "Draft email",
     "respond_with_file": "Send file",
     "generate_image": "Generate image",
+    "edit_image": "Edit image",
     "portainer_list_containers": "Portainer",
     "portainer_container_logs": "Portainer logs",
     "portainer_container_action": "Portainer action",
@@ -84,6 +82,10 @@ _TOOL_NAMES = {
     "portainer_deploy_stack": "Portainer deploy",
     "portainer_stack_action": "Portainer stack",
     "set_reminder": "Set reminder",
+    "get_skill": "Get skill",
+    "save_skill": "Save skill",
+    "write_skill_file": "Write skill file",
+    "delete_skill": "Delete skill",
 }
 _ARG_TRUNCATE = 50
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
@@ -373,12 +375,14 @@ class TelegramInterface(BaseInterface[Update]):
             )
         )
         bot_app.add_handler(CommandHandler("version", self._handle_version))
+        bot_app.add_handler(CommandHandler("skills", self._handle_skills))
         bot_app.add_handler(CommandHandler("prompt", self._handle_prompt))
         bot_app.add_handler(CommandHandler("consolidate", self._handle_consolidate))
         bot_app.add_handler(CommandHandler("consolidate_deep", self._handle_consolidate_deep))
         bot_app.add_handler(
             CallbackQueryHandler(self._handle_version_callback, pattern=r"^version:")
         )
+        bot_app.add_handler(CallbackQueryHandler(self._handle_skills_callback, pattern=r"^skill:"))
         bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text))
         bot_app.add_handler(MessageHandler(filters.VOICE, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.PHOTO, self._handle_input))
@@ -404,6 +408,7 @@ class TelegramInterface(BaseInterface[Update]):
                 ("clear", "Start a new conversation"),
                 ("stop", "Stop the current run"),
                 ("version", "Switch agent version"),
+                ("skills", "Inspect skill files"),
                 ("secret", "Store a secret"),
                 ("prompt", "Export current system prompt as a file"),
                 ("consolidate", "Run memory consolidation now"),
@@ -491,6 +496,50 @@ class TelegramInterface(BaseInterface[Update]):
         await query.edit_message_text(
             f"Switched to <code>{_escape(agent_name)}</code>.", parse_mode="HTML"
         )
+
+    @_restricted
+    async def _handle_skills(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        index = await asyncio.to_thread(load_skills)
+        all_skills = index.always_on + index.on_demand
+        if not all_skills:
+            await update.message.reply_text("No skills found.")  # type: ignore[union-attr]
+            return
+        buttons = [
+            [InlineKeyboardButton(s.name, callback_data=f"skill:{s.name}")] for s in all_skills
+        ]
+        await update.message.reply_text(  # type: ignore[union-attr]
+            "Choose a skill to inspect:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+
+    @_restricted
+    async def _handle_skills_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        query = update.callback_query
+        if query is None:
+            return
+        await query.answer()
+        skill_name = query.data.split(":", 1)[1]  # type: ignore[union-attr]
+        skill_dir = SKILLS_DIR / skill_name
+        if not skill_dir.exists():
+            await query.edit_message_text(f"Skill '{skill_name}' not found.")
+            return
+        files = sorted(f for f in skill_dir.rglob("*") if f.is_file())
+        if not files:
+            await query.edit_message_text(f"Skill '{skill_name}' has no files.")
+            return
+        await query.edit_message_text(
+            f"Sending {len(files)} file(s) for skill <code>{_escape(skill_name)}</code>:",
+            parse_mode="HTML",
+        )
+        msg = update.effective_message
+        for f in files:
+            file_bytes = await asyncio.to_thread(f.read_bytes)
+            rel = f.relative_to(skill_dir)
+            await msg.reply_document(  # type: ignore[union-attr]
+                document=io.BytesIO(file_bytes), filename=str(rel)
+            )
 
     @_restricted
     async def _handle_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -1,6 +1,9 @@
-"""Image generation tool via LiteLLM proxy."""
+"""Image generation and editing tools via LiteLLM proxy."""
 
+import asyncio
+import base64
 import logging
+from pathlib import Path
 from typing import Literal
 
 import httpx
@@ -44,35 +47,113 @@ async def generate_image(
             model=model,
             prompt=prompt,
             size=size,
-            response_format="url",
+            response_format="b64_json",
             n=n,
         )
     except Exception as e:
         logger.exception("generate_image failed")
         return f"Image generation failed: {e}", ToolOutput(text=f"Image generation failed: {e}")
 
-    urls = [item.url for item in response.data if item.url]
-    if not urls:
-        return "Image generation did not return a URL.", ToolOutput(
-            text="Image generation did not return a URL."
-        )
-
     attachments = []
-    for url in urls:
-        logger.info("generate_image downloading from %s", url)
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as http:
-                img_response = await http.get(url)
-                img_response.raise_for_status()
-            attachments.append(ImageAttachment(data=img_response.content, mime_type="image/png"))
-        except Exception as e:
-            logger.exception("generate_image download failed")
-            return f"Image generated but download failed: {e}", ToolOutput(
-                text=f"Image generated but download failed: {e}"
+    for item in response.data:
+        if item.b64_json:
+            attachments.append(
+                ImageAttachment(data=base64.b64decode(item.b64_json), mime_type="image/png")
             )
+        elif item.url:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as http:
+                    img_response = await http.get(item.url)
+                    img_response.raise_for_status()
+                attachments.append(
+                    ImageAttachment(data=img_response.content, mime_type="image/png")
+                )
+            except Exception as e:
+                logger.exception("generate_image download failed")
+                return f"Image generated but download failed: {e}", ToolOutput(
+                    text=f"Image generated but download failed: {e}"
+                )
+
+    if not attachments:
+        return "Image generation did not return any data.", ToolOutput(
+            text="Image generation did not return any data."
+        )
 
     output = ToolOutput(
         text=f"Generated {len(attachments)} image(s) for: {prompt}",
         attachments=attachments,
     )
     return f"Generated {len(attachments)} image(s) for prompt: {prompt!r}", output
+
+
+@tool(response_format="content_and_artifact")
+async def edit_image(
+    source_path: str,
+    prompt: str,
+    size: ImageSize = "1024x1024",
+) -> tuple[str, ToolOutput]:
+    """Edit or transform an existing image based on a text instruction.
+
+    Use this when the user wants to modify, restyle, or transform an image they
+    have already sent. The source image must have been saved to disk (i.e. you
+    know its path from a prior [[img:...]] reference).
+
+    Args:
+        source_path: Absolute path to the source image on disk.
+        prompt:      Description of the desired edit or transformation.
+        size:        Output dimensions. Default: "1024x1024".
+    """
+    resolved = Path(source_path).resolve()
+    if not resolved.exists():
+        msg = f"Source image not found at path: {source_path}"
+        return msg, ToolOutput(text=msg)
+
+    settings = get_settings()
+    client = AsyncOpenAI(api_key=settings.LLM_API_KEY, base_url=settings.LLM_BASE_URL)
+    model = settings.IMAGE_GEN_MODEL
+
+    logger.info(
+        "edit_image model=%r size=%s path=%r prompt=%r", model, size, source_path, prompt[:80]
+    )
+
+    try:
+        image_bytes = await asyncio.to_thread(resolved.read_bytes)
+        filename = resolved.name
+        response = await client.images.edit(
+            model=model,
+            image=(filename, image_bytes),
+            prompt=prompt,
+            size=size,
+            n=1,
+        )
+    except Exception as e:
+        logger.exception("edit_image failed")
+        return f"Image editing failed: {e}", ToolOutput(text=f"Image editing failed: {e}")
+
+    item = response.data[0] if response.data else None
+    if item is None:
+        msg = "Image editing did not return a result."
+        return msg, ToolOutput(text=msg)
+
+    if item.b64_json:
+        image_data = base64.b64decode(item.b64_json)
+    elif item.url:
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as http:
+                img_response = await http.get(item.url)
+                img_response.raise_for_status()
+            image_data = img_response.content
+        except Exception as e:
+            logger.exception("edit_image download failed")
+            return f"Image edited but download failed: {e}", ToolOutput(
+                text=f"Image edited but download failed: {e}"
+            )
+    else:
+        msg = "Image editing returned no URL or data."
+        return msg, ToolOutput(text=msg)
+
+    output = ToolOutput(
+        text=f"Edited image for: {prompt}",
+        attachments=[ImageAttachment(data=image_data, mime_type="image/png")],
+    )
+    return f"Edited image using prompt: {prompt!r}", output
