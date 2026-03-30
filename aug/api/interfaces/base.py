@@ -28,7 +28,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 from openai import AsyncOpenAI, RateLimitError
-from pydantic import BaseModel, PrivateAttr
+from pydantic import BaseModel
 
 from aug.config import get_settings
 from aug.core.agents.base_agent import BaseAgent
@@ -54,11 +54,7 @@ class TextContent(BaseModel):
 
 
 class FileContent(BaseModel):
-    """A file received from any interface, persisted to disk and optionally cached in memory.
-
-    Always construct via ``FileContent.from_bytes()`` when you have the raw bytes.
-    The plain constructor is reserved for Pydantic deserialisation (e.g. checkpoints)
-    where only the field values are available — ``read()`` will fall back to disk in that case.
+    """A file received from any interface, persisted to disk.
 
     Attributes:
         path:       Absolute path where the file is stored on disk.
@@ -70,40 +66,26 @@ class FileContent(BaseModel):
     path: str
     mime_type: str
     transcribe: bool = False
-    _cache: bytes | None = PrivateAttr(default=None)
 
     @property
     def filename(self) -> str:
         return Path(self.path).name
 
-    @classmethod
-    def from_bytes(
-        cls,
-        data: bytes,
-        *,
-        path: str,
-        mime_type: str,
-        transcribe: bool = False,
-    ) -> FileContent:
-        """Write *data* to *path* and return a FileContent with bytes cached in memory."""
-        obj = cls(path=path, mime_type=mime_type, transcribe=transcribe)
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        Path(path).write_bytes(data)
-        obj._cache = data
-        return obj
+    async def write(self, data: bytes) -> None:
+        """Write *data* to ``path``, creating parent directories as needed."""
+        await asyncio.to_thread(self._write_sync, data)
 
-    def read(self) -> bytes:
-        """Return file bytes, using the in-memory cache when available.
+    def _write_sync(self, data: bytes) -> None:
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        Path(self.path).write_bytes(data)
 
-        Falls back to reading from disk if the cache is empty (e.g. after
-        deserialisation from a checkpoint).
+    async def read(self) -> bytes:
+        """Read file bytes from disk.
 
         Raises:
-            FileNotFoundError: if the file is not on disk and not cached.
+            FileNotFoundError: if the file is not on disk.
         """
-        if self._cache is None:
-            self._cache = Path(self.path).read_bytes()
-        return self._cache
+        return await asyncio.to_thread(Path(self.path).read_bytes)
 
 
 class LocationContent(BaseModel):
@@ -428,7 +410,7 @@ async def _preprocess(parts: list[ContentPart]) -> MessageContent:
             if part.mime_type.startswith("image/"):
                 blocks.append({"type": "text", "text": f"[[img:{part.path}|{part.mime_type}]]"})
             elif part.transcribe:
-                transcript = await _transcribe(part.read(), part.mime_type)
+                transcript = await _transcribe(await part.read(), part.mime_type)
                 blocks.append({"type": "text", "text": transcript})
                 blocks.append({"type": "text", "text": f"[Audio saved to: {part.path}]"})
             else:

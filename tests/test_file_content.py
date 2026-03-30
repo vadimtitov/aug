@@ -1,41 +1,30 @@
-"""Unit tests for FileContent — disk persistence, memory cache, and reconstruction."""
+"""Unit tests for FileContent — disk persistence and reconstruction."""
 
 import pytest
 
 from aug.api.interfaces.base import FileContent
 
 # ---------------------------------------------------------------------------
-# from_bytes
+# write
 # ---------------------------------------------------------------------------
 
 
-def test_from_bytes_writes_to_disk(tmp_path):
+@pytest.mark.asyncio
+async def test_write_persists_to_disk(tmp_path):
     path = str(tmp_path / "sub" / "test.jpg")
-    fc = FileContent.from_bytes(b"imagedata", path=path, mime_type="image/jpeg")
+    fc = FileContent(path=path, mime_type="image/jpeg")
+    await fc.write(b"imagedata")
 
-    assert fc.path == path
-    assert fc.filename == "test.jpg"
-    assert fc.mime_type == "image/jpeg"
     assert (tmp_path / "sub" / "test.jpg").read_bytes() == b"imagedata"
 
 
-def test_from_bytes_creates_parent_directories(tmp_path):
+@pytest.mark.asyncio
+async def test_write_creates_parent_directories(tmp_path):
     path = str(tmp_path / "a" / "b" / "c" / "file.txt")
-    FileContent.from_bytes(b"hello", path=path, mime_type="text/plain")
+    fc = FileContent(path=path, mime_type="text/plain")
+    await fc.write(b"hello")
 
     assert (tmp_path / "a" / "b" / "c" / "file.txt").exists()
-
-
-def test_from_bytes_sets_transcribe_flag(tmp_path):
-    path = str(tmp_path / "voice.ogg")
-    fc = FileContent.from_bytes(b"audio", path=path, mime_type="audio/ogg", transcribe=True)
-    assert fc.transcribe is True
-
-
-def test_from_bytes_transcribe_defaults_to_false(tmp_path):
-    path = str(tmp_path / "photo.jpg")
-    fc = FileContent.from_bytes(b"img", path=path, mime_type="image/jpeg")
-    assert fc.transcribe is False
 
 
 # ---------------------------------------------------------------------------
@@ -44,83 +33,66 @@ def test_from_bytes_transcribe_defaults_to_false(tmp_path):
 
 
 def test_filename_derived_from_path(tmp_path):
-    path = str(tmp_path / "report.docx")
-    fc = FileContent(path=path, mime_type="application/octet-stream")
+    fc = FileContent(path=str(tmp_path / "report.docx"), mime_type="application/octet-stream")
     assert fc.filename == "report.docx"
 
 
 # ---------------------------------------------------------------------------
-# read — cache behaviour
+# read
 # ---------------------------------------------------------------------------
 
 
-def test_read_returns_bytes_from_cache(tmp_path, monkeypatch):
-    """read() must not hit the disk when bytes are already cached."""
-    path = str(tmp_path / "photo.jpg")
-    fc = FileContent.from_bytes(b"cached", path=path, mime_type="image/jpeg")
-
-    # Delete the file to prove read() isn't using the disk
-    (tmp_path / "photo.jpg").unlink()
-
-    assert fc.read() == b"cached"
-
-
-def test_read_falls_back_to_disk_when_cache_empty(tmp_path):
-    """After plain-constructor deserialisation (no cache), read() reads from disk."""
-    path = str(tmp_path / "doc.pdf")
-    (tmp_path / "doc.pdf").write_bytes(b"pdfbytes")
-
-    # Simulate checkpoint deserialisation — no data, just fields
-    fc = FileContent(path=path, mime_type="application/pdf")
-
-    assert fc.read() == b"pdfbytes"
-
-
-def test_read_caches_result_after_disk_read(tmp_path):
-    """Second read() call must not re-read the disk."""
+@pytest.mark.asyncio
+async def test_read_returns_bytes_from_disk(tmp_path):
     path = str(tmp_path / "doc.pdf")
     (tmp_path / "doc.pdf").write_bytes(b"pdfbytes")
 
     fc = FileContent(path=path, mime_type="application/pdf")
-    fc.read()  # populates cache
-
-    # Now delete the file — cache should serve the second call
-    (tmp_path / "doc.pdf").unlink()
-
-    assert fc.read() == b"pdfbytes"
+    assert await fc.read() == b"pdfbytes"
 
 
-def test_read_raises_when_no_cache_and_no_file(tmp_path):
+@pytest.mark.asyncio
+async def test_read_raises_when_file_missing(tmp_path):
     fc = FileContent(path=str(tmp_path / "missing.txt"), mime_type="text/plain")
     with pytest.raises(FileNotFoundError):
-        fc.read()
+        await fc.read()
+
+
+@pytest.mark.asyncio
+async def test_write_then_read_roundtrip(tmp_path):
+    fc = FileContent(path=str(tmp_path / "file.bin"), mime_type="application/octet-stream")
+    await fc.write(b"roundtrip")
+    assert await fc.read() == b"roundtrip"
 
 
 # ---------------------------------------------------------------------------
-# Pydantic serialisation — _cache must not appear in model fields
+# transcribe flag
 # ---------------------------------------------------------------------------
 
 
-def test_cache_not_serialised(tmp_path):
-    path = str(tmp_path / "photo.jpg")
-    fc = FileContent.from_bytes(b"img", path=path, mime_type="image/jpeg")
+def test_transcribe_defaults_to_false(tmp_path):
+    fc = FileContent(path=str(tmp_path / "photo.jpg"), mime_type="image/jpeg")
+    assert fc.transcribe is False
 
-    dumped = fc.model_dump()
-    assert "_cache" not in dumped
-    assert "cache" not in dumped
-    assert set(dumped.keys()) == {"path", "mime_type", "transcribe"}
+
+def test_transcribe_flag_set(tmp_path):
+    fc = FileContent(path=str(tmp_path / "voice.ogg"), mime_type="audio/ogg", transcribe=True)
+    assert fc.transcribe is True
+
+
+# ---------------------------------------------------------------------------
+# Pydantic serialisation
+# ---------------------------------------------------------------------------
+
+
+def test_model_dump_contains_expected_keys(tmp_path):
+    fc = FileContent(path=str(tmp_path / "photo.jpg"), mime_type="image/jpeg")
+    assert set(fc.model_dump().keys()) == {"path", "mime_type", "transcribe"}
 
 
 def test_roundtrip_via_model_dump(tmp_path):
-    """model_dump() → FileContent(**d) must reconstruct successfully."""
-    path = str(tmp_path / "photo.jpg")
-    (tmp_path / "photo.jpg").write_bytes(b"img")
-    fc = FileContent(path=path, mime_type="image/jpeg")
-
-    dumped = fc.model_dump()
-    fc2 = FileContent(**dumped)
-
+    fc = FileContent(path=str(tmp_path / "photo.jpg"), mime_type="image/jpeg")
+    fc2 = FileContent(**fc.model_dump())
     assert fc2.path == fc.path
     assert fc2.filename == fc.filename
     assert fc2.mime_type == fc.mime_type
-    assert fc2.read() == b"img"

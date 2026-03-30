@@ -22,13 +22,17 @@ logger = logging.getLogger(__name__)
 _SCOPES = ["https://mail.google.com/"]
 
 
+class GmailAuthError(Exception):
+    """Raised when Gmail credentials are missing or have been revoked."""
+
+
 def _auth_link(account: str) -> str:
     base = get_settings().base_url
     return f"{base}/auth/gmail?account={account}"
 
 
 def _is_auth_error(exc: Exception) -> bool:
-    if isinstance(exc, (RefreshError, RuntimeError)):
+    if isinstance(exc, (GmailAuthError, RefreshError)):
         return True
     if isinstance(exc, HttpError) and exc.resp.status in (401, 403):
         return True
@@ -46,7 +50,7 @@ def _auth_error_message(account: str) -> str:
 def _get_credentials(account: str) -> Credentials:
     token_data = load_token(account)
     if not token_data:
-        raise RuntimeError(
+        raise GmailAuthError(
             f"Gmail account '{account}' is not connected. Authorize here: {_auth_link(account)}"
         )
     creds = Credentials(
@@ -59,13 +63,7 @@ def _get_credentials(account: str) -> Credentials:
     )
     if creds.expired and creds.refresh_token:
         logger.info("gmail: refreshing token for account=%r", account)
-        try:
-            creds.refresh(Request())
-        except RefreshError as e:
-            raise RuntimeError(
-                f"Gmail token for account '{account}' has expired or been revoked. "
-                f"Re-authorize here: {_auth_link(account)}"
-            ) from e
+        creds.refresh(Request())  # raises RefreshError if token revoked — caught by _is_auth_error
         save_token(
             account,
             {

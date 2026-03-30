@@ -135,54 +135,51 @@ class TelegramInterface(BaseInterface[Update]):
         if msg.voice:
             tg_file = await msg.voice.get_file()
             data = bytes(await tg_file.download_as_bytearray())
-            filename = f"voice_{msg.voice.file_unique_id}.ogg"
-            mime_type = msg.voice.mime_type or "audio/ogg"
-            parts.append(
-                FileContent.from_bytes(
-                    data,
-                    path=str(upload_dir / filename),
-                    mime_type=mime_type,
-                    transcribe=True,
-                )
+            fc = FileContent(
+                path=str(upload_dir / f"voice_{msg.voice.file_unique_id}.ogg"),
+                mime_type=msg.voice.mime_type or "audio/ogg",
+                transcribe=True,
             )
+            await fc.write(data)
+            parts.append(fc)
         elif msg.audio:
             tg_file = await msg.audio.get_file()
             data = bytes(await tg_file.download_as_bytearray())
             filename = _safe_filename(msg.audio.file_name or f"audio_{msg.audio.file_unique_id}")
-            mime_type = msg.audio.mime_type or "audio/mpeg"
-            parts.append(
-                FileContent.from_bytes(
-                    data,
-                    path=str(upload_dir / filename),
-                    mime_type=mime_type,
-                )
+            fc = FileContent(
+                path=str(upload_dir / filename),
+                mime_type=msg.audio.mime_type or "audio/mpeg",
             )
+            await fc.write(data)
+            parts.append(fc)
             if msg.caption:
                 parts.append(TextContent(text=msg.caption))
         elif msg.photo:
             tg_file = await msg.photo[-1].get_file()
             data = bytes(await tg_file.download_as_bytearray())
-            filename = f"photo_{msg.photo[-1].file_unique_id}.jpg"
-            parts.append(
-                FileContent.from_bytes(
-                    data,
-                    path=str(upload_dir / filename),
-                    mime_type="image/jpeg",
-                )
+            fc = FileContent(
+                path=str(upload_dir / f"photo_{msg.photo[-1].file_unique_id}.jpg"),
+                mime_type="image/jpeg",
             )
+            await fc.write(data)
+            parts.append(fc)
             if msg.caption:
                 parts.append(TextContent(text=msg.caption))
         elif msg.sticker:
             tg_file = await msg.sticker.get_file()
             data = bytes(await tg_file.download_as_bytearray())
-            filename = f"sticker_{msg.sticker.file_unique_id}.webp"
-            parts.append(
-                FileContent.from_bytes(
-                    data,
-                    path=str(upload_dir / filename),
-                    mime_type="image/webp",
-                )
+            if msg.sticker.is_video:
+                mime_type, ext = "video/webm", "webm"
+            elif msg.sticker.is_animated:
+                mime_type, ext = "application/x-tgsticker", "tgs"
+            else:
+                mime_type, ext = "image/webp", "webp"
+            fc = FileContent(
+                path=str(upload_dir / f"sticker_{msg.sticker.file_unique_id}.{ext}"),
+                mime_type=mime_type,
             )
+            await fc.write(data)
+            parts.append(fc)
             if msg.sticker.emoji:
                 parts.append(TextContent(text=f"[sticker: {msg.sticker.emoji}]"))
         elif msg.document:
@@ -191,14 +188,12 @@ class TelegramInterface(BaseInterface[Update]):
             filename = _safe_filename(
                 msg.document.file_name or f"document_{msg.document.file_unique_id}"
             )
-            mime_type = msg.document.mime_type or "application/octet-stream"
-            parts.append(
-                FileContent.from_bytes(
-                    data,
-                    path=str(upload_dir / filename),
-                    mime_type=mime_type,
-                )
+            fc = FileContent(
+                path=str(upload_dir / filename),
+                mime_type=msg.document.mime_type or "application/octet-stream",
             )
+            await fc.write(data)
+            parts.append(fc)
             if msg.caption:
                 parts.append(TextContent(text=msg.caption))
         elif msg.location:

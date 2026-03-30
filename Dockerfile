@@ -32,7 +32,7 @@ WORKDIR /app
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Install dependencies first (layer-cached until pyproject.toml changes)
-COPY pyproject.toml ./
+COPY pyproject.toml uv.lock ./
 RUN uv sync --no-dev --no-install-project --extra agent-tools
 
 # Copy application source

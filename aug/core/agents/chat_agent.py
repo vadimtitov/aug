@@ -1,5 +1,6 @@
 """General-purpose configurable chat agent."""
 
+import asyncio
 import base64
 import logging
 import re
@@ -75,7 +76,7 @@ class ChatAgent(BaseAgent):
         messages = _drop_orphaned_tool_calls(state.messages)
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
-        messages = _expand_images(messages)
+        messages = await _expand_images(messages)
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
         response: AIMessage = await self._llm.ainvoke(messages)
         log_token_usage(response)
@@ -144,7 +145,7 @@ class AugAgent(BaseAgent):
         messages = _drop_orphaned_tool_calls(state.messages)
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
-        messages = _expand_images(messages)
+        messages = await _expand_images(messages)
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
         response: AIMessage = await self._llm.ainvoke(messages)
         log_token_usage(response)
@@ -161,7 +162,7 @@ def _stamp(content: str | list, now: str) -> str | list:
 _IMG_TAG = re.compile(r"\[\[img:([^|]+)\|([^\]]+)\]\]")
 
 
-def _expand_images(messages: list[AnyMessage]) -> list[AnyMessage]:
+async def _expand_images(messages: list[AnyMessage]) -> list[AnyMessage]:
     """Re-inline [[img:path|mime]] markers in the last HumanMessage as image_url blocks.
 
     Markers in historical messages are left as plain text so the LLM understands
@@ -174,7 +175,7 @@ def _expand_images(messages: list[AnyMessage]) -> list[AnyMessage]:
     if last_human_idx is None:
         return messages
     msg = messages[last_human_idx]
-    blocks = _inline_image_markers(msg.content)
+    blocks = await _inline_image_markers(msg.content)
     if blocks is None:
         return messages
     result = list(messages)
@@ -182,7 +183,7 @@ def _expand_images(messages: list[AnyMessage]) -> list[AnyMessage]:
     return result
 
 
-def _inline_image_markers(content: str | list) -> list | None:
+async def _inline_image_markers(content: str | list) -> list | None:
     """Expand [[img:path|mime]] markers into image_url blocks.
 
     Returns None when no markers are found (caller can skip the copy).
@@ -190,13 +191,13 @@ def _inline_image_markers(content: str | list) -> list | None:
     if isinstance(content, str):
         if not _IMG_TAG.search(content):
             return None
-        return _markers_to_blocks(content)
+        return await _markers_to_blocks(content)
     if isinstance(content, list):
         expanded = []
         changed = False
         for block in content:
             if block.get("type") == "text" and _IMG_TAG.search(block["text"]):
-                expanded.extend(_markers_to_blocks(block["text"]))
+                expanded.extend(await _markers_to_blocks(block["text"]))
                 changed = True
             else:
                 expanded.append(block)
@@ -204,7 +205,7 @@ def _inline_image_markers(content: str | list) -> list | None:
     return None
 
 
-def _markers_to_blocks(text: str) -> list:
+async def _markers_to_blocks(text: str) -> list:
     """Split a string containing [[img:path|mime]] markers into content blocks."""
     blocks = []
     pos = 0
@@ -214,7 +215,8 @@ def _markers_to_blocks(text: str) -> list:
             blocks.append({"type": "text", "text": before})
         path, mime_type = m.group(1), m.group(2)
         try:
-            encoded = base64.b64encode(Path(path).read_bytes()).decode()
+            data = await asyncio.to_thread(Path(path).read_bytes)
+            encoded = base64.b64encode(data).decode()
             blocks.append(
                 {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}}
             )
