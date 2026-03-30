@@ -66,10 +66,6 @@ _TOOL_NAMES = {
     "brave_search": "Search",
     "fetch_page": "Fetch",
     "run_bash": "Bash",
-    "remember": "Remember",
-    "recall": "Recall",
-    "update_memory": "Memory",
-    "forget": "Forget",
     "browser": "Browser",
     "note": "Note",
     "gmail_search": "Gmail",
@@ -86,6 +82,10 @@ _TOOL_NAMES = {
     "portainer_deploy_stack": "Portainer deploy",
     "portainer_stack_action": "Portainer stack",
     "set_reminder": "Set reminder",
+    "get_skill": "Get skill",
+    "save_skill": "Save skill",
+    "write_skill_file": "Write skill file",
+    "delete_skill": "Delete skill",
 }
 _ARG_TRUNCATE = 50
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
