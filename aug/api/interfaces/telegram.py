@@ -342,6 +342,16 @@ class TelegramInterface(BaseInterface[Update]):
         finally:
             stop_typing.set()
             typing_task.cancel()
+            for tool_name, args, tool_msg, task, _ in tool_msgs.values():
+                task.cancel()
+                try:
+                    await tool_msg.edit_text(
+                        _format_tool_call(tool_name, args, done=True, error=True),
+                        parse_mode="HTML",
+                        link_preview_options=_NO_PREVIEW,
+                    )
+                except Exception:
+                    pass
 
     async def send_message(self, message: str, context: Update) -> None:
         for chunk in _chunk(message):
@@ -740,7 +750,7 @@ class _TelegramSanitizer(HTMLParser):
             self._out.append("\n")
 
     def handle_data(self, data: str) -> None:
-        self._out.append(data)
+        self._out.append(_escape(data))
 
     def handle_entityref(self, name: str) -> None:
         self._out.append(f"&{name};")

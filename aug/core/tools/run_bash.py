@@ -39,6 +39,8 @@ def run_bash(command: str) -> str:
         ["hushed", "run", "--", "bash", "-c", command],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=_TIMEOUT,
     )
     if result.returncode != 0:
