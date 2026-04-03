@@ -23,6 +23,7 @@ from aug.core.tools.portainer import (
 )
 from aug.core.tools.respond_with_file import respond_with_file
 from aug.core.tools.run_bash import run_bash
+from aug.core.tools.run_ssh import list_ssh_targets, run_ssh
 from aug.core.tools.set_reminder import set_reminder
 from aug.core.tools.skills import delete_skill, get_skill, save_skill, write_skill_file
 
@@ -49,6 +50,12 @@ _V7_TOOLS = [
     portainer_stack_action,
     set_reminder,
     *_SKILLS_TOOLS,
+]
+
+_V9_TOOLS = [
+    *_V7_TOOLS,
+    run_ssh,
+    list_ssh_targets,
 ]
 
 _V8_REFLEXES = [homeassistant_reflex("gemini-2.5-flash-lite")]
@@ -142,6 +149,42 @@ _REGISTRY: dict[str, BaseAgent] = {
         model="gemini-2.5-pro",
         tools=_V7_TOOLS,
         reflexes=_V8_REFLEXES,
+        temperature=1.0,
+        recursion_limit=100,
+    ),
+    "v9_claude": AugAgent(
+        model="claude-sonnet-4-6",
+        tools=_V9_TOOLS,
+        temperature=1.0,
+        recursion_limit=100,
+    ),
+    "v9_gpt4o": AugAgent(
+        model="gpt-4o",
+        tools=_V9_TOOLS,
+        temperature=1.0,
+        recursion_limit=100,
+    ),
+    "v9_gpt41": AugAgent(
+        model="gpt-4.1",
+        tools=_V9_TOOLS,
+        temperature=1.0,
+        recursion_limit=100,
+    ),
+    "v9_gpt51": AugAgent(
+        model="gpt-5.1",
+        tools=_V9_TOOLS,
+        temperature=1.0,
+        recursion_limit=100,
+    ),
+    "v9_gemini_flash": AugAgent(
+        model="gemini-2.5-flash",
+        tools=_V9_TOOLS,
+        temperature=1.0,
+        recursion_limit=100,
+    ),
+    "v9_gemini_pro": AugAgent(
+        model="gemini-2.5-pro",
+        tools=_V9_TOOLS,
         temperature=1.0,
         recursion_limit=100,
     ),

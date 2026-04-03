@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from aug.api.interfaces.telegram import TelegramInterface
 from aug.api.routers import chat, files, gmail_auth, threads
@@ -51,7 +52,13 @@ async def _checkpointer_context(dsn: str):
     ``from_conn_string`` returns a context manager in langgraph-checkpoint-postgres 2+.
     """
 
-    async with AsyncPostgresSaver.from_conn_string(dsn) as checkpointer:
+    serde = JsonPlusSerializer(
+        allowed_msgpack_modules=[
+            ("aug.core.tools.approval", "ApprovalRequest"),
+            ("aug.core.tools.approval", "ApprovalDecision"),
+        ]
+    )
+    async with AsyncPostgresSaver.from_conn_string(dsn, serde=serde) as checkpointer:
         await checkpointer.setup()
         yield checkpointer
 
