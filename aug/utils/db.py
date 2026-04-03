@@ -51,7 +51,7 @@ ALTER TABLE reminders ADD COLUMN IF NOT EXISTS dead_lettered_at TIMESTAMPTZ;
 """
 
 
-def _strip_driver(url: str) -> str:
+def strip_driver(url: str) -> str:
     """Convert ``postgresql+asyncpg://...`` → ``postgresql://...`` for asyncpg."""
     return re.sub(r"^postgresql\+asyncpg://", "postgresql://", url)
 
@@ -65,7 +65,7 @@ async def create_pool(database_url: str) -> asyncpg.Pool:
         database_url: Full connection URI, e.g.
             ``postgresql+asyncpg://user:password@host:5432/dbname``.
     """
-    dsn = _strip_driver(database_url)
+    dsn = strip_driver(database_url)
     await _wait_for_postgres(dsn)
     pool: asyncpg.Pool = await asyncpg.create_pool(
         dsn=dsn,

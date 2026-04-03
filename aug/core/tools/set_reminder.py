@@ -1,7 +1,6 @@
 """Reminder tool — schedules a message to be delivered to the user at a future time."""
 
 import logging
-import re
 from datetime import UTC, datetime
 
 import asyncpg
@@ -9,6 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
 from aug.config import get_settings
+from aug.utils.db import strip_driver
 from aug.utils.reminders import create_reminder
 from aug.utils.user_settings import get_setting
 
@@ -43,7 +43,7 @@ async def set_reminder(when: str, message: str, config: RunnableConfig) -> str:
     notification_interface = get_setting("thread_notifications", thread_id, "interface", default="")
     notification_target = get_setting("thread_notifications", thread_id, "id", default="")
 
-    dsn = re.sub(r"^postgresql\+asyncpg://", "postgresql://", get_settings().DATABASE_URL)
+    dsn = strip_driver(get_settings().DATABASE_URL)
     try:
         conn = await asyncpg.connect(dsn)
         try:
