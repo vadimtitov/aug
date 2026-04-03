@@ -212,7 +212,10 @@ async def test_decorator_skips_interrupt_when_approved():
 
     with (
         patch("aug.core.tools.approval.get_setting", return_value=rules),
-        patch("aug.core.tools.approval.interrupt", side_effect=lambda v: interrupt_called.append(v)),
+        patch(
+            "aug.core.tools.approval.interrupt",
+            side_effect=lambda v: interrupt_called.append(v),
+        ),
     ):
         result = await decorated(target="homeserver", command="df -h")
 
@@ -231,8 +234,14 @@ async def test_decorator_saves_rule_on_approved_always():
 
     with (
         patch("aug.core.tools.approval.get_setting", return_value=[]),
-        patch("aug.core.tools.approval.interrupt", return_value=ApprovalDecision.APPROVED_ALWAYS),
-        patch("aug.core.tools.approval.set_setting", side_effect=lambda *a, value: saved.extend(value)),
+        patch(
+            "aug.core.tools.approval.interrupt",
+            return_value=ApprovalDecision.APPROVED_ALWAYS,
+        ),
+        patch(
+            "aug.core.tools.approval.set_setting",
+            side_effect=lambda *a, value: saved.extend(value),
+        ),
     ):
         result = await decorated(target="homeserver", command="df -h")
 

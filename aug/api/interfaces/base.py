@@ -220,47 +220,15 @@ class BaseInterface[ContextT](ABC):
             incoming.interface,
             incoming.agent_version,
         )
-        try:
-            await self.send_stream(stream, context)
-            # Check if the graph paused on an approval interrupt.
-            # If so, send the approval prompt and exit — the run will be
-            # resumed later via _execute_resume when the user responds.
-            approval = await _extract_approval_request(
-                get_agent(incoming.agent_version),
-                incoming.thread_id,
-                self._checkpointer,
-            )
-            if approval is not None:
-                await self.request_approval(approval, context)
-                return
-        except psycopg.OperationalError:
-            logger.exception("DB connection lost")
-            await self.send_message(
-                "Database connection lost. Please try again in a moment.", context
-            )
-        except RateLimitError:
-            logger.warning("LLM rate limit hit")
-            await self.send_message(
-                "Context window is full. Use /clear to start a fresh conversation.", context
-            )
-        except GraphRecursionError:
-            logger.warning("Agent hit recursion limit")
-            await self.send_message(
-                "The agent got stuck in a loop and was stopped. Try rephrasing your request.",
-                context,
-            )
-        except Exception:
-            logger.exception("Unhandled error in agent pipeline")
-            await self.send_message("Sorry, something went wrong.", context)
-        finally:
-            run.active = False
-            run_registry.pop(incoming.thread_id)
-            logger.info(
-                "request_end thread=%s run=%s duration=%.2fs",
-                incoming.thread_id,
-                run.id,
-                time.monotonic() - t0,
-            )
+        completed = await self._stream_and_handle(stream, run, incoming, context)
+        if not completed:
+            return
+        logger.info(
+            "request_end thread=%s run=%s duration=%.2fs",
+            incoming.thread_id,
+            run.id,
+            time.monotonic() - t0,
+        )
 
         # Ensure the reflex task has completed and its inject has been placed.
         # If the reflex finished mid-run the inject was already consumed there;
@@ -328,43 +296,65 @@ class BaseInterface[ContextT](ABC):
             run.id,
             decision.value,
         )
-        try:
-            await self.send_stream(stream, context)
-            # Another approval interrupt may have appeared after the resume.
-            approval = await _extract_approval_request(
-                get_agent(agent_version), thread_id, self._checkpointer
-            )
-            if approval is not None:
-                await self.request_approval(approval, context)
-                return
-        except psycopg.OperationalError:
-            logger.exception("DB connection lost during approval resume")
-            await self.send_message(
-                "Database connection lost. Please try again in a moment.", context
-            )
-        except RateLimitError:
-            logger.warning("LLM rate limit hit during approval resume")
-            await self.send_message(
-                "Context window is full. Use /clear to start a fresh conversation.", context
-            )
-        except GraphRecursionError:
-            logger.warning("Agent hit recursion limit during approval resume")
-            await self.send_message(
-                "The agent got stuck in a loop and was stopped. Try rephrasing your request.",
-                context,
-            )
-        except Exception:
-            logger.exception("Unhandled error during approval resume")
-            await self.send_message("Sorry, something went wrong.", context)
-        finally:
-            run.active = False
-            run_registry.pop(thread_id)
+        completed = await self._stream_and_handle(stream, run, incoming, context)
+        if completed:
             logger.info(
                 "approval_resume_end thread=%s run=%s duration=%.2fs",
                 thread_id,
                 run.id,
                 time.monotonic() - t0,
             )
+
+    async def _stream_and_handle(
+        self,
+        stream: AsyncIterator[AgentEvent],
+        run: AgentRun,
+        incoming: IncomingMessage,
+        context: ContextT,
+    ) -> bool:
+        """Stream agent events to the user and handle errors + approval interrupts.
+
+        Owns the run lifecycle: sets ``run.active = False`` and pops from the
+        registry in a ``finally`` block regardless of how the stream ends.
+
+        Returns True if the stream completed normally (caller may do post-processing
+        such as leftover-injection checks).  Returns False if an approval prompt was
+        sent or an error occurred — caller should return immediately.
+        """
+        try:
+            await self.send_stream(stream, context)
+            approval = await _extract_approval_request(
+                get_agent(incoming.agent_version),
+                incoming.thread_id,
+                self._checkpointer,
+            )
+            if approval is not None:
+                await self.request_approval(approval, context)
+                return False
+            return True
+        except psycopg.OperationalError:
+            logger.exception("DB connection lost")
+            await self.send_message(
+                "Database connection lost. Please try again in a moment.", context
+            )
+        except RateLimitError:
+            logger.warning("LLM rate limit hit")
+            await self.send_message(
+                "Context window is full. Use /clear to start a fresh conversation.", context
+            )
+        except GraphRecursionError:
+            logger.warning("Agent hit recursion limit")
+            await self.send_message(
+                "The agent got stuck in a loop and was stopped. Try rephrasing your request.",
+                context,
+            )
+        except Exception:
+            logger.exception("Unhandled error in agent pipeline")
+            await self.send_message("Sorry, something went wrong.", context)
+        finally:
+            run.active = False
+            run_registry.pop(incoming.thread_id)
+        return False
 
     async def _run_reflexes_and_inject(
         self,

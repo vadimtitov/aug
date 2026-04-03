@@ -49,10 +49,7 @@ async def run_ssh(target: str, command: str) -> str:
     """
     cfg = _find_target(target)
     if cfg is None:
-        return (
-            f"SSH target '{target}' not found. "
-            "Use list_ssh_targets() to see configured targets."
-        )
+        return f"SSH target '{target}' not found. Use list_ssh_targets() to see configured targets."
 
     logger.info("run_ssh target=%s cmd=%.120r", target, command)
 
@@ -101,10 +98,7 @@ def list_ssh_targets() -> str:
     """
     targets: list[dict] = get_setting(*_SETTING_PATH, default=[]) or []
     if not targets:
-        return (
-            "No SSH targets configured. "
-            "Add targets under tools.ssh.targets in settings."
-        )
+        return "No SSH targets configured. Add targets under tools.ssh.targets in settings."
     names = [t.get("name", "<unnamed>") for t in targets]
     return "Configured SSH targets:\n" + "\n".join(f"  • {n}" for n in names)
 

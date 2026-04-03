@@ -376,20 +376,28 @@ class TelegramInterface(BaseInterface[Update]):
     async def request_approval(self, request: ApprovalRequest, context: Update) -> None:
         """Send an approval prompt with inline buttons to the user."""
         msg = context.effective_message  # type: ignore[union-attr]
-        thread_id = _thread_id(context.effective_chat.id)  # type: ignore[union-attr]
+        chat_id = context.effective_chat.id  # type: ignore[union-attr]
+        thread_id = _thread_id(chat_id)
+        agent_version = get_setting("telegram", "chats", str(chat_id), "agent", default="default")
         buttons = [
-            [InlineKeyboardButton(
-                "✅ Run Once",
-                callback_data=f"approval:{thread_id}:{ApprovalDecision.APPROVED_ONCE.value}",
-            )],
-            [InlineKeyboardButton(
-                "✅✅ Allow Always",
-                callback_data=f"approval:{thread_id}:{ApprovalDecision.APPROVED_ALWAYS.value}",
-            )],
-            [InlineKeyboardButton(
-                "❌ Deny",
-                callback_data=f"approval:{thread_id}:{ApprovalDecision.DENIED.value}",
-            )],
+            [
+                InlineKeyboardButton(
+                    "✅ Run Once",
+                    callback_data=f"approval:{thread_id}:{ApprovalDecision.APPROVED_ONCE.value}:{agent_version}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "✅✅ Allow Always",
+                    callback_data=f"approval:{thread_id}:{ApprovalDecision.APPROVED_ALWAYS.value}:{agent_version}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "❌ Deny",
+                    callback_data=f"approval:{thread_id}:{ApprovalDecision.DENIED.value}:{agent_version}",
+                )
+            ],
         ]
         text = (
             f"⚠️ <b>Approval required</b>\n\n"
@@ -654,6 +662,7 @@ class TelegramInterface(BaseInterface[Update]):
     # Approval handlers (Slices 4 & 5)
     # ------------------------------------------------------------------
 
+    @_restricted
     async def _handle_approval_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -664,11 +673,16 @@ class TelegramInterface(BaseInterface[Update]):
         await query.answer()
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
 
-        # callback_data: "approval:{thread_id}:{decision}"
-        parts = (query.data or "").split(":", 2)
-        if len(parts) != 3:
+        # callback_data: "approval:{thread_id}:{decision}:{agent_version}"
+        parts = (query.data or "").split(":", 3)
+        if len(parts) != 4:
             return
-        _, thread_id, decision_str = parts
+        _, thread_id, decision_str, agent_version = parts
+
+        if not thread_id.startswith(f"tg-{chat_id}-"):
+            await query.edit_message_text("❌ Unauthorized.")
+            return
+
         try:
             decision = ApprovalDecision(decision_str)
         except ValueError:
@@ -681,9 +695,6 @@ class TelegramInterface(BaseInterface[Update]):
         else:
             await query.edit_message_text("✅ Approved for this run.")
 
-        agent_version = get_setting(
-            "telegram", "chats", str(chat_id), "agent", default="default"
-        )
         await self._execute_resume(
             thread_id=thread_id,
             agent_version=agent_version,
@@ -694,9 +705,7 @@ class TelegramInterface(BaseInterface[Update]):
         )
 
     @_restricted
-    async def _handle_approvals(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
+    async def _handle_approvals(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """List saved approval rules with per-rule Revoke buttons."""
         rules = list_approvals()
         if not rules:
@@ -708,11 +717,9 @@ class TelegramInterface(BaseInterface[Update]):
             target = rule.get("target", "?")
             pattern = rule.get("pattern", "?")
             lines.append(f"{i}. <code>{_escape(target)}</code> → <code>{_escape(pattern)}</code>")
-            buttons.append([
-                InlineKeyboardButton(
-                    f"Revoke #{i}", callback_data=f"approval_revoke:{i - 1}"
-                )
-            ])
+            buttons.append(
+                [InlineKeyboardButton(f"Revoke #{i}", callback_data=f"approval_revoke:{i - 1}")]
+            )
         text = "Saved approval rules:\n\n" + "\n".join(lines)
         await update.message.reply_text(  # type: ignore[union-attr]
             text,
@@ -721,6 +728,7 @@ class TelegramInterface(BaseInterface[Update]):
             link_preview_options=_NO_PREVIEW,
         )
 
+    @_restricted
     async def _handle_approvals_revoke_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:

@@ -69,9 +69,7 @@ async def cancel_run(thread_id: str) -> None:
 
 
 @router.post("/{thread_id}/approve", response_model=ChatResponse)
-async def approve_command(
-    thread_id: str, body: ApprovalRequest, request: Request
-) -> ChatResponse:
+async def approve_command(thread_id: str, body: ApprovalRequest, request: Request) -> ChatResponse:
     """Resume an agent run paused on a command approval interrupt.
 
     Call this after receiving the approval prompt text in the /invoke or /stream

@@ -4,10 +4,25 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # list_ssh_targets
 # ---------------------------------------------------------------------------
+
+_HOME = {
+    "name": "homeserver",
+    "host": "192.168.1.10",
+    "port": 22,
+    "user": "admin",
+    "key_path": "/keys/home.pem",
+}
+_WORK = {
+    "name": "workstation",
+    "host": "10.0.0.5",
+    "port": 22,
+    "user": "vadim",
+    "key_path": "/keys/work.pem",
+}
+_APPROVED_ALL = [{"target": "homeserver", "pattern": ".*"}]
 
 
 def test_list_ssh_targets_no_targets_configured():
@@ -20,11 +35,7 @@ def test_list_ssh_targets_no_targets_configured():
 
 
 def test_list_ssh_targets_returns_names():
-    targets = [
-        {"name": "homeserver", "host": "192.168.1.10", "port": 22, "user": "admin", "key_path": "/keys/home.pem"},
-        {"name": "workstation", "host": "10.0.0.5", "port": 22, "user": "vadim", "key_path": "/keys/work.pem"},
-    ]
-    with patch("aug.core.tools.run_ssh.get_setting", return_value=targets):
+    with patch("aug.core.tools.run_ssh.get_setting", return_value=[_HOME, _WORK]):
         from aug.core.tools.run_ssh import list_ssh_targets
 
         result = list_ssh_targets.invoke({})
@@ -42,19 +53,24 @@ def test_list_ssh_targets_returns_names():
 async def test_run_ssh_unknown_target_returns_error():
     with (
         patch("aug.core.tools.run_ssh.get_setting", return_value=[]),
-        patch("aug.core.tools.approval.get_setting", return_value=[{"target": "unknown", "pattern": ".*"}]),
+        patch(
+            "aug.core.tools.approval.get_setting",
+            return_value=[{"target": "unknown", "pattern": ".*"}],
+        ),
     ):
         from aug.core.tools.run_ssh import run_ssh
 
         result = await run_ssh.ainvoke({"target": "unknown", "command": "df -h"})
 
-    assert "unknown" in result.lower() or "not found" in result.lower() or "no ssh target" in result.lower()
+    assert (
+        "unknown" in result.lower()
+        or "not found" in result.lower()
+        or "no ssh target" in result.lower()
+    )
 
 
 @pytest.mark.asyncio
 async def test_run_ssh_successful_command():
-    targets = [{"name": "homeserver", "host": "192.168.1.10", "port": 22, "user": "admin", "key_path": "/keys/home.pem"}]
-
     mock_result = MagicMock()
     mock_result.stdout = "Filesystem      Size\n/dev/sda1        50G\n"
     mock_result.stderr = ""
@@ -66,8 +82,8 @@ async def test_run_ssh_successful_command():
     mock_conn.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch("aug.core.tools.run_ssh.get_setting", return_value=targets),
-        patch("aug.core.tools.approval.get_setting", return_value=[{"target": "homeserver", "pattern": ".*"}]),
+        patch("aug.core.tools.run_ssh.get_setting", return_value=[_HOME]),
+        patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_ALL),
         patch("aug.core.tools.run_ssh.asyncssh.connect", return_value=mock_conn),
     ):
         from aug.core.tools.run_ssh import run_ssh
@@ -80,8 +96,6 @@ async def test_run_ssh_successful_command():
 
 @pytest.mark.asyncio
 async def test_run_ssh_nonzero_exit_code_includes_stderr():
-    targets = [{"name": "homeserver", "host": "192.168.1.10", "port": 22, "user": "admin", "key_path": "/keys/home.pem"}]
-
     mock_result = MagicMock()
     mock_result.stdout = ""
     mock_result.stderr = "bash: badcmd: command not found"
@@ -93,8 +107,8 @@ async def test_run_ssh_nonzero_exit_code_includes_stderr():
     mock_conn.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch("aug.core.tools.run_ssh.get_setting", return_value=targets),
-        patch("aug.core.tools.approval.get_setting", return_value=[{"target": "homeserver", "pattern": ".*"}]),
+        patch("aug.core.tools.run_ssh.get_setting", return_value=[_HOME]),
+        patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_ALL),
         patch("aug.core.tools.run_ssh.asyncssh.connect", return_value=mock_conn),
     ):
         from aug.core.tools.run_ssh import run_ssh
@@ -106,14 +120,13 @@ async def test_run_ssh_nonzero_exit_code_includes_stderr():
 
 @pytest.mark.asyncio
 async def test_run_ssh_connection_failure_returns_clear_error():
-    targets = [{"name": "homeserver", "host": "192.168.1.10", "port": 22, "user": "admin", "key_path": "/keys/home.pem"}]
-
-    import asyncssh
-
     with (
-        patch("aug.core.tools.run_ssh.get_setting", return_value=targets),
-        patch("aug.core.tools.approval.get_setting", return_value=[{"target": "homeserver", "pattern": ".*"}]),
-        patch("aug.core.tools.run_ssh.asyncssh.connect", side_effect=OSError("Connection refused")),
+        patch("aug.core.tools.run_ssh.get_setting", return_value=[_HOME]),
+        patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_ALL),
+        patch(
+            "aug.core.tools.run_ssh.asyncssh.connect",
+            side_effect=OSError("Connection refused"),
+        ),
     ):
         from aug.core.tools.run_ssh import run_ssh
 
@@ -125,8 +138,6 @@ async def test_run_ssh_connection_failure_returns_clear_error():
 
 @pytest.mark.asyncio
 async def test_run_ssh_empty_output_returns_no_output_marker():
-    targets = [{"name": "homeserver", "host": "192.168.1.10", "port": 22, "user": "admin", "key_path": "/keys/home.pem"}]
-
     mock_result = MagicMock()
     mock_result.stdout = ""
     mock_result.stderr = ""
@@ -138,8 +149,8 @@ async def test_run_ssh_empty_output_returns_no_output_marker():
     mock_conn.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch("aug.core.tools.run_ssh.get_setting", return_value=targets),
-        patch("aug.core.tools.approval.get_setting", return_value=[{"target": "homeserver", "pattern": ".*"}]),
+        patch("aug.core.tools.run_ssh.get_setting", return_value=[_HOME]),
+        patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_ALL),
         patch("aug.core.tools.run_ssh.asyncssh.connect", return_value=mock_conn),
     ):
         from aug.core.tools.run_ssh import run_ssh
