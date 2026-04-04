@@ -37,6 +37,7 @@ The `note` tool is the write mechanism during a conversation. A nightly job fold
 | Web search | Search the web via [Brave Search API](https://brave.com/search/api/) |
 | Browser | Control a real Chrome browser — log in, fill forms, navigate, screenshot, download files. Powered by [browser-use](https://github.com/browser-use/browser-use). See [setup guide](docs/browser-tool.md). |
 | Shell | Run bash commands inside the container with secret injection and a command blocklist |
+| SSH | Run commands on remote machines. Targets are provisioned via `/ssh` in Telegram — generates an Ed25519 keypair, installs it on the server, and pins the host fingerprint. Commands require explicit approval before execution. |
 | Gmail | Search, read, send, and draft emails across multiple accounts. See [setup guide](docs/gmail-setup.md). |
 | Image generation | Generate images from text (`IMAGE_GEN_MODEL`, default: gpt-image-1.5) |
 | Image editing | Transform or edit an image you've sent |
