@@ -21,6 +21,7 @@ from telegram.ext import (
     ContextTypes,
     ConversationHandler,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
@@ -74,8 +75,10 @@ class _SshMixin:
                     _SSH_CONFIRM_FP: [
                         CallbackQueryHandler(self._ssh_confirm_fp, pattern=r"^ssh_fp:(yes|no)$")
                     ],
+                    ConversationHandler.TIMEOUT: [TypeHandler(object, self._ssh_timeout)],
                 },
                 fallbacks=[CommandHandler("cancel", self._ssh_cancel)],
+                conversation_timeout=300,
             )
         )
         bot_app.add_handler(CallbackQueryHandler(self._ssh_list, pattern=r"^ssh:list$"))
@@ -189,6 +192,7 @@ class _SshMixin:
         except Exception as exc:
             logger.warning("ssh_provision_failed name=%s error=%r", data["name"], exc)
             cleanup_keys(data["name"])
+            context.user_data.pop("ssh_add", None)
             await status_msg.edit_text(
                 f"❌ Provisioning failed: <code>{_escape(str(exc))}</code>",
                 parse_mode="HTML",
@@ -250,6 +254,13 @@ class _SshMixin:
     async def _ssh_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data.pop("ssh_add", None)
         await update.message.reply_text("Cancelled.")  # type: ignore[union-attr]
+        return ConversationHandler.END
+
+    async def _ssh_timeout(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Clean up stale user_data when an SSH add conversation times out."""
+        name = (context.user_data.pop("ssh_add", None) or {}).get("name")
+        if name:
+            cleanup_keys(name)
         return ConversationHandler.END
 
     @_restricted

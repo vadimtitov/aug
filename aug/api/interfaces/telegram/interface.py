@@ -31,6 +31,7 @@ from telegram.ext import (
     ContextTypes,
     ConversationHandler,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
@@ -233,7 +234,9 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                         now = asyncio.get_running_loop().time()
                         if stream_msg is None:
                             stream_msg = await msg.reply_text(  # type: ignore[union-attr]
-                                accumulated_text, link_preview_options=_NO_PREVIEW
+                                accumulated_text,
+                                link_preview_options=_NO_PREVIEW,
+                                disable_notification=True,
                             )
                             last_stream_edit = now
                         elif now - last_stream_edit >= 0.3 and len(accumulated_text) <= _TG_MAX_LEN:
@@ -252,7 +255,10 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                         text = _format_tool_call(tool_name, args, done=False)
                         try:
                             tool_msg = await msg.reply_text(  # type: ignore[union-attr]
-                                text, parse_mode="HTML", link_preview_options=_NO_PREVIEW
+                                text,
+                                parse_mode="HTML",
+                                link_preview_options=_NO_PREVIEW,
+                                disable_notification=True,
                             )
                             step_holder: list[str] = [""]
                             spin = asyncio.create_task(
@@ -308,26 +314,37 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                 chunks = _chunk(accumulated_text)
                 for i, chunk in enumerate(chunks):
                     html = _to_html(chunk)
+                    is_last = i == len(chunks) - 1
                     try:
                         if i == 0 and stream_msg is not None:
-                            await stream_msg.edit_text(
-                                html, parse_mode="HTML", link_preview_options=_NO_PREVIEW
-                            )
-                        else:
-                            await msg.reply_text(  # type: ignore[union-attr]
-                                html, parse_mode="HTML", link_preview_options=_NO_PREVIEW
-                            )
+                            # Delete the silent intermediate message and send a fresh
+                            # one so the user gets exactly one notification per response.
+                            try:
+                                await stream_msg.delete()  # type: ignore[union-attr]
+                            except Exception:
+                                pass
+                            stream_msg = None
+                        await msg.reply_text(  # type: ignore[union-attr]
+                            html,
+                            parse_mode="HTML",
+                            link_preview_options=_NO_PREVIEW,
+                            disable_notification=not is_last,
+                        )
                     except RetryAfter as e:
                         await asyncio.sleep(e.retry_after)
                         await msg.reply_text(  # type: ignore[union-attr]
-                            html, parse_mode="HTML", link_preview_options=_NO_PREVIEW
+                            html,
+                            parse_mode="HTML",
+                            link_preview_options=_NO_PREVIEW,
+                            disable_notification=not is_last,
                         )
-                    except BadRequest as e:
-                        if "not modified" not in str(e).lower():
-                            logger.warning(
-                                "Failed to send HTML, falling back to plain", exc_info=True
-                            )
-                            await msg.reply_text(chunk, link_preview_options=_NO_PREVIEW)  # type: ignore[union-attr]
+                    except BadRequest:
+                        logger.warning("Failed to send HTML, falling back to plain", exc_info=True)
+                        await msg.reply_text(  # type: ignore[union-attr]
+                            chunk,
+                            link_preview_options=_NO_PREVIEW,
+                            disable_notification=not is_last,
+                        )
 
             stream_completed_normally = True
 
@@ -422,8 +439,10 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                     _SECRET_VALUE: [
                         MessageHandler(filters.TEXT & ~filters.COMMAND, self._secret_got_value)
                     ],
+                    ConversationHandler.TIMEOUT: [TypeHandler(object, self._secret_timeout)],
                 },
-                fallbacks=[],
+                fallbacks=[CommandHandler("cancel", self._secret_cancel)],
+                conversation_timeout=300,
             )
         )
         bot_app.add_handler(CommandHandler("version", self._handle_version))
@@ -447,7 +466,9 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         self.build_ssh_handlers(bot_app)
         bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text))
         bot_app.add_handler(MessageHandler(filters.VOICE, self._handle_input))
+        bot_app.add_handler(MessageHandler(filters.AUDIO, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.PHOTO, self._handle_input))
+        bot_app.add_handler(MessageHandler(filters.Document.ALL, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.LOCATION, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.Sticker.ALL, self._handle_input))
         return bot_app
@@ -671,6 +692,10 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         except ValueError:
             return
 
+        if await self.get_pending_approval(thread_id, agent_version) is None:
+            await query.edit_message_text("⚠️ This approval has already been resolved.")
+            return
+
         if decision == ApprovalDecision.DENIED:
             await query.edit_message_text("❌ Command denied.")
         elif decision == ApprovalDecision.APPROVED_ALWAYS:
@@ -749,7 +774,9 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         context.user_data["secret_msgs"].append(update.message.message_id)  # type: ignore[union-attr]
         name = context.user_data["secret_name"]
         value = update.message.text  # type: ignore[union-attr]
-        result = subprocess.run(["hushed", "add", name, value], capture_output=True, text=True)
+        result = await asyncio.to_thread(
+            subprocess.run, ["hushed", "add", name, value], capture_output=True, text=True
+        )
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         for msg_id in context.user_data.pop("secret_msgs", []):
             try:
@@ -761,6 +788,17 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         else:
             logger.error("hushed add failed: %s", result.stderr)
             await update.effective_chat.send_message(f"Failed to store secret {name}.")  # type: ignore[union-attr]
+        return ConversationHandler.END
+
+    async def _secret_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        context.user_data.pop("secret_name", None)
+        context.user_data.pop("secret_msgs", None)
+        await update.message.reply_text("Cancelled.")  # type: ignore[union-attr]
+        return ConversationHandler.END
+
+    async def _secret_timeout(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> int:
+        context.user_data.pop("secret_name", None)
+        context.user_data.pop("secret_msgs", None)
         return ConversationHandler.END
 
 
@@ -840,10 +878,12 @@ async def _send_attachment(msg, attachment: Attachment) -> None:
     data = io.BytesIO(attachment.data)
     caption = attachment.caption or None
     if isinstance(attachment, ImageAttachment):
-        await msg.reply_photo(photo=data, caption=caption)
+        await msg.reply_photo(photo=data, caption=caption, disable_notification=True)
     elif isinstance(attachment, FileAttachment):
         data.name = attachment.filename
-        await msg.reply_document(document=data, caption=caption, filename=attachment.filename)
+        await msg.reply_document(
+            document=data, caption=caption, filename=attachment.filename, disable_notification=True
+        )
 
 
 async def _typing_loop(update: Update, stop_event: asyncio.Event) -> None:
@@ -883,9 +923,10 @@ class _TelegramSanitizer(HTMLParser):
             self._out.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in _TELEGRAM_TAGS and tag in self._open:
-            self._out.append(f"</{tag}>")
-            self._open.remove(tag)
+        if tag in _TELEGRAM_TAGS:
+            if self._open and self._open[-1] == tag:
+                self._out.append(f"</{tag}>")
+                self._open.pop()
         elif tag in _BLOCK_TAGS:
             self._out.append("\n")
 
@@ -910,12 +951,14 @@ def _table_to_pre(match: re.Match) -> str:
     for row in rows:
         cells = re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", row, re.DOTALL)
         parsed.append([re.sub(r"<[^>]+>", "", c).strip() for c in cells])
-    if not parsed:
+    if not parsed or not parsed[0]:
         return ""
-    widths = [max(len(r[i]) for r in parsed if i < len(r)) for i in range(len(parsed[0]))]
+    col_count = len(parsed[0])
+    widths = [max(len(r[i]) if i < len(r) else 0 for r in parsed) for i in range(col_count)]
     lines = []
     for i, row in enumerate(parsed):
-        lines.append("  ".join(cell.ljust(widths[j]) for j, cell in enumerate(row)))
+        cells = row[:col_count] + [""] * (col_count - len(row))
+        lines.append("  ".join(cell.ljust(widths[j]) for j, cell in enumerate(cells)))
         if i == 0:
             lines.append("  ".join("-" * w for w in widths))
     return "<pre>" + "\n".join(lines) + "</pre>"

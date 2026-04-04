@@ -99,15 +99,25 @@ def is_approved(target: str, command: str) -> bool:
         pattern = rule.get("pattern", "")
         if rule_target not in (target, "*"):
             continue
-        if re.search(pattern, command):
-            return True
+        try:
+            if re.search(pattern, command):
+                return True
+        except re.error:
+            # Corrupted or manually-edited pattern — skip rather than crash.
+            continue
     return False
 
 
 def save_approval(target: str, command: str) -> None:
-    """Persist an exact-match approval rule for *command* on *target*."""
+    """Persist an exact-match approval rule for *command* on *target*.
+
+    No-op if an identical rule already exists.
+    """
     rules: list[dict] = get_setting(*_SETTING_PATH, default=[]) or []
-    rules.append({"target": target, "pattern": re.escape(command)})
+    pattern = re.escape(command)
+    if any(r.get("target") == target and r.get("pattern") == pattern for r in rules):
+        return
+    rules.append({"target": target, "pattern": pattern})
     set_setting(*_SETTING_PATH, value=rules)
 
 
