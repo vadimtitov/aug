@@ -257,6 +257,14 @@ class BaseInterface[ContextT](ABC):
             return True
         return False
 
+    async def get_pending_approval(
+        self, thread_id: str, agent_version: str
+    ) -> ApprovalRequest | None:
+        """Return the pending ApprovalRequest for *thread_id*, or None if not paused."""
+        return await _extract_approval_request(
+            get_agent(agent_version), thread_id, self._checkpointer
+        )
+
     async def _execute_resume(
         self,
         thread_id: str,

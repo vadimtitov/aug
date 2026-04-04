@@ -14,8 +14,7 @@ import io
 import logging
 import re
 import subprocess
-from collections.abc import AsyncIterator, Callable
-from functools import wraps
+from collections.abc import AsyncIterator
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse
@@ -42,6 +41,8 @@ from aug.api.interfaces.base import (
     LocationContent,
     TextContent,
 )
+from aug.api.interfaces.telegram.ssh import _SshMixin
+from aug.api.interfaces.telegram.utils import _escape, _is_allowed, _restricted, _thread_id
 from aug.config import get_settings
 from aug.core.events import (
     AgentEvent,
@@ -101,27 +102,7 @@ _TG_MAX_LEN = MessageLimit.MAX_TEXT_LENGTH
 _SECRET_NAME, _SECRET_VALUE = range(2)
 
 
-def _is_allowed(chat_id: int) -> bool:
-    allowed = get_settings().allowed_chat_ids
-    return not allowed or chat_id in allowed
-
-
-def _restricted(handler: Callable) -> Callable:
-    """Decorator: silently drop updates from chats not on the allow-list.
-
-    Apply to every command handler so auth is enforced at the boundary and
-    cannot be accidentally omitted from a new handler.
-    """
-
-    @wraps(handler)
-    async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_chat and _is_allowed(update.effective_chat.id):
-            return await handler(self, update, context)
-
-    return wrapper
-
-
-class TelegramInterface(BaseInterface[Update]):
+class TelegramInterface(_SshMixin, BaseInterface[Update]):
     def __init__(self, checkpointer: BaseCheckpointSaver) -> None:
         super().__init__(checkpointer)
         self._bot_app = None
@@ -463,6 +444,7 @@ class TelegramInterface(BaseInterface[Update]):
             )
         )
         bot_app.add_handler(CommandHandler("approvals", self._handle_approvals))
+        self.build_ssh_handlers(bot_app)
         bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text))
         bot_app.add_handler(MessageHandler(filters.VOICE, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.PHOTO, self._handle_input))
@@ -494,6 +476,7 @@ class TelegramInterface(BaseInterface[Update]):
                 ("consolidate", "Run memory consolidation now"),
                 ("consolidate_deep", "Run deep (weekly) memory consolidation now"),
                 ("approvals", "List and revoke saved SSH command approvals"),
+                ("ssh", "Manage SSH targets"),
             ]
         )
         await self._bot_app.start()
@@ -795,11 +778,6 @@ def build_interface(checkpointer: BaseCheckpointSaver) -> TelegramInterface:
 # ---------------------------------------------------------------------------
 
 
-def _thread_id(chat_id: int) -> str:
-    session = get_setting("telegram", "chats", str(chat_id), "session", default=0)
-    return f"tg-{chat_id}-{session}"
-
-
 def _safe_filename(filename: str) -> str:
     """Return a filesystem-safe version of *filename*.
 
@@ -949,10 +927,6 @@ def _to_html(text: str) -> str:
     sanitizer = _TelegramSanitizer()
     sanitizer.feed(html)
     return sanitizer.result()
-
-
-def _escape(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _chunk(text: str) -> list[str]:

@@ -26,7 +26,7 @@ _APPROVED_ALL = [{"target": "homeserver", "pattern": ".*"}]
 
 
 def test_list_ssh_targets_no_targets_configured():
-    with patch("aug.core.tools.run_ssh.get_setting", return_value=[]):
+    with patch("aug.utils.ssh.get_setting", return_value=[]):
         from aug.core.tools.run_ssh import list_ssh_targets
 
         result = list_ssh_targets.invoke({})
@@ -35,7 +35,7 @@ def test_list_ssh_targets_no_targets_configured():
 
 
 def test_list_ssh_targets_returns_names():
-    with patch("aug.core.tools.run_ssh.get_setting", return_value=[_HOME, _WORK]):
+    with patch("aug.utils.ssh.get_setting", return_value=[_HOME, _WORK]):
         from aug.core.tools.run_ssh import list_ssh_targets
 
         result = list_ssh_targets.invoke({})
@@ -52,7 +52,7 @@ def test_list_ssh_targets_returns_names():
 @pytest.mark.asyncio
 async def test_run_ssh_unknown_target_returns_error():
     with (
-        patch("aug.core.tools.run_ssh.get_setting", return_value=[]),
+        patch("aug.utils.ssh.get_setting", return_value=[]),
         patch(
             "aug.core.tools.approval.get_setting",
             return_value=[{"target": "unknown", "pattern": ".*"}],
@@ -82,7 +82,7 @@ async def test_run_ssh_successful_command():
     mock_conn.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch("aug.core.tools.run_ssh.get_setting", return_value=[_HOME]),
+        patch("aug.utils.ssh.get_setting", return_value=[_HOME]),
         patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_ALL),
         patch("aug.core.tools.run_ssh.asyncssh.connect", return_value=mock_conn),
     ):
@@ -107,7 +107,7 @@ async def test_run_ssh_nonzero_exit_code_includes_stderr():
     mock_conn.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch("aug.core.tools.run_ssh.get_setting", return_value=[_HOME]),
+        patch("aug.utils.ssh.get_setting", return_value=[_HOME]),
         patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_ALL),
         patch("aug.core.tools.run_ssh.asyncssh.connect", return_value=mock_conn),
     ):
@@ -121,7 +121,7 @@ async def test_run_ssh_nonzero_exit_code_includes_stderr():
 @pytest.mark.asyncio
 async def test_run_ssh_connection_failure_returns_clear_error():
     with (
-        patch("aug.core.tools.run_ssh.get_setting", return_value=[_HOME]),
+        patch("aug.utils.ssh.get_setting", return_value=[_HOME]),
         patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_ALL),
         patch(
             "aug.core.tools.run_ssh.asyncssh.connect",
@@ -149,7 +149,7 @@ async def test_run_ssh_empty_output_returns_no_output_marker():
     mock_conn.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch("aug.core.tools.run_ssh.get_setting", return_value=[_HOME]),
+        patch("aug.utils.ssh.get_setting", return_value=[_HOME]),
         patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_ALL),
         patch("aug.core.tools.run_ssh.asyncssh.connect", return_value=mock_conn),
     ):

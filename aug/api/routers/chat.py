@@ -81,6 +81,11 @@ async def approve_command(thread_id: str, body: ApprovalRequest, request: Reques
     decision = ApprovalDecision(body.decision)
     sender_id = body.sender_id or thread_id
     interface = _get_interface(request)
+    if await interface.get_pending_approval(thread_id, body.agent) is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Thread '{thread_id}' has no pending approval interrupt.",
+        )
     logger.info("approve_command thread=%s agent=%s decision=%s", thread_id, body.agent, decision)
     text = await interface.invoke_resume(thread_id, body.agent, sender_id, decision)
     return ChatResponse(thread_id=thread_id, agent=body.agent, response=text, tool_calls=[])
