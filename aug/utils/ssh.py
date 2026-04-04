@@ -10,6 +10,7 @@ Provisioning flow:
 After provisioning the password is gone — only the key files remain.
 """
 
+import os
 import shlex
 
 import asyncssh
@@ -46,6 +47,7 @@ async def provision_target(
         username=user,
         password=password,
         known_hosts=None,  # password auth only — fingerprint captured below
+        connect_timeout=30,
     ) as conn:
         server_host_key = conn.get_server_host_key()
         fingerprint = server_host_key.get_fingerprint()
@@ -63,13 +65,20 @@ async def provision_target(
                 f"Key installation failed (exit {result.exit_status}): {result.stderr.strip()}"
             )
 
-        # Write per-target known_hosts in OpenSSH format: "hostname algo base64\n"
+        # Write per-target known_hosts in OpenSSH format.
+        # Non-22 ports require "[host]:port" as the hostname field.
         host_key_line = server_host_key.export_public_key("openssh").decode().strip()
-        known_hosts_path.write_text(f"{host} {host_key_line}\n")
+        hostname_field = f"[{host}]:{port}" if port != 22 else host
+        known_hosts_path.write_text(f"{hostname_field} {host_key_line}\n")
 
-    # Write private key only after successful provisioning
-    private_key.write_private_key(str(key_path))
-    key_path.chmod(0o600)
+    # Write private key only after successful provisioning.
+    # Set umask to 0o177 so the file is created 0o600 from the start —
+    # no window where the key is world-readable.
+    old_mask = os.umask(0o177)
+    try:
+        private_key.write_private_key(str(key_path))
+    finally:
+        os.umask(old_mask)
 
     return str(key_path), str(known_hosts_path), fingerprint
 

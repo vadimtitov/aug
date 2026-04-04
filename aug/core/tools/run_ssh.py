@@ -73,6 +73,8 @@ async def run_ssh(target: str, command: str) -> str:
         connect_kwargs["known_hosts"] = cfg["known_hosts"]
     # else: omit known_hosts → asyncssh uses system default (~/.ssh/known_hosts)
 
+    connect_kwargs["connect_timeout"] = 30
+
     try:
         async with asyncssh.connect(**connect_kwargs) as conn:
             result = await conn.run(command, timeout=_TIMEOUT)
