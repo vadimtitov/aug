@@ -5,22 +5,20 @@ Endpoints:
   GET /auth/gmail/callback          → exchanges code for token, saves to disk
 """
 
-import json
 import logging
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import RedirectResponse
 from google_auth_oauthlib.flow import Flow
 
 from aug.config import get_settings
+from aug.utils.gmail_credentials import save_token
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth/gmail", tags=["gmail-auth"])
 
 _SCOPES = ["https://mail.google.com/"]
-_TOKEN_DIR = Path("/app/data/gmail_tokens")
 
 
 def _redirect_uri() -> str:
@@ -53,23 +51,6 @@ def _flow(state: str | None = None) -> Flow:
         redirect_uri=_redirect_uri(),
         state=state,
     )
-
-
-def token_path(account: str) -> Path:
-    return _TOKEN_DIR / f"{account}.json"
-
-
-def save_token(account: str, token: dict) -> None:
-    _TOKEN_DIR.mkdir(parents=True, exist_ok=True)
-    token_path(account).write_text(json.dumps(token))
-    logger.info("gmail_auth: token saved for account=%r", account)
-
-
-def load_token(account: str) -> dict | None:
-    path = token_path(account)
-    if not path.exists():
-        return None
-    return json.loads(path.read_text())
 
 
 @router.get("")

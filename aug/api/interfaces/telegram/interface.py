@@ -14,8 +14,7 @@ import io
 import logging
 import re
 import subprocess
-from collections.abc import AsyncIterator, Callable
-from functools import wraps
+from collections.abc import AsyncIterator
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse
@@ -42,6 +41,8 @@ from aug.api.interfaces.base import (
     LocationContent,
     TextContent,
 )
+from aug.api.interfaces.telegram.ssh import _SshMixin
+from aug.api.interfaces.telegram.utils import _escape, _is_allowed, _restricted, _thread_id
 from aug.config import get_settings
 from aug.core.events import (
     AgentEvent,
@@ -54,6 +55,12 @@ from aug.core.memory import run_deep_consolidation, run_light_consolidation
 from aug.core.prompts import build_system_prompt
 from aug.core.registry import list_agents
 from aug.core.state import AgentState
+from aug.core.tools.approval import (
+    ApprovalDecision,
+    ApprovalRequest,
+    list_approvals,
+    revoke_approval,
+)
 from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
 from aug.utils.data import UPLOADS_DIR
 from aug.utils.skills import SKILLS_DIR, load_skills
@@ -81,6 +88,8 @@ _TOOL_NAMES = {
     "portainer_list_stacks": "Portainer stacks",
     "portainer_deploy_stack": "Portainer deploy",
     "portainer_stack_action": "Portainer stack",
+    "run_ssh": "SSH",
+    "list_ssh_targets": "SSH targets",
     "set_reminder": "Set reminder",
     "get_skill": "Get skill",
     "save_skill": "Save skill",
@@ -93,27 +102,7 @@ _TG_MAX_LEN = MessageLimit.MAX_TEXT_LENGTH
 _SECRET_NAME, _SECRET_VALUE = range(2)
 
 
-def _is_allowed(chat_id: int) -> bool:
-    allowed = get_settings().allowed_chat_ids
-    return not allowed or chat_id in allowed
-
-
-def _restricted(handler: Callable) -> Callable:
-    """Decorator: silently drop updates from chats not on the allow-list.
-
-    Apply to every command handler so auth is enforced at the boundary and
-    cannot be accidentally omitted from a new handler.
-    """
-
-    @wraps(handler)
-    async def wrapper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_chat and _is_allowed(update.effective_chat.id):
-            return await handler(self, update, context)
-
-    return wrapper
-
-
-class TelegramInterface(BaseInterface[Update]):
+class TelegramInterface(_SshMixin, BaseInterface[Update]):
     def __init__(self, checkpointer: BaseCheckpointSaver) -> None:
         super().__init__(checkpointer)
         self._bot_app = None
@@ -221,7 +210,7 @@ class TelegramInterface(BaseInterface[Update]):
         )
 
     async def send_stream(self, stream: AsyncIterator[AgentEvent], context: Update) -> None:
-        msg = context.message
+        msg = context.effective_message
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(_typing_loop(context, stop_typing))
 
@@ -234,6 +223,7 @@ class TelegramInterface(BaseInterface[Update]):
         tool_msgs: dict[str, tuple[str, dict, object, asyncio.Task, list]] = {}
         # parent_id → tool_run_id (for matching ToolProgressEvent to its tool_msg)
         progress_index: dict[str, str] = {}
+        stream_completed_normally = False
 
         try:
             async for event in stream:
@@ -339,23 +329,75 @@ class TelegramInterface(BaseInterface[Update]):
                             )
                             await msg.reply_text(chunk, link_preview_options=_NO_PREVIEW)  # type: ignore[union-attr]
 
+            stream_completed_normally = True
+
         finally:
             stop_typing.set()
             typing_task.cancel()
             for tool_name, args, tool_msg, task, _ in tool_msgs.values():
                 task.cancel()
                 try:
-                    await tool_msg.edit_text(
-                        _format_tool_call(tool_name, args, done=True, error=True),
-                        parse_mode="HTML",
-                        link_preview_options=_NO_PREVIEW,
-                    )
+                    if stream_completed_normally:
+                        # Stream ended cleanly (e.g. approval interrupt) — delete the
+                        # pending tool message rather than showing it as errored.
+                        await tool_msg.delete()  # type: ignore[union-attr]
+                    else:
+                        await tool_msg.edit_text(
+                            _format_tool_call(tool_name, args, done=True, error=True),
+                            parse_mode="HTML",
+                            link_preview_options=_NO_PREVIEW,
+                        )
                 except Exception:
                     pass
 
     async def send_message(self, message: str, context: Update) -> None:
         for chunk in _chunk(message):
-            await context.message.reply_text(chunk)  # type: ignore[union-attr]
+            await context.effective_message.reply_text(chunk)  # type: ignore[union-attr]
+
+    async def request_approval(self, request: ApprovalRequest, context: Update) -> None:
+        """Send an approval prompt with inline buttons to the user."""
+        msg = context.effective_message  # type: ignore[union-attr]
+        chat_id = context.effective_chat.id  # type: ignore[union-attr]
+        thread_id = _thread_id(chat_id)
+        agent_version = get_setting("telegram", "chats", str(chat_id), "agent", default="default")
+        buttons = [
+            [
+                InlineKeyboardButton(
+                    "✅ Run Once",
+                    callback_data=f"approval:{thread_id}:{ApprovalDecision.APPROVED_ONCE.value}:{agent_version}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "✅✅ Allow Always",
+                    callback_data=f"approval:{thread_id}:{ApprovalDecision.APPROVED_ALWAYS.value}:{agent_version}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "❌ Deny",
+                    callback_data=f"approval:{thread_id}:{ApprovalDecision.DENIED.value}:{agent_version}",
+                )
+            ],
+        ]
+        text = (
+            f"⚠️ <b>Approval required</b>\n\n"
+            f"<b>Target:</b> <code>{_escape(request.target)}</code>\n"
+            f"<b>Command:</b>\n<pre>{_escape(request.command)}</pre>"
+        )
+        try:
+            await msg.reply_text(  # type: ignore[union-attr]
+                text,
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(buttons),
+                link_preview_options=_NO_PREVIEW,
+            )
+        except Exception:
+            logger.warning("approval_prompt_html_failed, retrying plain", exc_info=True)
+            await msg.reply_text(  # type: ignore[union-attr]
+                f"⚠️ Approval required\nTarget: {request.target}\nCommand: {request.command}",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -393,6 +435,16 @@ class TelegramInterface(BaseInterface[Update]):
             CallbackQueryHandler(self._handle_version_callback, pattern=r"^version:")
         )
         bot_app.add_handler(CallbackQueryHandler(self._handle_skills_callback, pattern=r"^skill:"))
+        bot_app.add_handler(
+            CallbackQueryHandler(self._handle_approval_callback, pattern=r"^approval:")
+        )
+        bot_app.add_handler(
+            CallbackQueryHandler(
+                self._handle_approvals_revoke_callback, pattern=r"^approval_revoke:"
+            )
+        )
+        bot_app.add_handler(CommandHandler("approvals", self._handle_approvals))
+        self.build_ssh_handlers(bot_app)
         bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text))
         bot_app.add_handler(MessageHandler(filters.VOICE, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.PHOTO, self._handle_input))
@@ -423,6 +475,8 @@ class TelegramInterface(BaseInterface[Update]):
                 ("prompt", "Export current system prompt as a file"),
                 ("consolidate", "Run memory consolidation now"),
                 ("consolidate_deep", "Run deep (weekly) memory consolidation now"),
+                ("approvals", "List and revoke saved SSH command approvals"),
+                ("ssh", "Manage SSH targets"),
             ]
         )
         await self._bot_app.start()
@@ -587,6 +641,97 @@ class TelegramInterface(BaseInterface[Update]):
             logger.exception("Manual deep consolidation failed")
             await update.message.reply_text("Deep consolidation failed — check logs.")  # type: ignore[union-attr]
 
+    # ------------------------------------------------------------------
+    # Approval handlers (Slices 4 & 5)
+    # ------------------------------------------------------------------
+
+    @_restricted
+    async def _handle_approval_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle user tapping Run Once / Allow Always / Deny on an approval prompt."""
+        query = update.callback_query
+        if query is None:
+            return
+        await query.answer()
+        chat_id = update.effective_chat.id  # type: ignore[union-attr]
+
+        # callback_data: "approval:{thread_id}:{decision}:{agent_version}"
+        parts = (query.data or "").split(":", 3)
+        if len(parts) != 4:
+            return
+        _, thread_id, decision_str, agent_version = parts
+
+        if not thread_id.startswith(f"tg-{chat_id}-"):
+            await query.edit_message_text("❌ Unauthorized.")
+            return
+
+        try:
+            decision = ApprovalDecision(decision_str)
+        except ValueError:
+            return
+
+        if decision == ApprovalDecision.DENIED:
+            await query.edit_message_text("❌ Command denied.")
+        elif decision == ApprovalDecision.APPROVED_ALWAYS:
+            await query.edit_message_text("✅ Approved — rule saved.")
+        else:
+            await query.edit_message_text("✅ Approved for this run.")
+
+        await self._execute_resume(
+            thread_id=thread_id,
+            agent_version=agent_version,
+            sender_id=str(chat_id),
+            interface="telegram",
+            decision=decision,
+            context=update,
+        )
+
+    @_restricted
+    async def _handle_approvals(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """List saved approval rules with per-rule Revoke buttons."""
+        rules = list_approvals()
+        if not rules:
+            await update.message.reply_text("No saved approval rules.")  # type: ignore[union-attr]
+            return
+        lines = []
+        buttons = []
+        for i, rule in enumerate(rules, start=1):
+            target = rule.get("target", "?")
+            pattern = rule.get("pattern", "?")
+            lines.append(f"{i}. <code>{_escape(target)}</code> → <code>{_escape(pattern)}</code>")
+            buttons.append(
+                [InlineKeyboardButton(f"Revoke #{i}", callback_data=f"approval_revoke:{i - 1}")]
+            )
+        text = "Saved approval rules:\n\n" + "\n".join(lines)
+        await update.message.reply_text(  # type: ignore[union-attr]
+            text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            link_preview_options=_NO_PREVIEW,
+        )
+
+    @_restricted
+    async def _handle_approvals_revoke_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle user tapping Revoke on an approval rule."""
+        query = update.callback_query
+        if query is None:
+            return
+        await query.answer()
+        parts = (query.data or "").split(":", 1)
+        if len(parts) != 2:
+            return
+        try:
+            index = int(parts[1])
+            revoke_approval(index)
+            await query.edit_message_text(f"Rule #{index + 1} revoked.")
+        except (ValueError, IndexError):
+            await query.edit_message_text(
+                "Could not revoke rule — it may have already been removed."
+            )
+
     @_restricted
     async def _secret_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         msg = await update.message.reply_text("Enter secret name:")  # type: ignore[union-attr]
@@ -631,11 +776,6 @@ def build_interface(checkpointer: BaseCheckpointSaver) -> TelegramInterface:
 # ---------------------------------------------------------------------------
 # Private utilities
 # ---------------------------------------------------------------------------
-
-
-def _thread_id(chat_id: int) -> str:
-    session = get_setting("telegram", "chats", str(chat_id), "session", default=0)
-    return f"tg-{chat_id}-{session}"
 
 
 def _safe_filename(filename: str) -> str:
@@ -787,10 +927,6 @@ def _to_html(text: str) -> str:
     sanitizer = _TelegramSanitizer()
     sanitizer.feed(html)
     return sanitizer.result()
-
-
-def _escape(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _chunk(text: str) -> list[str]:

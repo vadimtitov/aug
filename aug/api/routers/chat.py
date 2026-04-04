@@ -6,10 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from aug.api.interfaces.rest import RestApiInterface
-from aug.api.schemas.chat import ChatRequest, ChatResponse
+from aug.api.schemas.chat import ApprovalRequest, ChatRequest, ChatResponse
 from aug.api.security import require_api_key
 from aug.core.registry import list_agents
 from aug.core.run import run_registry
+from aug.core.tools.approval import ApprovalDecision
 from aug.utils.logging import set_thread_id
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,29 @@ async def cancel_run(thread_id: str) -> None:
     if run and run.active:
         logger.info("cancel_run thread=%s run=%s", thread_id, run.id)
         run.request_stop()
+
+
+@router.post("/{thread_id}/approve", response_model=ChatResponse)
+async def approve_command(thread_id: str, body: ApprovalRequest, request: Request) -> ChatResponse:
+    """Resume an agent run paused on a command approval interrupt.
+
+    Call this after receiving the approval prompt text in the /invoke or /stream
+    response.  The agent will continue with the given decision and return its
+    next response.
+    """
+    set_thread_id(thread_id)
+    _validate_agent(body.agent)
+    decision = ApprovalDecision(body.decision)
+    sender_id = body.sender_id or thread_id
+    interface = _get_interface(request)
+    if await interface.get_pending_approval(thread_id, body.agent) is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Thread '{thread_id}' has no pending approval interrupt.",
+        )
+    logger.info("approve_command thread=%s agent=%s decision=%s", thread_id, body.agent, decision)
+    text = await interface.invoke_resume(thread_id, body.agent, sender_id, decision)
+    return ChatResponse(thread_id=thread_id, agent=body.agent, response=text, tool_calls=[])
 
 
 def _get_interface(request: Request) -> RestApiInterface:

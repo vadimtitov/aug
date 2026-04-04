@@ -228,32 +228,32 @@ async def test_image_does_not_call_transcribe(tmp_path):
 
 
 def test_safe_filename_strips_path_components():
-    from aug.api.interfaces.telegram import _safe_filename
+    from aug.api.interfaces.telegram.interface import _safe_filename
 
     assert _safe_filename("../../etc/passwd") == "passwd"
     assert _safe_filename("/absolute/path/file.txt") == "file.txt"
 
 
 def test_safe_filename_replaces_unsafe_chars():
-    from aug.api.interfaces.telegram import _safe_filename
+    from aug.api.interfaces.telegram.interface import _safe_filename
 
     assert _safe_filename("my file (1).docx") == "my_file__1_.docx"
 
 
 def test_safe_filename_preserves_safe_chars():
-    from aug.api.interfaces.telegram import _safe_filename
+    from aug.api.interfaces.telegram.interface import _safe_filename
 
     assert _safe_filename("report-2026_final.pdf") == "report-2026_final.pdf"
 
 
 def test_safe_filename_truncates_long_names():
-    from aug.api.interfaces.telegram import _safe_filename
+    from aug.api.interfaces.telegram.interface import _safe_filename
 
     assert len(_safe_filename("a" * 300)) == 200
 
 
 def test_safe_filename_empty_falls_back():
-    from aug.api.interfaces.telegram import _safe_filename
+    from aug.api.interfaces.telegram.interface import _safe_filename
 
     assert _safe_filename("") == "file"
     assert _safe_filename("...") == "file" or _safe_filename("...") == "..."

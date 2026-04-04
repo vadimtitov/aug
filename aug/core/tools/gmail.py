@@ -14,8 +14,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from langchain_core.tools import tool
 
-from aug.api.routers.gmail_auth import load_token, save_token
 from aug.config import get_settings
+from aug.utils.gmail_credentials import load_token, save_token
 
 logger = logging.getLogger(__name__)
 

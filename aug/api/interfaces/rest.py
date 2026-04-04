@@ -12,6 +12,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from aug.api.interfaces.base import BaseInterface, IncomingMessage, TextContent
 from aug.api.schemas.chat import ChatRequest
 from aug.core.events import AgentEvent, ChatModelStreamEvent
+from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,13 @@ class RestApiInterface(BaseInterface[_RestContext]):
     async def send_notification(self, target_id: str, text: str) -> None:
         pass  # REST has no push channel — reminders set during REST sessions are silently dropped
 
+    async def request_approval(self, request: ApprovalRequest, context: _RestContext) -> None:
+        context._queue.put_nowait(
+            f"\n⏸ Approval required to run `{request.command}` on `{request.target}`. "
+            f"Use POST /chat/approve/{{thread_id}} with "
+            f'{{"decision": "approved_once" | "approved_always" | "denied"}}.'
+        )
+
     async def invoke(self, request: ChatRequest) -> str:
         """Run the full pipeline and return the complete response text."""
         ctx = _RestContext(request=request)
@@ -99,8 +107,46 @@ class RestApiInterface(BaseInterface[_RestContext]):
         done_payload = json.dumps({"thread_id": request.thread_id, "agent": request.agent})
         yield f"event: done\ndata: {done_payload}\n\n"
 
+    async def invoke_resume(
+        self,
+        thread_id: str,
+        agent_version: str,
+        sender_id: str,
+        decision: ApprovalDecision,
+    ) -> str:
+        """Resume a paused approval and return the complete response text."""
+        ctx = _RestContext(
+            request=ChatRequest(thread_id=thread_id, message="", agent=agent_version)
+        )
+        task = asyncio.create_task(
+            self._resume_and_close(ctx, thread_id, agent_version, sender_id, decision)
+        )
+        text = await ctx.collect()
+        await task
+        return text
+
     async def _run_and_close(self, ctx: _RestContext) -> None:
         try:
             await self.run(ctx)
+        finally:
+            ctx.close()
+
+    async def _resume_and_close(
+        self,
+        ctx: _RestContext,
+        thread_id: str,
+        agent_version: str,
+        sender_id: str,
+        decision: ApprovalDecision,
+    ) -> None:
+        try:
+            await self._execute_resume(
+                thread_id=thread_id,
+                agent_version=agent_version,
+                sender_id=sender_id,
+                interface="rest_api",
+                decision=decision,
+                context=ctx,
+            )
         finally:
             ctx.close()

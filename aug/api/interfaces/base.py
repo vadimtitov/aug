@@ -38,6 +38,7 @@ from aug.core.reflexes import Reflex, ReflexOutput, run_reflexes
 from aug.core.registry import get_agent
 from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, MessageContent, run_registry
 from aug.core.state import AgentState
+from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
 from aug.utils.logging import set_correlation_id, set_thread_id
 from aug.utils.notify import register_notification_target
 
@@ -129,6 +130,16 @@ class BaseInterface[ContextT](ABC):
         Must raise on failure so callers (e.g. reminder loop) can retry.
         """
 
+    @abstractmethod
+    async def request_approval(self, request: ApprovalRequest, context: ContextT) -> None:
+        """Send an approval prompt to the user (fire-and-forget).
+
+        Must deliver the prompt and return immediately — do NOT await the user's
+        response here.  The run will exit after this call; resumption happens via
+        a separate entry point (e.g. Telegram callback handler, REST endpoint)
+        that calls _execute_resume with the user's ApprovalDecision.
+        """
+
     async def send_stream(self, stream: AsyncIterator[AgentEvent], context: ContextT) -> None:
         """Consume the agent event stream and deliver the response.
 
@@ -209,36 +220,15 @@ class BaseInterface[ContextT](ABC):
             incoming.interface,
             incoming.agent_version,
         )
-        try:
-            await self.send_stream(stream, context)
-        except psycopg.OperationalError:
-            logger.exception("DB connection lost")
-            await self.send_message(
-                "Database connection lost. Please try again in a moment.", context
-            )
-        except RateLimitError:
-            logger.warning("LLM rate limit hit")
-            await self.send_message(
-                "Context window is full. Use /clear to start a fresh conversation.", context
-            )
-        except GraphRecursionError:
-            logger.warning("Agent hit recursion limit")
-            await self.send_message(
-                "The agent got stuck in a loop and was stopped. Try rephrasing your request.",
-                context,
-            )
-        except Exception:
-            logger.exception("Unhandled error in agent pipeline")
-            await self.send_message("Sorry, something went wrong.", context)
-        finally:
-            run.active = False
-            run_registry.pop(incoming.thread_id)
-            logger.info(
-                "request_end thread=%s run=%s duration=%.2fs",
-                incoming.thread_id,
-                run.id,
-                time.monotonic() - t0,
-            )
+        completed = await self._stream_and_handle(stream, run, incoming, context)
+        if not completed:
+            return
+        logger.info(
+            "request_end thread=%s run=%s duration=%.2fs",
+            incoming.thread_id,
+            run.id,
+            time.monotonic() - t0,
+        )
 
         # Ensure the reflex task has completed and its inject has been placed.
         # If the reflex finished mid-run the inject was already consumed there;
@@ -265,6 +255,113 @@ class BaseInterface[ContextT](ABC):
         if run and run.active:
             run.request_stop()
             return True
+        return False
+
+    async def get_pending_approval(
+        self, thread_id: str, agent_version: str
+    ) -> ApprovalRequest | None:
+        """Return the pending ApprovalRequest for *thread_id*, or None if not paused."""
+        return await _extract_approval_request(
+            get_agent(agent_version), thread_id, self._checkpointer
+        )
+
+    async def _execute_resume(
+        self,
+        thread_id: str,
+        agent_version: str,
+        sender_id: str,
+        interface: Literal["telegram", "rest_api"],
+        decision: ApprovalDecision,
+        context: ContextT,
+    ) -> None:
+        """Resume a graph that is paused on an approval interrupt.
+
+        Called by each interface's approval-response handler (Telegram button
+        callback, REST /chat/approve endpoint) after the user has responded.
+        """
+        incoming = IncomingMessage(
+            parts=[],
+            interface=interface,
+            sender_id=sender_id,
+            thread_id=thread_id,
+            agent_version=agent_version,
+        )
+
+        async with run_registry.thread_lock(thread_id):
+            existing = run_registry.get(thread_id)
+            if existing and existing.active:
+                existing.user_requested_stop.set()
+            run = AgentRun()
+            run_registry.set(thread_id, run)
+
+        set_thread_id(thread_id)
+        register_notification_target(thread_id, interface, sender_id)
+        stream = _resume_stream(Command(resume=decision), incoming, self._checkpointer, run)
+        t0 = time.monotonic()
+        logger.info(
+            "approval_resume thread=%s run=%s decision=%s",
+            thread_id,
+            run.id,
+            decision.value,
+        )
+        completed = await self._stream_and_handle(stream, run, incoming, context)
+        if completed:
+            logger.info(
+                "approval_resume_end thread=%s run=%s duration=%.2fs",
+                thread_id,
+                run.id,
+                time.monotonic() - t0,
+            )
+
+    async def _stream_and_handle(
+        self,
+        stream: AsyncIterator[AgentEvent],
+        run: AgentRun,
+        incoming: IncomingMessage,
+        context: ContextT,
+    ) -> bool:
+        """Stream agent events to the user and handle errors + approval interrupts.
+
+        Owns the run lifecycle: sets ``run.active = False`` and pops from the
+        registry in a ``finally`` block regardless of how the stream ends.
+
+        Returns True if the stream completed normally (caller may do post-processing
+        such as leftover-injection checks).  Returns False if an approval prompt was
+        sent or an error occurred — caller should return immediately.
+        """
+        try:
+            await self.send_stream(stream, context)
+            approval = await _extract_approval_request(
+                get_agent(incoming.agent_version),
+                incoming.thread_id,
+                self._checkpointer,
+            )
+            if approval is not None:
+                await self.request_approval(approval, context)
+                return False
+            return True
+        except psycopg.OperationalError:
+            logger.exception("DB connection lost")
+            await self.send_message(
+                "Database connection lost. Please try again in a moment.", context
+            )
+        except RateLimitError:
+            logger.warning("LLM rate limit hit")
+            await self.send_message(
+                "Context window is full. Use /clear to start a fresh conversation.", context
+            )
+        except GraphRecursionError:
+            logger.warning("Agent hit recursion limit")
+            await self.send_message(
+                "The agent got stuck in a loop and was stopped. Try rephrasing your request.",
+                context,
+            )
+        except Exception:
+            logger.exception("Unhandled error in agent pipeline")
+            await self.send_message("Sorry, something went wrong.", context)
+        finally:
+            run.active = False
+            run_registry.pop(incoming.thread_id)
         return False
 
     async def _run_reflexes_and_inject(
@@ -339,7 +436,11 @@ async def _agent_stream(
         if not graph_state.next:
             return  # graph reached END naturally
 
-        # Graph paused — check for a queued soft interrupt.
+        # Approval interrupt — exit cleanly; _execute_run will send the prompt.
+        if graph_state.interrupts:
+            return
+
+        # Graph paused at interrupt_after=["call_tools"] — check for a queued soft interrupt.
         try:
             injection = run.pending_agent_injection.get_nowait()
             logger.info("soft_interrupt thread=%s run=%s", message.thread_id, run.id)
@@ -348,6 +449,66 @@ async def _agent_stream(
             )
         except asyncio.QueueEmpty:
             graph_input = None  # resume from where the graph left off
+
+
+async def _resume_stream(
+    command: Command,
+    message: IncomingMessage,
+    checkpointer: BaseCheckpointSaver,
+    run: AgentRun,
+) -> AsyncIterator[AgentEvent]:
+    """Streaming generator that resumes a graph paused on an approval interrupt."""
+    agent = get_agent(message.agent_version)
+    config: RunnableConfig = {
+        "configurable": {
+            "thread_id": message.thread_id,
+            AGENT_RUN_CONFIG_KEY: run,
+        }
+    }
+    graph_input: Command | None = command
+
+    while True:
+        async for event in agent.astream_events(graph_input, config, checkpointer):
+            if run.user_requested_stop.is_set():
+                return
+            yield event
+
+        if run.user_requested_stop.is_set():
+            return
+
+        graph_state = await agent.aget_state(config, checkpointer)
+        if not graph_state.next:
+            return
+
+        # Another approval interrupt — exit so _execute_resume can handle it.
+        if graph_state.interrupts:
+            return
+
+        try:
+            injection = run.pending_agent_injection.get_nowait()
+            logger.info("soft_interrupt thread=%s run=%s", message.thread_id, run.id)
+            graph_input = Command(
+                update={"messages": [HumanMessage(content=_frame_injection(injection))]}
+            )
+        except asyncio.QueueEmpty:
+            graph_input = None
+
+
+async def _extract_approval_request(
+    agent: BaseAgent,
+    thread_id: str,
+    checkpointer: BaseCheckpointSaver,
+) -> ApprovalRequest | None:
+    """Return the first ApprovalRequest from graph state interrupts, or None."""
+    try:
+        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        graph_state = await agent.aget_state(config, checkpointer)
+        for interrupt_obj in graph_state.interrupts:
+            if isinstance(interrupt_obj.value, ApprovalRequest):
+                return interrupt_obj.value
+    except Exception:
+        logger.warning("approval_state_check_failed thread=%s", thread_id, exc_info=True)
+    return None
 
 
 async def _recent_history(
