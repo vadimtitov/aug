@@ -21,7 +21,17 @@ from urllib.parse import urlparse
 
 import markdown as md
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LinkPreviewOptions,
+    Message,
+    MessageOriginChannel,
+    MessageOriginChat,
+    MessageOriginHiddenUser,
+    MessageOriginUser,
+    Update,
+)
 from telegram.constants import ChatAction, MessageLimit
 from telegram.error import BadRequest, RetryAfter
 from telegram.ext import (
@@ -104,6 +114,8 @@ _SECRET_NAME, _SECRET_VALUE = range(2)
 
 
 class TelegramInterface(_SshMixin, BaseInterface[Update]):
+    _debounce_window = 0.1  # 100ms — collects rapid-fire forwarded messages into one run
+
     def __init__(self, checkpointer: BaseCheckpointSaver) -> None:
         super().__init__(checkpointer)
         self._bot_app = None
@@ -199,6 +211,10 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
 
         if not parts:
             return None
+
+        sender = _forward_sender(msg)
+        if sender:
+            parts.insert(0, TextContent(text=f"[Forwarded from {sender}]"))
 
         return IncomingMessage(
             parts=parts,
@@ -993,3 +1009,20 @@ def _chunk(text: str) -> list[str]:
     if remaining:
         chunks.append(remaining)
     return [c for c in chunks if c]
+
+
+def _forward_sender(msg: Message) -> str | None:
+    """Return a human-readable sender name for a forwarded message, or None."""
+    match msg.forward_origin:
+        case None:
+            return None
+        case MessageOriginUser(sender_user=user):
+            return user.full_name
+        case MessageOriginHiddenUser(sender_user_name=name):
+            return name
+        case MessageOriginChat(sender_chat=chat):
+            return chat.title or chat.username
+        case MessageOriginChannel(chat=chat):
+            return chat.title or chat.username
+        case _:
+            return None

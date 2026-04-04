@@ -113,8 +113,14 @@ class IncomingMessage(BaseModel):
 
 
 class BaseInterface[ContextT](ABC):
+    # Subclasses may override to buffer rapid-fire messages before starting a run.
+    # 0.0 = disabled (start immediately).
+    _debounce_window: float = 0.0
+
     def __init__(self, checkpointer: BaseCheckpointSaver) -> None:
         self._checkpointer = checkpointer
+        self._debounce_buf: dict[str, list[tuple[IncomingMessage, MessageContent]]] = {}
+        self._debounce_tasks: dict[str, asyncio.Task[None]] = {}
 
     @abstractmethod
     async def receive_message(self, context: ContextT) -> IncomingMessage | None:
@@ -163,7 +169,7 @@ class BaseInterface[ContextT](ABC):
             return
         set_correlation_id(str(uuid4())[:8])
 
-        # Preprocess before the lock — may be slow (Whisper, geocoding) but needed for both paths.
+        # Preprocess before the lock — may be slow (Whisper, geocoding).
         content = await _preprocess(incoming.parts)
 
         async with run_registry.thread_lock(incoming.thread_id):
@@ -172,13 +178,34 @@ class BaseInterface[ContextT](ABC):
                 existing.inject_message(content)
                 return
 
-            # No active run — start a new one, cancelling any stale one.
+            # No active run — buffer for debounce window (or fire immediately if disabled).
+            self._debounce_buf.setdefault(incoming.thread_id, []).append((incoming, content))
+            task = self._debounce_tasks.get(incoming.thread_id)
+            if task is None or task.done():
+                self._debounce_tasks[incoming.thread_id] = asyncio.create_task(
+                    self._debounce_fire(incoming.thread_id, context)
+                )
+
+    async def _debounce_fire(self, thread_id: str, context: ContextT) -> None:
+        """Wait out the debounce window, then start a single merged run."""
+        if self._debounce_window > 0:
+            await asyncio.sleep(self._debounce_window)
+
+        entries = self._debounce_buf.pop(thread_id, [])
+        self._debounce_tasks.pop(thread_id, None)
+        if not entries:
+            return
+
+        merged = _merge_contents([content for _, content in entries])
+
+        async with run_registry.thread_lock(thread_id):
+            existing = run_registry.get(thread_id)
             if existing and existing.active:
                 existing.user_requested_stop.set()
             run = AgentRun()
-            run_registry.set(incoming.thread_id, run)
+            run_registry.set(thread_id, run)
 
-        await self._execute_run(run, incoming, content, context)
+        await self._execute_run(run, entries[0][0], merged, context)
 
     async def _execute_run(
         self,
@@ -538,6 +565,22 @@ async def _recent_history(
             if texts:
                 result.append(f"{prefix}: {' '.join(texts)}")
     return result
+
+
+def _merge_contents(contents: list[MessageContent]) -> MessageContent:
+    """Merge multiple preprocessed message contents into one."""
+    if len(contents) == 1:
+        return contents[0]
+    blocks: list[dict] = []
+    for content in contents:
+        if isinstance(content, str):
+            if content:
+                blocks.append({"type": "text", "text": content})
+        else:
+            blocks.extend(content)
+    if all(b.get("type") == "text" for b in blocks):
+        return "\n\n".join(b["text"] for b in blocks)
+    return blocks
 
 
 def _frame_injection(content: MessageContent) -> MessageContent:
