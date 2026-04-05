@@ -413,10 +413,15 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                 )
             ],
         ]
+        resource_line = (
+            f"<b>Resource:</b> <code>{_escape(request.resource)}</code>\n"
+            if request.resource
+            else ""
+        )
         text = (
             f"⚠️ <b>Approval required</b>\n\n"
-            f"<b>Target:</b> <code>{_escape(request.target)}</code>\n"
-            f"<b>Command:</b>\n<pre>{_escape(request.command)}</pre>"
+            f"{resource_line}"
+            f"<b>Operation:</b>\n<pre>{_escape(request.operation)}</pre>"
         )
         try:
             await msg.reply_text(  # type: ignore[union-attr]
@@ -428,7 +433,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         except Exception:
             logger.warning("approval_prompt_html_failed, retrying plain", exc_info=True)
             await msg.reply_text(  # type: ignore[union-attr]
-                f"⚠️ Approval required\nTarget: {request.target}\nCommand: {request.command}",
+                f"⚠️ Approval required\n{request.description}",
                 reply_markup=InlineKeyboardMarkup(buttons),
             )
 

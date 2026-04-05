@@ -79,7 +79,7 @@ class RestApiInterface(BaseInterface[_RestContext]):
 
     async def request_approval(self, request: ApprovalRequest, context: _RestContext) -> None:
         context._queue.put_nowait(
-            f"\n⏸ Approval required to run `{request.command}` on `{request.target}`. "
+            f"\n⏸ Approval required: `{request.description}`. "
             f"Use POST /chat/{{thread_id}}/approve with "
             f'{{"decision": "approved_once" | "approved_always" | "denied"}}.'
         )

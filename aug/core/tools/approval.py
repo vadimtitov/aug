@@ -1,4 +1,4 @@
-"""Command approval mechanism for tools that execute on remote systems.
+"""Generic tool-approval mechanism.
 
 Provides:
   - ApprovalRequest / ApprovalDecision  — shared types
@@ -8,14 +8,15 @@ Provides:
   - is_approved / save_approval         — rule engine backed by settings.json
   - list_approvals / revoke_approval    — rule management for /approvals command
 
-Settings schema:
-  tools.ssh.approvals = [
-    {"target": "homeserver", "pattern": "df.*"},
+Settings schema (approvals):
+  [
+    {"pattern": "homeserver: df.*"},
+    {"pattern": "homeserver: systemctl status .*"},
     ...
   ]
 
-Rules use re.search (substring match). Anchor with ^ / $ for stricter matching.
-Target "*" matches any target.
+Rules use re.search (substring match) against ``resource: operation``.
+Anchor with ^ / $ for stricter matching.
 """
 
 import re
@@ -27,7 +28,7 @@ from langgraph.types import interrupt
 
 from aug.utils.user_settings import get_setting, set_setting
 
-_SETTING_PATH = ("tools", "ssh", "approvals")
+_SETTING_PATH = ("approvals",)
 
 
 # ---------------------------------------------------------------------------
@@ -37,10 +38,24 @@ _SETTING_PATH = ("tools", "ssh", "approvals")
 
 @dataclass(frozen=True)
 class ApprovalRequest:
-    """Payload passed to interrupt() when a command needs user approval."""
+    """Payload passed to interrupt() when an operation needs user approval.
 
-    target: str
-    command: str
+    Attributes:
+        resource:  What is being acted on (e.g. an SSH target, a file path).
+                   Empty string if the tool has no single resource concept.
+        operation: What is being done (e.g. a shell command, a file transfer).
+
+    Rule matching uses the combined ``"resource: operation"`` string (or just
+    ``operation`` when resource is empty).
+    """
+
+    resource: str
+    operation: str
+
+    @property
+    def description(self) -> str:
+        """Combined string used for rule matching and denial messages."""
+        return f"{self.resource}: {self.operation}" if self.resource else self.operation
 
 
 class ApprovalDecision(Enum):
@@ -54,8 +69,8 @@ class ApprovalDecision(Enum):
 # ---------------------------------------------------------------------------
 
 
-def requires_approval(fn):
-    """Decorator: pause via LangGraph interrupt() if no saved rule approves the command.
+def requires_approval(fn=None, *, describe=None):
+    """Decorator: pause via LangGraph interrupt() if no saved rule approves the operation.
 
     Apply BEFORE @tool so LangGraph wraps the already-decorated function:
 
@@ -64,43 +79,64 @@ def requires_approval(fn):
         async def run_ssh(target: str, command: str) -> str:
             ...
 
-    The decorated function must accept ``target`` and ``command`` as keyword
-    arguments.  On resume the decorator acts on the user's ApprovalDecision:
+    ``describe`` is a callable that receives the tool's kwargs as keyword
+    arguments and returns either:
+      - a ``(resource, operation)`` tuple for structured display, or
+      - a plain string used as the ``operation`` (resource will be empty).
+
+    Without ``describe``, all kwargs are formatted as ``key: value`` pairs
+    and used as the operation.
+
+        @tool
+        @requires_approval(describe=lambda target, command: (target, command))
+        async def run_ssh(target: str, command: str) -> str:
+            ...
+
+    On resume the decorator acts on the user's ApprovalDecision:
       - APPROVED_ONCE   → execute immediately, no rule saved
       - APPROVED_ALWAYS → save exact-match rule, then execute
       - DENIED          → return a clear denial string, do NOT execute
     """
 
-    @wraps(fn)
-    async def wrapper(*args, **kwargs):
-        target: str = kwargs.get("target", "")
-        command: str = kwargs.get("command", "")
+    def decorator(fn):
+        @wraps(fn)
+        async def wrapper(*args, **kwargs):
+            if describe is not None:
+                result = describe(**kwargs)
+                if isinstance(result, tuple):
+                    resource, operation = result
+                else:
+                    resource, operation = "", result
+            else:
+                resource = ""
+                operation = ", ".join(f"{k}: {v}" for k, v in kwargs.items())
 
-        if not is_approved(target, command):
-            decision: ApprovalDecision = interrupt(ApprovalRequest(target=target, command=command))
-            if decision == ApprovalDecision.DENIED:
-                return (
-                    f"Command denied by user. "
-                    f"The command '{command}' on '{target}' was NOT executed."
-                )
-            if decision == ApprovalDecision.APPROVED_ALWAYS:
-                save_approval(target, command)
+            request = ApprovalRequest(resource=resource, operation=operation)
 
-        return await fn(*args, **kwargs)
+            if not is_approved(request.description):
+                decision: ApprovalDecision = interrupt(request)
+                if decision == ApprovalDecision.DENIED:
+                    return f"Operation denied by user. '{request.description}' was NOT executed."
+                if decision == ApprovalDecision.APPROVED_ALWAYS:
+                    save_approval(request.description)
 
-    return wrapper
+            return await fn(*args, **kwargs)
+
+        return wrapper
+
+    # Support both @requires_approval and @requires_approval(describe=...)
+    if fn is not None:
+        return decorator(fn)
+    return decorator
 
 
-def is_approved(target: str, command: str) -> bool:
-    """Return True if a saved rule permits *command* on *target*."""
+def is_approved(description: str) -> bool:
+    """Return True if a saved rule permits *description* (``resource: operation``)."""
     rules: list[dict] = get_setting(*_SETTING_PATH, default=[]) or []
     for rule in rules:
-        rule_target = rule.get("target", "")
         pattern = rule.get("pattern", "")
-        if rule_target not in (target, "*"):
-            continue
         try:
-            if re.search(pattern, command):
+            if re.search(pattern, description):
                 return True
         except re.error:
             # Corrupted or manually-edited pattern — skip rather than crash.
@@ -108,16 +144,16 @@ def is_approved(target: str, command: str) -> bool:
     return False
 
 
-def save_approval(target: str, command: str) -> None:
-    """Persist an exact-match approval rule for *command* on *target*.
+def save_approval(description: str) -> None:
+    """Persist an exact-match approval rule for *description*.
 
     No-op if an identical rule already exists.
     """
     rules: list[dict] = get_setting(*_SETTING_PATH, default=[]) or []
-    pattern = re.escape(command)
-    if any(r.get("target") == target and r.get("pattern") == pattern for r in rules):
+    pattern = re.escape(description)
+    if any(r.get("pattern") == pattern for r in rules):
         return
-    rules.append({"target": target, "pattern": pattern})
+    rules.append({"pattern": pattern})
     set_setting(*_SETTING_PATH, value=rules)
 
 

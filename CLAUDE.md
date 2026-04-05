@@ -46,8 +46,10 @@ aug/
 │       └── user_settings.py    ← per-user settings; get_setting() / set_setting() with nested path
 ├── tests/
 ├── docs/
-│   ├── memory-design.md        ← Memory system design rationale
-│   └── TODO.md                 ← Open tasks
+│   ├── backlog/                ← TODO, tool ideas, tech debt, production hardening
+│   ├── design/                 ← Design docs (memory, skills, webhook)
+│   ├── setup-guides/           ← Setup guides (gmail, portainer, browser)
+│   └── prd/                    ← PRDs
 ├── Makefile
 ├── pyproject.toml
 ├── Dockerfile
