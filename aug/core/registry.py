@@ -190,6 +190,12 @@ _REGISTRY: dict[str, BaseAgent] = {
         temperature=1.0,
         recursion_limit=100,
     ),
+    "v9_glm5": AugAgent(
+        model="glm-5",
+        tools=_V9_TOOLS,
+        temperature=1.0,
+        recursion_limit=100,
+    ),
 }
 
 
