@@ -23,7 +23,7 @@ from aug.core.tools.portainer import (
 )
 from aug.core.tools.respond_with_file import respond_with_file
 from aug.core.tools.run_bash import run_bash
-from aug.core.tools.run_ssh import list_ssh_targets, run_ssh
+from aug.core.tools.run_ssh import download_ssh_file, list_ssh_targets, run_ssh, upload_ssh_file
 from aug.core.tools.set_reminder import set_reminder
 from aug.core.tools.skills import delete_skill, get_skill, save_skill, write_skill_file
 
@@ -56,6 +56,8 @@ _V9_TOOLS = [
     *_V7_TOOLS,
     run_ssh,
     list_ssh_targets,
+    download_ssh_file,
+    upload_ssh_file,
 ]
 
 _V8_REFLEXES = [homeassistant_reflex("gemini-2.5-flash-lite")]

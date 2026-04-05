@@ -27,7 +27,7 @@ from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
-from openai import AsyncOpenAI, RateLimitError
+from openai import AsyncOpenAI, InternalServerError, RateLimitError
 from pydantic import BaseModel
 
 from aug.config import get_settings
@@ -377,14 +377,19 @@ class BaseInterface[ContextT](ABC):
             await self.send_message(
                 "Context window is full. Use /clear to start a fresh conversation.", context
             )
+        except InternalServerError as e:
+            logger.warning("LLM internal server error: %s", e)
+            await self.send_message(
+                "The AI model is overloaded. Please try again in a moment.", context
+            )
         except GraphRecursionError:
             logger.warning("Agent hit recursion limit")
             await self.send_message(
                 "The agent got stuck in a loop and was stopped. Try rephrasing your request.",
                 context,
             )
-        except Exception:
-            logger.exception("Unhandled error in agent pipeline")
+        except Exception as e:
+            logger.exception("Unhandled error in agent pipeline: %s: %s", type(e).__name__, e)
             await self.send_message("Sorry, something went wrong.", context)
         finally:
             run.active = False

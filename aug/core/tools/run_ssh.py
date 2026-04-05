@@ -25,20 +25,25 @@ Settings schema (tools.ssh.targets):
 """
 
 import logging
+from pathlib import Path
 
 import asyncssh
 from langchain_core.tools import tool
 
 from aug.core.tools.approval import requires_approval
+from aug.utils.data import DATA_DIR
 from aug.utils.ssh import find_target, get_targets
+from aug.utils.user_settings import get_setting
 
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 60
+_SSH_DOWNLOADS_DIR = DATA_DIR / "ssh_downloads"
+_DEFAULT_MAX_DOWNLOAD_BYTES = 1_073_741_824  # 1 GB
 
 
 @tool
-@requires_approval
+@requires_approval(describe=lambda target, command: (target, command))
 async def run_ssh(target: str, command: str) -> str:
     """Execute a shell command on a named SSH target.
 
@@ -60,20 +65,7 @@ async def run_ssh(target: str, command: str) -> str:
 
     logger.info("run_ssh target=%s cmd=%.120r", target, command)
 
-    connect_kwargs: dict = {
-        "host": cfg["host"],
-        "port": int(cfg.get("port", 22)),
-        "username": cfg["user"],
-        "client_keys": [cfg["key_path"]],
-    }
-
-    if cfg.get("verify_host") is False:
-        connect_kwargs["known_hosts"] = None
-    elif "known_hosts" in cfg:
-        connect_kwargs["known_hosts"] = cfg["known_hosts"]
-    # else: omit known_hosts → asyncssh uses system default (~/.ssh/known_hosts)
-
-    connect_kwargs["connect_timeout"] = 30
+    connect_kwargs = _build_connect_kwargs(cfg)
 
     try:
         async with asyncssh.connect(**connect_kwargs) as conn:
@@ -116,3 +108,145 @@ def list_ssh_targets() -> str:
         return "No SSH targets configured. Add targets via the /ssh Telegram command."
     names = [t.get("name", "<unnamed>") for t in targets]
     return "Configured SSH targets:\n" + "\n".join(f"  • {n}" for n in names)
+
+
+@tool
+@requires_approval(describe=lambda target, remote_path: (target, f"download {remote_path}"))
+async def download_ssh_file(target: str, remote_path: str) -> str:
+    """Download a file from a named SSH target to the agent's local storage.
+
+    Uses SFTP. The file is saved under /app/data/ssh_downloads/ and the local
+    path is returned so it can be referenced in subsequent operations.
+
+    Args:
+        target:      Name of the SSH target (e.g. "homeserver").
+        remote_path: Absolute path of the file on the remote machine.
+    """
+    cfg = find_target(target)
+    if cfg is None:
+        return f"SSH target '{target}' not found. Use list_ssh_targets() to see configured targets."
+
+    if "key_path" not in cfg:
+        return (
+            f"SSH target '{target}' has no key_path configured. Re-provision the target via /ssh."
+        )
+
+    max_bytes: int = get_setting(
+        "tools", "ssh", "max_download_bytes", default=_DEFAULT_MAX_DOWNLOAD_BYTES
+    )
+
+    connect_kwargs = _build_connect_kwargs(cfg)
+
+    logger.info("download_ssh_file target=%s remote=%s", target, remote_path)
+
+    try:
+        async with asyncssh.connect(**connect_kwargs) as conn:
+            async with conn.start_sftp_client() as sftp:
+                try:
+                    stat = await sftp.stat(remote_path)
+                except asyncssh.SFTPError as exc:
+                    return f"Cannot stat '{remote_path}' on '{target}': {exc}"
+
+                file_size = stat.size
+                if file_size is not None and file_size > max_bytes:
+                    return (
+                        f"File '{remote_path}' on '{target}' is {file_size:,} bytes, "
+                        f"which exceeds the download limit of {max_bytes:,} bytes. "
+                        "Increase tools.ssh.max_download_bytes in settings to allow larger downloads."  # noqa: E501
+                    )
+
+                _SSH_DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+                safe_name = remote_path.lstrip("/").replace("/", "__")
+                local_path = _SSH_DOWNLOADS_DIR / f"{target}__{safe_name}"
+
+                await sftp.get(remote_path, str(local_path))
+    except asyncssh.HostKeyNotVerifiable as exc:
+        logger.warning("download_ssh_file host_key_mismatch target=%s error=%r", target, exc)
+        return (
+            f"Connection to '{target}' refused — host key mismatch. "
+            "The server's key has changed. Re-provision the target via /ssh."
+        )
+    except Exception as exc:
+        logger.warning("download_ssh_file failed target=%s error=%r", target, exc)
+        return f"File download did NOT complete. Connection to '{target}' failed: {exc}"
+
+    actual_size = Path(local_path).stat().st_size
+    logger.info("download_ssh_file done local=%s size=%d", local_path, actual_size)
+    return f"Downloaded '{remote_path}' from '{target}' to '{local_path}' ({actual_size:,} bytes)."
+
+
+@tool
+@requires_approval(
+    describe=lambda target, local_path, remote_path: (
+        target,
+        f"upload {local_path} → {remote_path}",
+    )
+)
+async def upload_ssh_file(target: str, local_path: str, remote_path: str) -> str:
+    """Upload a local file to a named SSH target via SFTP.
+
+    Args:
+        target:      Name of the SSH target (e.g. "homeserver").
+        local_path:  Absolute path of the file on the agent's local filesystem.
+        remote_path: Absolute destination path on the remote machine.
+    """
+    cfg = find_target(target)
+    if cfg is None:
+        return f"SSH target '{target}' not found. Use list_ssh_targets() to see configured targets."
+
+    if "key_path" not in cfg:
+        return (
+            f"SSH target '{target}' has no key_path configured. Re-provision the target via /ssh."
+        )
+
+    if not Path(local_path).exists():
+        return f"Local file '{local_path}' does not exist."
+
+    connect_kwargs = _build_connect_kwargs(cfg)
+    local_size = Path(local_path).stat().st_size
+
+    logger.info(
+        "upload_ssh_file target=%s local=%s remote=%s size=%d",
+        target,
+        local_path,
+        remote_path,
+        local_size,
+    )
+
+    try:
+        async with asyncssh.connect(**connect_kwargs) as conn:
+            async with conn.start_sftp_client() as sftp:
+                await sftp.put(local_path, remote_path)
+    except asyncssh.HostKeyNotVerifiable as exc:
+        logger.warning("upload_ssh_file host_key_mismatch target=%s error=%r", target, exc)
+        return (
+            f"Connection to '{target}' refused — host key mismatch. "
+            "The server's key has changed. Re-provision the target via /ssh."
+        )
+    except Exception as exc:
+        logger.warning("upload_ssh_file failed target=%s error=%r", target, exc)
+        return f"File upload did NOT complete. Connection to '{target}' failed: {exc}"
+
+    logger.info("upload_ssh_file done target=%s remote=%s", target, remote_path)
+    return f"Uploaded '{local_path}' ({local_size:,} bytes) to '{target}:{remote_path}'."
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_connect_kwargs(cfg: dict) -> dict:
+    """Build asyncssh connection kwargs from a target config dict."""
+    kwargs: dict = {
+        "host": cfg["host"],
+        "port": int(cfg.get("port", 22)),
+        "username": cfg["user"],
+        "client_keys": [cfg["key_path"]],
+        "connect_timeout": 30,
+    }
+    if cfg.get("verify_host") is False:
+        kwargs["known_hosts"] = None
+    elif "known_hosts" in cfg:
+        kwargs["known_hosts"] = cfg["known_hosts"]
+    return kwargs
