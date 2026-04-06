@@ -195,6 +195,7 @@ _REGISTRY: dict[str, BaseAgent] = {
         tools=_V9_TOOLS,
         temperature=1.0,
         recursion_limit=100,
+        vision_description_model="gemini-2.5-flash",
     ),
 }
 

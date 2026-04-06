@@ -40,14 +40,27 @@ Note: implemented in `aug/core/tools/twilio_sms.py` but not yet registered in an
 ---
 
 ## Phone Call
-Make outbound phone calls via Twilio Programmable Voice. The agent calls a number and
-speaks a message (TwiML TTS built in). Scope: outbound "say this" calls only — two-way
-conversational calls (listen + respond mid-call) are a completely different, much harder
-problem and out of scope.
+The agent calls a number, has a real two-way conversation to accomplish a goal, and
+reports back with a transcript and summary. "Call the dentist and find out their earliest
+slot next week." User never touches the call — fully delegated.
 
-Tool: `phone_call(to, message)`.
-Requires the same Twilio credentials as SMS (`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`,
-`TWILIO_FROM_NUMBER`). Cost: ~$0.013–0.02/min outbound + $1.15/month for the number.
+Architecture: dedicated voice subagent (same pattern as browser tool), not part of the
+main LangGraph. The `phone_call` tool kicks off the call and returns immediately; result
+arrives via Telegram when the call ends. The voice pipeline runs independently:
+STT (streaming) → LLM → TTS, ~885ms mouth-to-ear latency — acceptable since the user
+isn't waiting on hold, the agent is.
+
+Three implementation paths (pick one):
+- **Pine AI** — managed, zero infra, OpenClaw uses this. `POST /call` with number +
+  objective, SSE for result. ~$0.30–0.50/call. English only, Pro subscription required.
+- **Vapi** — flexible managed service, supports custom LLM (point at LiteLLM proxy),
+  custom voices, tool calling mid-call. Webhook delivers transcript. ~$0.13/min.
+- **Twilio ConversationRelay + LiteLLM** — self-hosted. Twilio has a tutorial using
+  FastAPI + LiteLLM specifically — AUG's exact stack. ~$0.05–0.10/min in API costs.
+
+Tool: `phone_call(to, goal)`.
+References: github.com/19PINE-AI/openclaw-pine-voice, docs.vapi.ai/calls/outbound-calling,
+twilio.com/en-us/products/conversational-ai/conversationrelay
 
 ## Recurring Tasks
 Cron-style scheduling for the agent itself. Unlike `set_reminder` (one-shot), this lets

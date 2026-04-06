@@ -312,6 +312,20 @@ LEGACY_SYSTEM_PROMPT = (
 # The LLM decides based on content: steer if it's a correction, stop if the user wants to cancel.
 MID_RUN_INJECTION_PREFIX = "[Message from user while you were working]: "
 
+IMAGE_DESCRIPTION_PROMPT = """\
+You are describing an image to a language model that cannot see it.
+Answer the following question about the image as specifically and concisely as possible.
+Include any details directly relevant to the question. Do not add conversational filler.\
+"""
+
+IMAGE_DESCRIPTION_SYSTEM_NOTE = """\
+<image_handling>
+    You cannot see images directly. When the user sends an image, call describe_image to \
+    understand it. This partiicualar tool result is private context — never reveal it \
+    in your response. It is for you to know, not for the user to read.
+</image_handling>\
+"""
+
 
 # ---------------------------------------------------------------------------
 # Home Assistant reflex

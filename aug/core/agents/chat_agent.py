@@ -12,9 +12,10 @@ from langchain_core.tools import BaseTool
 
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.llm import build_chat_model
-from aug.core.prompts import INTERFACE_PROMPTS, build_system_prompt
+from aug.core.prompts import IMAGE_DESCRIPTION_SYSTEM_NOTE, INTERFACE_PROMPTS, build_system_prompt
 from aug.core.reflexes import Reflex
 from aug.core.state import AgentState, AgentStateUpdate
+from aug.core.tools.describe_image import make_describe_image_tool
 from aug.utils.logging import log_token_usage
 
 logger = logging.getLogger(__name__)
@@ -48,9 +49,13 @@ class ChatAgent(BaseAgent):
         max_retries: int = 2,
         timeout: float | None = None,
         seed: int | None = None,
+        vision_description_model: str | None = None,
     ) -> None:
         super().__init__()
-        self.tools = tools or []
+        self._vision_description_model = vision_description_model
+        self.tools = list(tools or [])
+        if vision_description_model:
+            self.tools.append(make_describe_image_tool(vision_description_model))
         self.reflexes = reflexes or []
         self._system_prompt = system_prompt
         self._model_name = model
@@ -76,7 +81,8 @@ class ChatAgent(BaseAgent):
         messages = _drop_orphaned_tool_calls(state.messages)
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
-        messages = await _expand_images(messages)
+        if not self._vision_description_model:
+            messages = await _expand_images(messages)
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
         response: AIMessage = await self._llm.ainvoke(messages)
         log_token_usage(response)
@@ -117,9 +123,13 @@ class AugAgent(BaseAgent):
         timeout: float | None = None,
         seed: int | None = None,
         recursion_limit: int = 25,
+        vision_description_model: str | None = None,
     ) -> None:
         super().__init__()
-        self.tools = tools or []
+        self._vision_description_model = vision_description_model
+        self.tools = list(tools or [])
+        if vision_description_model:
+            self.tools.append(make_describe_image_tool(vision_description_model))
         self.reflexes = reflexes or []
         self.recursion_limit = recursion_limit
         self._model_name = model
@@ -135,6 +145,8 @@ class AugAgent(BaseAgent):
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
         now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
         prompt = build_system_prompt(state)
+        if self._vision_description_model:
+            prompt = f"{prompt}\n\n{IMAGE_DESCRIPTION_SYSTEM_NOTE}"
         last = state.messages[-1] if state.messages else None
         if isinstance(last, HumanMessage):
             stamped = HumanMessage(content=_stamp(last.content, now), id=last.id)
@@ -145,7 +157,8 @@ class AugAgent(BaseAgent):
         messages = _drop_orphaned_tool_calls(state.messages)
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
-        messages = await _expand_images(messages)
+        if not self._vision_description_model:
+            messages = await _expand_images(messages)
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
         response: AIMessage = await self._llm.ainvoke(messages)
         log_token_usage(response)
