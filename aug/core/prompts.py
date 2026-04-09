@@ -267,6 +267,23 @@ INTERFACE_PROMPTS: dict[str, InterfacePrompts] = {
 }
 
 # ---------------------------------------------------------------------------
+# Context compaction
+# ---------------------------------------------------------------------------
+
+COMPACTION_PROMPT = """\
+The following is a conversation history that needs to be summarised to free up context space.
+Produce a dense narrative summary that preserves all facts, decisions, tool results, and
+important context. Write it as a single cohesive block — no bullet points, no headings.
+Include what tools were called and what they found. Be specific: names, URLs, values, outcomes.
+Omit pleasantries and filler. The summary will be prepended to the remaining conversation
+so the assistant can continue seamlessly.
+
+Conversation to summarise:
+{history}
+"""
+
+
+# ---------------------------------------------------------------------------
 # Browser tool constraints appended to browser-use system prompt
 # ---------------------------------------------------------------------------
 
@@ -321,7 +338,7 @@ Include any details directly relevant to the question. Do not add conversational
 IMAGE_DESCRIPTION_SYSTEM_NOTE = """\
 <image_handling>
     You cannot see images directly. When the user sends an image, call describe_image to \
-    understand it. This partiicualar tool result is private context — never reveal it \
+    understand it. This particular tool result is private context — never reveal it \
     in your response. It is for you to know, not for the user to read.
 </image_handling>\
 """

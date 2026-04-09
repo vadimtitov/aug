@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from langchain_core.messages import AnyMessage
+from langchain_core.messages import AnyMessage, RemoveMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel
 
@@ -34,4 +34,9 @@ class AgentStateUpdate(AgentState):
 
     Identical to AgentState but semantically signals that only the fields
     explicitly set will be merged into the graph state.
+
+    messages may include RemoveMessage entries — these are reducer instructions
+    consumed by add_messages and never stored in state.
     """
+
+    messages: Annotated[list[AnyMessage | RemoveMessage], add_messages] = []

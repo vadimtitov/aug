@@ -1,6 +1,5 @@
 """Tests for the describe_image tool factory."""
 
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

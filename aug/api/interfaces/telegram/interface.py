@@ -58,6 +58,7 @@ from aug.config import get_settings
 from aug.core.events import (
     AgentEvent,
     ChatModelStreamEvent,
+    StatusEvent,
     ToolEndEvent,
     ToolProgressEvent,
     ToolStartEvent,
@@ -304,6 +305,14 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                         if tool_run_id and tool_run_id in tool_msgs:
                             tool_name, args, tool_msg, _, step_holder = tool_msgs[tool_run_id]
                             step_holder[0] = step
+                    case StatusEvent(text=text) if text:
+                        try:
+                            await msg.reply_text(  # type: ignore[union-attr]
+                                text,
+                                disable_notification=True,
+                            )
+                        except Exception:
+                            pass
                     case ToolEndEvent(
                         run_id=run_id, tool_name=tool_name, output=output, error=error
                     ):

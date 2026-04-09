@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemM
 from langchain_core.tools import BaseTool
 
 from aug.core.agents.base_agent import BaseAgent
+from aug.core.compaction import compact_messages, count_tokens
 from aug.core.llm import build_chat_model
 from aug.core.prompts import IMAGE_DESCRIPTION_SYSTEM_NOTE, INTERFACE_PROMPTS, build_system_prompt
 from aug.core.reflexes import Reflex
@@ -50,6 +51,10 @@ class ChatAgent(BaseAgent):
         timeout: float | None = None,
         seed: int | None = None,
         vision_description_model: str | None = None,
+        compaction_model: str | None = None,
+        compaction_threshold: float = 0.80,
+        context_window: int = 200_000,
+        max_summary_tokens: int = 2000,
     ) -> None:
         super().__init__()
         self._vision_description_model = vision_description_model
@@ -59,6 +64,10 @@ class ChatAgent(BaseAgent):
         self.reflexes = reflexes or []
         self._system_prompt = system_prompt
         self._model_name = model
+        self._compaction_model = compaction_model
+        self._compaction_threshold = compaction_threshold
+        self._context_window = context_window
+        self._max_summary_tokens = max_summary_tokens
         self._llm = build_chat_model(
             model,
             temperature=temperature,
@@ -79,6 +88,17 @@ class ChatAgent(BaseAgent):
 
     async def respond(self, state: AgentState) -> AgentStateUpdate:
         messages = _drop_orphaned_tool_calls(state.messages)
+        state_changes: list[AnyMessage] = []
+        tokens = count_tokens(messages)
+        threshold = int(self._compaction_threshold * self._context_window)
+        logger.debug("context tokens=%d threshold=%d", tokens, threshold)
+        if self._compaction_model and tokens > threshold:
+            messages, state_changes = await compact_messages(
+                messages,
+                self._compaction_model,
+                context_window=self._context_window,
+                max_summary_tokens=self._max_summary_tokens,
+            )
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
         if not self._vision_description_model:
@@ -86,7 +106,7 @@ class ChatAgent(BaseAgent):
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
         response: AIMessage = await self._llm.ainvoke(messages)
         log_token_usage(response)
-        return AgentStateUpdate(messages=[response])
+        return AgentStateUpdate(messages=[*state_changes, response])
 
 
 class TimeAwareChatAgent(ChatAgent):
@@ -124,6 +144,10 @@ class AugAgent(BaseAgent):
         seed: int | None = None,
         recursion_limit: int = 25,
         vision_description_model: str | None = None,
+        compaction_model: str | None = None,
+        compaction_threshold: float = 0.80,
+        context_window: int = 200_000,
+        max_summary_tokens: int = 2000,
     ) -> None:
         super().__init__()
         self._vision_description_model = vision_description_model
@@ -133,6 +157,10 @@ class AugAgent(BaseAgent):
         self.reflexes = reflexes or []
         self.recursion_limit = recursion_limit
         self._model_name = model
+        self._compaction_model = compaction_model
+        self._compaction_threshold = compaction_threshold
+        self._context_window = context_window
+        self._max_summary_tokens = max_summary_tokens
         self._llm = build_chat_model(
             model,
             temperature=temperature,
@@ -155,6 +183,17 @@ class AugAgent(BaseAgent):
 
     async def respond(self, state: AgentState) -> AgentStateUpdate:
         messages = _drop_orphaned_tool_calls(state.messages)
+        state_changes: list[AnyMessage] = []
+        tokens = count_tokens(messages)
+        threshold = int(self._compaction_threshold * self._context_window)
+        logger.debug("context tokens=%d threshold=%d", tokens, threshold)
+        if self._compaction_model and tokens > threshold:
+            messages, state_changes = await compact_messages(
+                messages,
+                self._compaction_model,
+                context_window=self._context_window,
+                max_summary_tokens=self._max_summary_tokens,
+            )
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
         if not self._vision_description_model:
@@ -162,7 +201,7 @@ class AugAgent(BaseAgent):
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
         response: AIMessage = await self._llm.ainvoke(messages)
         log_token_usage(response)
-        return AgentStateUpdate(messages=[response])
+        return AgentStateUpdate(messages=[*state_changes, response])
 
 
 def _stamp(content: str | list, now: str) -> str | list:

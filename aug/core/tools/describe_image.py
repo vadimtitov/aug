@@ -4,6 +4,7 @@ Creates a tool that uses a dedicated vision model to describe images for agents
 that cannot process image inputs directly.
 """
 
+import asyncio
 import base64
 from pathlib import Path
 
@@ -50,7 +51,7 @@ def make_describe_image_tool(model: str) -> BaseTool:
             ),
         ]
         try:
-            response = await _llm.ainvoke(messages)
+            response = await _llm.ainvoke(messages, config={"callbacks": []})
             return str(response.content)
         except Exception as exc:
             return f"Error describing image: {exc}"
@@ -59,8 +60,6 @@ def make_describe_image_tool(model: str) -> BaseTool:
 
 
 async def _read_image(path: str) -> bytes:
-    import asyncio
-
     return await asyncio.to_thread(Path(path).read_bytes)
 
 
