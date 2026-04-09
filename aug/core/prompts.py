@@ -282,6 +282,14 @@ Conversation to summarise:
 {history}
 """
 
+# Injected into messages_for_llm (not persisted) when compaction fires a second time
+# within the same run. Tells the LLM it has already researched enough and must synthesise.
+COMPACTION_LOOP_GUARD = """\
+[System: Context has been compacted more than once during this task. \
+You have already gathered sufficient information. \
+Do NOT call any more tools. Synthesise your findings and respond to the user now.]\
+"""
+
 
 # ---------------------------------------------------------------------------
 # Browser tool constraints appended to browser-use system prompt

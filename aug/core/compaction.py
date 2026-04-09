@@ -25,7 +25,7 @@ from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage, Sys
 
 from aug.core.events import dispatch_status
 from aug.core.llm import build_chat_model
-from aug.core.prompts import COMPACTION_PROMPT
+from aug.core.prompts import COMPACTION_LOOP_GUARD, COMPACTION_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +69,10 @@ async def compact_messages(
     current_run = messages[last_human_idx:]  # includes the last HumanMessage
 
     tokens_current = count_tokens(current_run)
-    current_run_heavy = tokens_current >= context_window * 0.5
-
-    if not pre_run and not current_run_heavy:
-        return messages, []
+    # "Heavy" if current run exceeds 50% of context, OR if there's no pre-run at all.
+    # In the no-pre-run case the current run IS everything; the caller already verified
+    # the total token count exceeds the compaction threshold.
+    current_run_heavy = tokens_current >= context_window * 0.5 or not pre_run
 
     if current_run_heavy:
         # Summarise pre-run + current run tool work; keep only the last HumanMessage
@@ -85,6 +85,9 @@ async def compact_messages(
         to_keep = current_run
         scope = "pre-run only"
 
+    if not to_summarise:
+        return messages, []
+
     logger.info(
         "compaction triggered scope=%s summarising=%d messages keeping=%d messages",
         scope,
@@ -94,10 +97,6 @@ async def compact_messages(
 
     await dispatch_status("🗜 Compacting conversation…")
     summary = await _summarise(to_summarise, compaction_model, max_summary_tokens)
-
-    print()
-    print(summary)
-    print()
 
     logger.info(
         "compaction complete summary_chars=%d removed=%d",
@@ -111,7 +110,16 @@ async def compact_messages(
         summary_message
     ]
 
-    messages_for_llm = [summary_message, *to_keep]
+    # If a previous summary is being re-compacted, we are in a research loop.
+    # Inject a one-off synthesis instruction (not persisted) so the LLM stops
+    # calling tools and produces its answer instead.
+    already_compacted = any(isinstance(m, SystemMessage) for m in to_summarise)
+    if already_compacted:
+        logger.warning("compaction loop detected — injecting synthesis guard")
+        loop_guard = SystemMessage(content=COMPACTION_LOOP_GUARD, id=str(uuid.uuid4()))
+        messages_for_llm = [summary_message, loop_guard, *to_keep]
+    else:
+        messages_for_llm = [summary_message, *to_keep]
 
     return messages_for_llm, state_changes
 

@@ -78,16 +78,39 @@ async def test_compact_messages_noop_when_no_human_messages():
 
 
 @pytest.mark.asyncio
-async def test_compact_messages_noop_when_no_prerun_and_current_run_small():
-    """Only one HumanMessage, current run is small — nothing to summarise."""
-    messages = [
-        HumanMessage(content="hi", id="h0"),
-        AIMessage(content="hello", id="a0"),
-    ]
-    # context_window=200_000, current run tokens << 50% → no-op
+async def test_compact_messages_noop_when_no_prerun_and_only_human_message():
+    """Only a HumanMessage with no response yet — nothing to summarise."""
+    messages = [HumanMessage(content="hi", id="h0")]
     result, state_changes = await compact_messages(messages, "model", context_window=200_000)
     assert result is messages
     assert state_changes == []
+
+
+@pytest.mark.asyncio
+async def test_compact_messages_compacts_current_run_when_no_prerun():
+    """No pre-run but current run has tool call history — should compact it.
+
+    Regression: previously no-oped because current_run < 50% of context_window,
+    even when the caller's threshold was already exceeded.
+    """
+    messages = [
+        HumanMessage(content="research X", id="h0"),
+        AIMessage(content="", tool_calls=[{"id": "tc1", "name": "search", "args": {}}], id="a0"),
+        ToolMessage(content="result " * 200, tool_call_id="tc1", id="t0"),
+    ]
+    with patch("aug.core.compaction.build_chat_model", return_value=_mock_llm("summary")):
+        messages_for_llm, state_changes = await compact_messages(
+            messages, "cheap-model", context_window=200_000
+        )
+
+    # Tool call history must be summarised
+    removed_ids = {m.id for m in state_changes if isinstance(m, RemoveMessage)}
+    assert "a0" in removed_ids
+    assert "t0" in removed_ids
+    # The human message must be kept
+    assert "h0" not in removed_ids
+    kept_contents = [m.content for m in messages_for_llm]
+    assert "research X" in kept_contents
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +260,57 @@ async def test_compact_messages_heavy_current_run_keeps_last_human_message():
     # last HumanMessage must NOT be in state_changes as RemoveMessage
     removed_ids = {m.id for m in state_changes if isinstance(m, RemoveMessage)}
     assert "h1" not in removed_ids
+
+
+# ---------------------------------------------------------------------------
+# compact_messages — loop guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compact_messages_injects_loop_guard_on_recompaction():
+    """When a previous SystemMessage summary is being re-compacted, the loop guard
+    is injected into messages_for_llm (but NOT persisted via state_changes)."""
+    messages = [
+        # previous summary already in state — first compaction already happened
+        SystemMessage(content="[Conversation summary]: previous research...", id="s0"),
+        HumanMessage(content="research London schools", id="h0"),
+        AIMessage(content="", tool_calls=[{"id": "tc1", "name": "search", "args": {}}], id="a0"),
+        ToolMessage(content="x" * 4000, tool_call_id="tc1", id="t0"),
+    ]
+    with patch("aug.core.compaction.build_chat_model", return_value=_mock_llm("new summary")):
+        messages_for_llm, state_changes = await compact_messages(
+            messages, "cheap-model", context_window=10
+        )
+
+    # Loop guard must appear in messages_for_llm
+    assert any(
+        "Do NOT call any more tools" in m.content
+        for m in messages_for_llm
+        if isinstance(m, SystemMessage)
+    )
+    # Loop guard must NOT be persisted — not in state_changes
+    assert not any(
+        "Do NOT call any more tools" in m.content
+        for m in state_changes
+        if isinstance(m, SystemMessage)
+    )
+
+
+@pytest.mark.asyncio
+async def test_compact_messages_no_loop_guard_on_first_compaction():
+    """First-time compaction must not inject the loop guard."""
+    messages = _research_thread()
+    with patch("aug.core.compaction.build_chat_model", return_value=_mock_llm()):
+        messages_for_llm, _ = await compact_messages(
+            messages, "cheap-model", context_window=200_000
+        )
+
+    assert not any(
+        "Do NOT call any more tools" in m.content
+        for m in messages_for_llm
+        if isinstance(m, SystemMessage)
+    )
 
 
 # ---------------------------------------------------------------------------
