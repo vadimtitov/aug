@@ -62,6 +62,8 @@ _V9_TOOLS = [
 
 _V8_REFLEXES = [homeassistant_reflex("gemini-2.5-flash-lite")]
 
+_V10_TOOLS = _V9_TOOLS
+
 _REGISTRY: dict[str, BaseAgent] = {
     "fake": FakeAgent(),
     "v7_claude": AugAgent(
@@ -195,6 +197,58 @@ _REGISTRY: dict[str, BaseAgent] = {
         tools=_V9_TOOLS,
         temperature=1.0,
         recursion_limit=100,
+        vision_description_model="gemini-2.5-flash",
+    ),
+    "v10_claude": AugAgent(
+        model="claude-sonnet-4-6",
+        tools=_V10_TOOLS,
+        temperature=1.0,
+        recursion_limit=100,
+        compaction_model="claude-haiku-4-5",
+        compaction_threshold=0.05,
+        context_window=500_000,
+        max_summary_tokens=2000,
+    ),
+    "v10_gpt41": AugAgent(
+        model="gpt-4.1",
+        tools=_V10_TOOLS,
+        temperature=1.0,
+        recursion_limit=100,
+        compaction_model="gpt-4.1",
+        compaction_threshold=0.7,
+        context_window=1_000_000,
+        max_summary_tokens=2000,
+    ),
+    "v10_gpt51": AugAgent(
+        model="gpt-5.1",
+        tools=_V10_TOOLS,
+        temperature=1.0,
+        recursion_limit=100,
+        compaction_model="gpt-5.1",
+        compaction_threshold=0.7,
+        context_window=200_000,
+        max_summary_tokens=2000,
+    ),
+    "v10_gemini_pro": AugAgent(
+        model="gemini-2.5-pro",
+        tools=_V10_TOOLS,
+        temperature=1.0,
+        recursion_limit=100,
+        compaction_model="gemini-2.5-pro",
+        compaction_threshold=0.7,
+        context_window=1_000_000,
+        max_summary_tokens=2000,
+    ),
+    "v10_glm5": AugAgent(
+        model="glm-5",
+        tools=_V10_TOOLS,
+        temperature=1.0,
+        recursion_limit=100,
+        vision_description_model="gemini-2.5-flash",
+        compaction_model="glm-5",
+        compaction_threshold=0.01,
+        context_window=200_000,
+        max_summary_tokens=2000,
     ),
 }
 

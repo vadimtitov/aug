@@ -30,6 +30,7 @@ from langchain_core.runnables.schema import StreamEvent
 from aug.core.tools.output import ToolOutput
 
 _TOOL_PROGRESS = "tool_progress"
+_STATUS = "status"
 
 
 @dataclass
@@ -59,11 +60,29 @@ class ToolProgressEvent:
     parent_ids: list[str] = field(default_factory=list)
 
 
+@dataclass
+class StatusEvent:
+    """A brief status notification (e.g. 'Compacting conversation…').
+
+    Rendered as a transient message by interfaces that support it; silently
+    ignored by interfaces that don't.
+    """
+
+    text: str
+
+
 async def send_tool_progress_update(step: str) -> None:
     await adispatch_custom_event(_TOOL_PROGRESS, {"step": step})
 
 
-AgentEvent = ChatModelStreamEvent | ToolStartEvent | ToolEndEvent | ToolProgressEvent
+async def dispatch_status(text: str) -> None:
+    try:
+        await adispatch_custom_event(_STATUS, {"text": text})
+    except RuntimeError:
+        pass  # no active run context (e.g. unit tests)
+
+
+AgentEvent = ChatModelStreamEvent | ToolStartEvent | ToolEndEvent | ToolProgressEvent | StatusEvent
 
 
 def parse_event(event: StreamEvent) -> AgentEvent | None:
@@ -99,4 +118,6 @@ def parse_event(event: StreamEvent) -> AgentEvent | None:
             parent_ids=list(event.get("parent_ids", [])),
             step=event["data"].get("step", ""),
         )
+    if kind == "on_custom_event" and event["name"] == _STATUS:
+        return StatusEvent(text=event["data"].get("text", ""))
     return None

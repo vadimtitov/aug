@@ -267,6 +267,31 @@ INTERFACE_PROMPTS: dict[str, InterfacePrompts] = {
 }
 
 # ---------------------------------------------------------------------------
+# Context compaction
+# ---------------------------------------------------------------------------
+
+COMPACTION_PROMPT = """\
+The following is a conversation history that needs to be summarised to free up context space.
+Produce a dense narrative summary that preserves all facts, decisions, tool results, and
+important context. Write it as a single cohesive block — no bullet points, no headings.
+Include what tools were called and what they found. Be specific: names, URLs, values, outcomes.
+Omit pleasantries and filler. The summary will be prepended to the remaining conversation
+so the assistant can continue seamlessly.
+
+Conversation to summarise:
+{history}
+"""
+
+# Injected into messages_for_llm (not persisted) when compaction fires a second time
+# within the same run. Tells the LLM it has already researched enough and must synthesise.
+COMPACTION_LOOP_GUARD = """\
+[System: Context has been compacted more than once during this task. \
+You have already gathered sufficient information. \
+Do NOT call any more tools. Synthesise your findings and respond to the user now.]\
+"""
+
+
+# ---------------------------------------------------------------------------
 # Browser tool constraints appended to browser-use system prompt
 # ---------------------------------------------------------------------------
 
@@ -311,6 +336,20 @@ LEGACY_SYSTEM_PROMPT = (
 # Gives the LLM context that this arrived while it was working, without prescribing what to do.
 # The LLM decides based on content: steer if it's a correction, stop if the user wants to cancel.
 MID_RUN_INJECTION_PREFIX = "[Message from user while you were working]: "
+
+IMAGE_DESCRIPTION_PROMPT = """\
+You are describing an image to a language model that cannot see it.
+Answer the following question about the image as specifically and concisely as possible.
+Include any details directly relevant to the question. Do not add conversational filler.\
+"""
+
+IMAGE_DESCRIPTION_SYSTEM_NOTE = """\
+<image_handling>
+    You cannot see images directly. When the user sends an image, call describe_image to \
+    understand it. This particular tool result is private context — never reveal it \
+    in your response. It is for you to know, not for the user to read.
+</image_handling>\
+"""
 
 
 # ---------------------------------------------------------------------------

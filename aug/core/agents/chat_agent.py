@@ -11,10 +11,12 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemM
 from langchain_core.tools import BaseTool
 
 from aug.core.agents.base_agent import BaseAgent
+from aug.core.compaction import compact_messages, count_tokens
 from aug.core.llm import build_chat_model
-from aug.core.prompts import INTERFACE_PROMPTS, build_system_prompt
+from aug.core.prompts import IMAGE_DESCRIPTION_SYSTEM_NOTE, INTERFACE_PROMPTS, build_system_prompt
 from aug.core.reflexes import Reflex
 from aug.core.state import AgentState, AgentStateUpdate
+from aug.core.tools.describe_image import make_describe_image_tool
 from aug.utils.logging import log_token_usage
 
 logger = logging.getLogger(__name__)
@@ -48,12 +50,24 @@ class ChatAgent(BaseAgent):
         max_retries: int = 2,
         timeout: float | None = None,
         seed: int | None = None,
+        vision_description_model: str | None = None,
+        compaction_model: str | None = None,
+        compaction_threshold: float = 0.80,
+        context_window: int = 200_000,
+        max_summary_tokens: int = 2000,
     ) -> None:
         super().__init__()
-        self.tools = tools or []
+        self._vision_description_model = vision_description_model
+        self.tools = list(tools or [])
+        if vision_description_model:
+            self.tools.append(make_describe_image_tool(vision_description_model))
         self.reflexes = reflexes or []
         self._system_prompt = system_prompt
         self._model_name = model
+        self._compaction_model = compaction_model
+        self._compaction_threshold = compaction_threshold
+        self._context_window = context_window
+        self._max_summary_tokens = max_summary_tokens
         self._llm = build_chat_model(
             model,
             temperature=temperature,
@@ -74,13 +88,25 @@ class ChatAgent(BaseAgent):
 
     async def respond(self, state: AgentState) -> AgentStateUpdate:
         messages = _drop_orphaned_tool_calls(state.messages)
+        state_changes: list[AnyMessage] = []
+        tokens = count_tokens(messages)
+        threshold = int(self._compaction_threshold * self._context_window)
+        logger.debug("context tokens=%d threshold=%d", tokens, threshold)
+        if self._compaction_model and tokens > threshold:
+            messages, state_changes = await compact_messages(
+                messages,
+                self._compaction_model,
+                context_window=self._context_window,
+                max_summary_tokens=self._max_summary_tokens,
+            )
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
-        messages = await _expand_images(messages)
+        if not self._vision_description_model:
+            messages = await _expand_images(messages)
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
         response: AIMessage = await self._llm.ainvoke(messages)
         log_token_usage(response)
-        return AgentStateUpdate(messages=[response])
+        return AgentStateUpdate(messages=[*state_changes, response])
 
 
 class TimeAwareChatAgent(ChatAgent):
@@ -117,12 +143,24 @@ class AugAgent(BaseAgent):
         timeout: float | None = None,
         seed: int | None = None,
         recursion_limit: int = 25,
+        vision_description_model: str | None = None,
+        compaction_model: str | None = None,
+        compaction_threshold: float = 0.80,
+        context_window: int = 200_000,
+        max_summary_tokens: int = 2000,
     ) -> None:
         super().__init__()
-        self.tools = tools or []
+        self._vision_description_model = vision_description_model
+        self.tools = list(tools or [])
+        if vision_description_model:
+            self.tools.append(make_describe_image_tool(vision_description_model))
         self.reflexes = reflexes or []
         self.recursion_limit = recursion_limit
         self._model_name = model
+        self._compaction_model = compaction_model
+        self._compaction_threshold = compaction_threshold
+        self._context_window = context_window
+        self._max_summary_tokens = max_summary_tokens
         self._llm = build_chat_model(
             model,
             temperature=temperature,
@@ -135,6 +173,8 @@ class AugAgent(BaseAgent):
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
         now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
         prompt = build_system_prompt(state)
+        if self._vision_description_model:
+            prompt = f"{prompt}\n\n{IMAGE_DESCRIPTION_SYSTEM_NOTE}"
         last = state.messages[-1] if state.messages else None
         if isinstance(last, HumanMessage):
             stamped = HumanMessage(content=_stamp(last.content, now), id=last.id)
@@ -143,13 +183,25 @@ class AugAgent(BaseAgent):
 
     async def respond(self, state: AgentState) -> AgentStateUpdate:
         messages = _drop_orphaned_tool_calls(state.messages)
+        state_changes: list[AnyMessage] = []
+        tokens = count_tokens(messages)
+        threshold = int(self._compaction_threshold * self._context_window)
+        logger.debug("context tokens=%d threshold=%d", tokens, threshold)
+        if self._compaction_model and tokens > threshold:
+            messages, state_changes = await compact_messages(
+                messages,
+                self._compaction_model,
+                context_window=self._context_window,
+                max_summary_tokens=self._max_summary_tokens,
+            )
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
-        messages = await _expand_images(messages)
+        if not self._vision_description_model:
+            messages = await _expand_images(messages)
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
         response: AIMessage = await self._llm.ainvoke(messages)
         log_token_usage(response)
-        return AgentStateUpdate(messages=[response])
+        return AgentStateUpdate(messages=[*state_changes, response])
 
 
 def _stamp(content: str | list, now: str) -> str | list:
