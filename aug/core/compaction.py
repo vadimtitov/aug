@@ -18,14 +18,22 @@ Algorithm
    prepended as a SystemMessage.
 """
 
+from __future__ import annotations
+
 import logging
 import uuid
+from typing import TYPE_CHECKING
 
 from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage, SystemMessage
+from langchain_core.runnables.config import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from aug.core.events import dispatch_status
 from aug.core.llm import build_chat_model
 from aug.core.prompts import COMPACTION_LOOP_GUARD, COMPACTION_PROMPT
+
+if TYPE_CHECKING:
+    from aug.core.agents.base_agent import BaseAgent
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +130,48 @@ async def compact_messages(
         messages_for_llm = [summary_message, *to_keep]
 
     return messages_for_llm, state_changes
+
+
+async def compact_thread(
+    agent: BaseAgent,
+    thread_id: str,
+    checkpointer: BaseCheckpointSaver,
+) -> bool:
+    """Compact the full message history of a thread on demand.
+
+    Intended for explicit user-triggered compaction (e.g. a /compact command).
+    There is no active run, so all messages are treated as history to summarise.
+
+    Args:
+        agent: The agent whose compaction settings to use.
+        thread_id: The thread to compact.
+        checkpointer: The checkpointer holding the thread state.
+
+    Returns:
+        True if compaction ran, False if there was nothing to compact.
+
+    Raises:
+        ValueError: If the agent has no compaction_model configured.
+    """
+    if not agent._compaction_model:
+        raise ValueError(f"Agent '{type(agent).__name__}' has no compaction_model configured.")
+
+    config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+    snapshot = await agent.aget_state(config, checkpointer)
+    messages: list[AnyMessage] = snapshot.values.get("messages", [])
+
+    _, state_changes = await compact_messages(
+        messages,
+        agent._compaction_model,
+        context_window=agent._context_window,
+        max_summary_tokens=agent._max_summary_tokens,
+    )
+
+    if not state_changes:
+        return False
+
+    await agent._compiled_graph.aupdate_state(config, {"messages": state_changes})
+    return True
 
 
 async def _summarise(messages: list[AnyMessage], model: str, max_tokens: int) -> str:

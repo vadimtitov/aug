@@ -478,6 +478,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         bot_app.add_handler(CommandHandler("version", self._handle_version))
         bot_app.add_handler(CommandHandler("skills", self._handle_skills))
         bot_app.add_handler(CommandHandler("prompt", self._handle_prompt))
+        bot_app.add_handler(CommandHandler("compact", self._handle_compact))
         bot_app.add_handler(CommandHandler("consolidate", self._handle_consolidate))
         bot_app.add_handler(CommandHandler("consolidate_deep", self._handle_consolidate_deep))
         bot_app.add_handler(
@@ -520,6 +521,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             [
                 ("clear", "Start a new conversation"),
                 ("stop", "Stop the current run"),
+                ("compact", "Summarise conversation history to free up context"),
                 ("version", "Switch agent version"),
                 ("skills", "Inspect skill files"),
                 ("secret", "Store a secret"),
@@ -668,6 +670,20 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         file = io.BytesIO(prompt_text.encode())
         file.name = "system_prompt.txt"
         await update.message.reply_document(document=file, filename="system_prompt.txt")  # type: ignore[union-attr]
+
+    @_restricted
+    async def _handle_compact(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat_id = update.effective_chat.id  # type: ignore[union-attr]
+        agent_version = get_setting("telegram", "chats", str(chat_id), "agent", default="default")
+        await update.message.reply_text("🗜 Compacting conversation…")  # type: ignore[union-attr]
+        try:
+            ran = await self._execute_compact(_thread_id(chat_id), agent_version)
+            await update.message.reply_text("✅ Done." if ran else "Nothing to compact.")  # type: ignore[union-attr]
+        except ValueError as e:
+            await update.message.reply_text(str(e))  # type: ignore[union-attr]
+        except Exception:
+            logger.exception("Manual compaction failed")
+            await update.message.reply_text("Compaction failed — check logs.")  # type: ignore[union-attr]
 
     @_restricted
     async def _handle_consolidate(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
