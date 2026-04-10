@@ -32,6 +32,7 @@ from pydantic import BaseModel
 
 from aug.config import get_settings
 from aug.core.agents.base_agent import BaseAgent
+from aug.core.compaction import compact_thread
 from aug.core.events import AgentEvent, ChatModelStreamEvent
 from aug.core.prompts import MID_RUN_INJECTION_PREFIX
 from aug.core.reflexes import Reflex, ReflexOutput, run_reflexes
@@ -291,6 +292,15 @@ class BaseInterface[ContextT](ABC):
         return await _extract_approval_request(
             get_agent(agent_version), thread_id, self._checkpointer
         )
+
+    async def _execute_compact(self, thread_id: str, agent_version: str) -> bool:
+        """Compact the message history for *thread_id*.
+
+        Returns True if compaction ran, False if there was nothing to compact.
+        Raises ValueError if the agent has no compaction_model configured.
+        """
+        agent = get_agent(agent_version)
+        return await compact_thread(agent, thread_id, self._checkpointer)
 
     async def _execute_resume(
         self,

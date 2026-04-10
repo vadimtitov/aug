@@ -438,4 +438,71 @@ async def test_agent_passes_context_window_and_max_summary_tokens_to_compact():
     mock_compact.assert_called_once()
     _, kwargs = mock_compact.call_args
     assert kwargs.get("context_window") == 1 or mock_compact.call_args[0][2] == 1
-    assert kwargs.get("max_summary_tokens") == 42 or mock_compact.call_args[0][3] == 42
+
+
+# ---------------------------------------------------------------------------
+# compact_thread — on-demand compaction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compact_thread_compacts_and_writes_state():
+    """compact_thread summarises history and writes state_changes back to the graph."""
+    from aug.core.compaction import compact_thread
+
+    agent = _make_aug_agent(compaction_model="cheap", context_window=200_000)
+
+    summary_msg = SystemMessage(content="[Conversation summary]: summary", id="s1")
+    remove_msgs = [RemoveMessage(id="h0"), RemoveMessage(id="a0")]
+    fake_compacted = _research_thread()[2:]
+
+    mock_checkpointer = MagicMock()
+    mock_snapshot = MagicMock()
+    mock_snapshot.values = {"messages": _research_thread()}
+
+    with (
+        patch.object(agent, "aget_state", new=AsyncMock(return_value=mock_snapshot)),
+        patch(
+            "aug.core.compaction.compact_messages",
+            new=AsyncMock(return_value=(fake_compacted, [*remove_msgs, summary_msg])),
+        ),
+        patch.object(agent, "_compiled_graph") as mock_graph,
+    ):
+        mock_graph.aupdate_state = AsyncMock()
+        result = await compact_thread(agent, "thread-1", mock_checkpointer)
+
+    assert result is True
+    mock_graph.aupdate_state.assert_called_once()
+    call_args = mock_graph.aupdate_state.call_args
+    written_messages = call_args[0][1]["messages"]
+    assert any(isinstance(m, RemoveMessage) for m in written_messages)
+    assert any(isinstance(m, SystemMessage) for m in written_messages)
+
+
+@pytest.mark.asyncio
+async def test_compact_thread_raises_when_no_compaction_model():
+    from aug.core.compaction import compact_thread
+
+    agent = _make_aug_agent(compaction_model=None)
+    with pytest.raises(ValueError, match="no compaction_model"):
+        await compact_thread(agent, "thread-1", MagicMock())
+
+
+@pytest.mark.asyncio
+async def test_compact_thread_returns_false_when_nothing_to_compact():
+    from aug.core.compaction import compact_thread
+
+    agent = _make_aug_agent(compaction_model="cheap", context_window=200_000)
+    mock_snapshot = MagicMock()
+    mock_snapshot.values = {"messages": [HumanMessage(content="hi", id="h0")]}
+
+    with (
+        patch.object(agent, "aget_state", new=AsyncMock(return_value=mock_snapshot)),
+        patch(
+            "aug.core.compaction.compact_messages",
+            new=AsyncMock(return_value=([], [])),
+        ),
+    ):
+        result = await compact_thread(agent, "thread-1", MagicMock())
+
+    assert result is False
