@@ -423,12 +423,11 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             ],
         ]
         resource_line = (
-            f"<b>Resource:</b> <code>{_escape(request.resource)}</code>\n"
-            if request.resource
-            else ""
+            f"<b>Target:</b> <code>{_escape(request.resource)}</code>\n" if request.resource else ""
         )
         text = (
             f"⚠️ <b>Approval required</b>\n\n"
+            f"<b>Tool:</b> <code>{_escape(request.tool_name)}</code>\n"
             f"{resource_line}"
             f"<b>Operation:</b>\n<pre>{_escape(request.operation)}</pre>"
         )
@@ -768,9 +767,13 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         lines = []
         buttons = []
         for i, rule in enumerate(rules, start=1):
-            target = rule.get("target", "?")
+            tool = rule.get("tool", "*")
+            target = rule.get("target", "*")
             pattern = rule.get("pattern", "?")
-            lines.append(f"{i}. <code>{_escape(target)}</code> → <code>{_escape(pattern)}</code>")
+            lines.append(
+                f"{i}. <code>{_escape(tool)}</code> @ <code>{_escape(target)}</code>"
+                f": <code>{_escape(pattern)}</code>"
+            )
             buttons.append(
                 [InlineKeyboardButton(f"Revoke #{i}", callback_data=f"approval_revoke:{i - 1}")]
             )

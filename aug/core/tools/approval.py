@@ -8,15 +8,17 @@ Provides:
   - is_approved / save_approval         — rule engine backed by settings.json
   - list_approvals / revoke_approval    — rule management for /approvals command
 
-Settings schema (approvals):
+Settings schema (tools.approvals):
   [
-    {"pattern": "homeserver: df.*"},
-    {"pattern": "homeserver: systemctl status .*"},
+    {"tool": "run_ssh",           "target": "homeserver", "pattern": "df.*"},
+    {"tool": "run_ssh",           "target": "*",          "pattern": "uptime"},
+    {"tool": "download_ssh_file", "target": "homeserver", "pattern": ".*"},
     ...
   ]
 
-Rules use re.search (substring match) against ``resource: operation``.
+Rules use re.search (substring match) against the ``operation`` string.
 Anchor with ^ / $ for stricter matching.
+``target`` and ``tool`` support ``"*"`` as a wildcard that matches anything.
 """
 
 import re
@@ -28,7 +30,7 @@ from langgraph.types import interrupt
 
 from aug.utils.user_settings import get_setting, set_setting
 
-_SETTING_PATH = ("approvals",)
+_SETTING_PATH = ("tools", "approvals")
 
 
 # ---------------------------------------------------------------------------
@@ -41,20 +43,19 @@ class ApprovalRequest:
     """Payload passed to interrupt() when an operation needs user approval.
 
     Attributes:
+        tool_name: Name of the tool being called (e.g. ``"run_ssh"``).
         resource:  What is being acted on (e.g. an SSH target, a file path).
                    Empty string if the tool has no single resource concept.
         operation: What is being done (e.g. a shell command, a file transfer).
-
-    Rule matching uses the combined ``"resource: operation"`` string (or just
-    ``operation`` when resource is empty).
     """
 
+    tool_name: str
     resource: str
     operation: str
 
     @property
     def description(self) -> str:
-        """Combined string used for rule matching and denial messages."""
+        """Human-readable string used in denial messages and fallback display."""
         return f"{self.resource}: {self.operation}" if self.resource else self.operation
 
 
@@ -99,6 +100,8 @@ def requires_approval(fn=None, *, describe=None):
     """
 
     def decorator(fn):
+        tool_name = fn.__name__
+
         @wraps(fn)
         async def wrapper(*args, **kwargs):
             if describe is not None:
@@ -111,14 +114,17 @@ def requires_approval(fn=None, *, describe=None):
                 resource = ""
                 operation = ", ".join(f"{k}: {v}" for k, v in kwargs.items())
 
-            request = ApprovalRequest(resource=resource, operation=operation)
+            request = ApprovalRequest(tool_name=tool_name, resource=resource, operation=operation)
 
-            if not is_approved(request.description):
+            if not is_approved(tool_name, resource, operation):
                 decision: ApprovalDecision = interrupt(request)
                 if decision == ApprovalDecision.DENIED:
-                    return f"Operation denied by user. '{request.description}' was NOT executed."
+                    return (
+                        f"Operation denied by user. "
+                        f"[{tool_name}] '{request.description}' was NOT executed."
+                    )
                 if decision == ApprovalDecision.APPROVED_ALWAYS:
-                    save_approval(request.description)
+                    save_approval(tool_name, resource, operation)
 
             return await fn(*args, **kwargs)
 
@@ -130,13 +136,19 @@ def requires_approval(fn=None, *, describe=None):
     return decorator
 
 
-def is_approved(description: str) -> bool:
-    """Return True if a saved rule permits *description* (``resource: operation``)."""
+def is_approved(tool_name: str, resource: str, operation: str) -> bool:
+    """Return True if a saved rule permits *operation* for *tool_name* on *resource*."""
     rules: list[dict] = get_setting(*_SETTING_PATH, default=[]) or []
     for rule in rules:
+        rule_tool = rule.get("tool", "*")
+        rule_target = rule.get("target", "*")
         pattern = rule.get("pattern", "")
+        if rule_tool not in (tool_name, "*"):
+            continue
+        if rule_target not in (resource, "*"):
+            continue
         try:
-            if re.search(pattern, description):
+            if re.search(pattern, operation):
                 return True
         except re.error:
             # Corrupted or manually-edited pattern — skip rather than crash.
@@ -144,16 +156,21 @@ def is_approved(description: str) -> bool:
     return False
 
 
-def save_approval(description: str) -> None:
-    """Persist an exact-match approval rule for *description*.
+def save_approval(tool_name: str, resource: str, operation: str) -> None:
+    """Persist an exact-match approval rule for *operation* on *resource* by *tool_name*.
 
     No-op if an identical rule already exists.
     """
     rules: list[dict] = get_setting(*_SETTING_PATH, default=[]) or []
-    pattern = re.escape(description)
-    if any(r.get("pattern") == pattern for r in rules):
+    pattern = re.escape(operation)
+    if any(
+        r.get("tool", "*") == tool_name
+        and r.get("target", "*") == resource
+        and r.get("pattern") == pattern
+        for r in rules
+    ):
         return
-    rules.append({"pattern": pattern})
+    rules.append({"tool": tool_name, "target": resource, "pattern": pattern})
     set_setting(*_SETTING_PATH, value=rules)
 
 
