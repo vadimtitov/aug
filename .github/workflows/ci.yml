@@ -30,7 +30,7 @@ jobs:
       - name: Test
         run: uv run pytest
         env:
-          API_KEY: test-key
+          API_KEY: test-api-key
           LLM_API_KEY: test-key
           LLM_BASE_URL: http://localhost:4000
           DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/test
