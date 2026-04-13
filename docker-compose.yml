@@ -8,6 +8,7 @@ services:
       HUSHED_DIR: /app/data/.hushed
       BROWSER_CDP_URL: http://chromium:9222
       BASE_URL: ${BASE_URL:-http://YOUR_HOST:8012}
+      DEV_AUTH_BYPASS: "true"
     env_file: .env
     volumes:
       - ./aug:/app/aug
@@ -51,6 +52,20 @@ services:
       - browser_downloads:/app/browser-downloads
     shm_size: 1g
     restart: unless-stopped
+
+  miniapp:
+    build:
+      context: ./miniapp
+      target: builder
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8012}
+    volumes:
+      - ./miniapp/src:/app/src
+      - ./miniapp/public:/app/public
+      - ./miniapp/index.html:/app/index.html
+    command: ["npm", "run", "dev"]
 
 volumes:
   postgres_data:

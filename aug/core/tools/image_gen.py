@@ -12,10 +12,17 @@ from openai import AsyncOpenAI
 
 from aug.config import get_settings
 from aug.core.tools.output import ImageAttachment, ToolOutput
+from aug.utils.user_settings import get_setting
+
+_DEFAULT_IMAGE_GEN_MODEL = "gpt-image-1.5"
 
 logger = logging.getLogger(__name__)
 
 ImageSize = Literal["1024x1024", "1536x1024", "1024x1536", "auto"]
+
+
+def _get_image_gen_model() -> str:
+    return get_setting("tools", "image_gen", "model") or _DEFAULT_IMAGE_GEN_MODEL
 
 
 @tool(response_format="content_and_artifact")
@@ -38,7 +45,7 @@ async def generate_image(
 
     settings = get_settings()
     client = AsyncOpenAI(api_key=settings.LLM_API_KEY, base_url=settings.LLM_BASE_URL)
-    model = settings.IMAGE_GEN_MODEL
+    model = _get_image_gen_model()
 
     logger.info("generate_image model=%r size=%s n=%d prompt=%r", model, size, n, prompt[:80])
 
@@ -110,7 +117,7 @@ async def edit_image(
 
     settings = get_settings()
     client = AsyncOpenAI(api_key=settings.LLM_API_KEY, base_url=settings.LLM_BASE_URL)
-    model = settings.IMAGE_GEN_MODEL
+    model = _get_image_gen_model()
 
     logger.info(
         "edit_image model=%r size=%s path=%r prompt=%r", model, size, source_path, prompt[:80]

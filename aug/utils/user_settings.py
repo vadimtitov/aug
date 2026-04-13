@@ -24,6 +24,16 @@ from aug.utils.data import read_data_file, write_data_file
 _SETTINGS_FILE = "settings.json"
 
 
+def get_all_settings() -> dict:
+    """Return the full settings dict."""
+    return _load()
+
+
+def set_all_settings(data: dict) -> None:
+    """Overwrite the full settings dict."""
+    write_data_file(_SETTINGS_FILE, json.dumps(data, indent=2))
+
+
 def get_setting(*path: str, default: Any = None) -> Any:
     """Read a value at an arbitrary nested path."""
     node = _load()

@@ -29,13 +29,13 @@ services:
       BRAVE_API_KEY: ${BRAVE_API_KEY:-}
       GMAIL_CLIENT_ID: ${GMAIL_CLIENT_ID:-}
       GMAIL_CLIENT_SECRET: ${GMAIL_CLIENT_SECRET:-}
-      IMAGE_GEN_MODEL: ${IMAGE_GEN_MODEL:-gpt-image-1.5}
       PORTAINER_URL: ${PORTAINER_URL:-}
       PORTAINER_API_TOKEN: ${PORTAINER_API_TOKEN:-}
       PORTAINER_ENDPOINT_ID: ${PORTAINER_ENDPOINT_ID:-1}
       BROWSER_CDP_URL: http://chromium:9222
       BASE_URL: ${BASE_URL:-http://YOUR_HOST:8012}
       DEBUG: ${DEBUG:-false}
+      DEV_AUTH_BYPASS: "false"
     ports:
       - "8012:8000"
     volumes:
@@ -57,6 +57,15 @@ services:
       hushed add PORTAINER_API_TOKEN $$PORTAINER_API_TOKEN &&
       exec hushed run -- uvicorn aug.app:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 25
       "
+
+  miniapp:
+    build:
+      context: ./miniapp
+      args:
+        VITE_API_URL: ${MINIAPP_API_URL}
+    ports:
+      - "3013:80"
+    restart: unless-stopped
 
   chromium:
     build: ./chromium
