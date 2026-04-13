@@ -9,7 +9,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     # App
     APP_VERSION: str = "0.1.0"
-    DEBUG: bool = False
+    DEBUG: bool = False  # True → human-readable logs; does NOT affect auth
+    # Set to True in local dev to skip Telegram initData HMAC verification.
+    # Must be False in production — any other value is a critical security risk.
+    DEV_AUTH_BYPASS: bool = False
 
     # Auth
     API_KEY: str
@@ -44,9 +47,6 @@ class Settings(BaseSettings):
     # Gmail OAuth (optional — tool is disabled if absent)
     GMAIL_CLIENT_ID: str | None = None
     GMAIL_CLIENT_SECRET: str | None = None
-
-    # Image generation via LiteLLM proxy
-    IMAGE_GEN_MODEL: str = "gpt-image-1.5"
 
     # Portainer (optional — portainer tools disabled if absent)
     PORTAINER_URL: str | None = None

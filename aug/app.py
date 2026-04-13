@@ -19,11 +19,12 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from aug.api.interfaces.telegram import TelegramInterface
-from aug.api.routers import chat, files, gmail_auth, threads
+from aug.api.routers import auth, chat, files, gmail_auth, settings, threads
 from aug.config import get_settings
 from aug.core.memory import init_memory_files, start_consolidation_scheduler
 from aug.utils.db import create_pool
@@ -123,6 +124,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["GET", "PUT", "POST", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
+    )
+
     @app.middleware("http")
     async def correlation_id_middleware(request: Request, call_next) -> Response:
         cid = request.headers.get("X-Correlation-ID", str(uuid4())[:8])
@@ -140,8 +148,8 @@ def create_app() -> FastAPI:
             async with app.state.db_pool.acquire() as conn:
                 await conn.fetchval("SELECT 1")
             checks["db"] = "ok"
-        except Exception as exc:
-            checks["db"] = f"error: {exc}"
+        except Exception:
+            checks["db"] = "error"
 
         # Reminder loop watchdog
         last_check: datetime | None = app.state.last_reminder_check
@@ -156,10 +164,12 @@ def create_app() -> FastAPI:
         checks["status"] = "ok" if ok else "degraded"
         return checks
 
+    app.include_router(auth.router)
     app.include_router(chat.router)
     app.include_router(threads.router)
     app.include_router(files.router)
     app.include_router(gmail_auth.router)
+    app.include_router(settings.router)
 
     return app
 

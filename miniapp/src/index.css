@@ -1,0 +1,585 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+:root {
+  /* Map Telegram theme variables with sensible dark fallbacks */
+  --bg:           var(--tg-theme-bg-color,             #000000);
+  --secondary-bg: var(--tg-theme-secondary-bg-color,   #1c1c1e);
+  --section-bg:   var(--tg-theme-section-bg-color,     #1c1c1e);
+  --text:         var(--tg-theme-text-color,            #f5f5f5);
+  --hint:         var(--tg-theme-hint-color,            #8e8e93);
+  --link:         var(--tg-theme-link-color,            #0a84ff);
+  --accent:       var(--tg-theme-accent-text-color,     #0a84ff);
+  --button:       var(--tg-theme-button-color,          #0a84ff);
+  --button-text:  var(--tg-theme-button-text-color,     #ffffff);
+  --destructive:  var(--tg-theme-destructive-text-color,#ff453a);
+  --header-bg:    var(--tg-theme-header-bg-color,       #000000);
+
+  --radius-sm:  10px;
+  --radius-md:  16px;
+  --radius-lg:  20px;
+  --radius-xl:  24px;
+
+  --brand: #f59e0b;
+
+  --shadow-tile: 0 4px 24px rgba(0, 0, 0, 0.35);
+  --shadow-card: 0 2px 12px rgba(0, 0, 0, 0.25);
+
+  --divider: rgba(255, 255, 255, 0.06);
+  --glass:   rgba(255, 255, 255, 0.04);
+  --glass-border: rgba(255, 255, 255, 0.08);
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI",
+               Roboto, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 0;
+}
+
+input, select, textarea {
+  font-family: inherit;
+}
+
+/* ─── Screen layout ─────────────────────────────────────────────────────── */
+
+.screen {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ─── Page header ────────────────────────────────────────────────────────── */
+
+.page-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 20px 8px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg);
+}
+
+.page-header h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  flex: 1;
+}
+
+.back-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--brand);
+  font-size: 17px;
+  font-weight: 500;
+  padding: 8px 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.back-btn:active {
+  opacity: 0.6;
+}
+
+/* ─── Home screen ────────────────────────────────────────────────────────── */
+
+.home-screen {
+  padding: 20px 16px 32px;
+  flex: 1;
+}
+
+.home-greeting {
+  margin-bottom: 28px;
+}
+
+.home-greeting h1 {
+  margin: 0 0 4px;
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: -0.8px;
+  background: linear-gradient(135deg, var(--text) 40%, var(--hint));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.home-greeting p {
+  margin: 0;
+  color: var(--hint);
+  font-size: 15px;
+}
+
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+}
+
+.tile {
+  position: relative;
+  border-radius: var(--radius-xl);
+  padding: 22px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 36px;
+  cursor: pointer;
+  background: var(--secondary-bg);
+  box-shadow: var(--shadow-card);
+  border: 1px solid var(--glass-border);
+  transition: transform 0.15s ease, opacity 0.15s ease;
+  min-height: 140px;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.tile::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.06);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.tile:active {
+  transform: scale(0.95);
+  opacity: 0.8;
+}
+
+.tile:active::before {
+  opacity: 1;
+}
+
+.tile--disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.tile--disabled:active {
+  transform: none;
+}
+
+.tile-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.tile-info {
+  margin-top: auto;
+}
+
+.tile-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.2px;
+  line-height: 1.2;
+}
+
+.tile-desc {
+  font-size: 12px;
+  color: var(--hint);
+  margin-top: 2px;
+  line-height: 1.3;
+}
+
+
+/* ─── Settings page ──────────────────────────────────────────────────────── */
+
+.settings-content {
+  padding: 8px 16px 40px;
+  flex: 1;
+}
+
+.settings-section {
+  margin-bottom: 32px;
+}
+
+.settings-section-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--hint);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 0 0 8px 4px;
+}
+
+.settings-card {
+  background: var(--secondary-bg);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+  overflow: hidden;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  gap: 12px;
+  min-height: 52px;
+}
+
+.settings-row + .settings-row {
+  border-top: 1px solid var(--divider);
+}
+
+.settings-row-label {
+  font-size: 15px;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-row-value {
+  color: var(--hint);
+  font-size: 15px;
+  text-align: right;
+}
+
+/* ─── Form inputs ────────────────────────────────────────────────────────── */
+
+.field-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 15px;
+  padding: 0;
+  text-align: right;
+  min-width: 0;
+}
+
+.field-input::placeholder {
+  color: var(--hint);
+}
+
+.field-input::-webkit-inner-spin-button,
+.field-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+}
+
+.field-select {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--brand);  /* amber — intentional brand color, not theme accent */
+  font-size: 15px;
+  padding: 0;
+  text-align: right;
+  cursor: pointer;
+  max-width: 180px;
+  /* Style the dropdown arrow */
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 0;
+}
+
+.field-select option {
+  background: var(--secondary-bg);
+  color: var(--text);
+}
+
+/* ─── List items (bash blocklist, ssh targets, etc.) ─────────────────────── */
+
+.list-item {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  gap: 12px;
+  min-height: 52px;
+}
+
+.list-item + .list-item {
+  border-top: 1px solid var(--divider);
+}
+
+.list-item-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.list-item-title {
+  font-size: 15px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.list-item-sub {
+  font-size: 13px;
+  color: var(--hint);
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(236, 57, 66, 0.18);
+  color: var(--destructive);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border: none;
+  flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+
+.icon-btn:active {
+  background: rgba(236, 57, 66, 0.35);
+}
+
+/* ─── Add form (inline, inside card) ─────────────────────────────────────── */
+
+.add-row {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  gap: 10px;
+  border-top: 1px solid var(--divider);
+  min-height: 52px;
+}
+
+.add-row-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 15px;
+  padding: 0;
+  min-width: 0;
+}
+
+.add-row-input::placeholder {
+  color: var(--hint);
+}
+
+.add-btn {
+  color: var(--brand);
+  font-size: 15px;
+  font-weight: 600;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 0 4px 8px;
+  flex-shrink: 0;
+}
+
+.add-btn:disabled {
+  color: var(--hint);
+  cursor: default;
+}
+
+/* ─── Expand form (SSH / approval rules) ────────────────────────────────── */
+
+.expand-form {
+  padding: 16px;
+  border-top: 1px solid var(--divider);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.expand-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.expand-form-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--hint);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.expand-form-input {
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 15px;
+  color: var(--text);
+  outline: none;
+  width: 100%;
+}
+
+.expand-form-input::placeholder {
+  color: var(--hint);
+}
+
+.expand-form-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.btn-primary {
+  flex: 1;
+  background: var(--brand);
+  color: var(--button-text);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 11px 16px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.btn-primary:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.btn-primary:active:not(:disabled) {
+  opacity: 0.8;
+}
+
+.btn-secondary {
+  flex: 1;
+  background: var(--glass);
+  color: var(--text);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 11px 16px;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.btn-secondary:active {
+  opacity: 0.7;
+}
+
+/* ─── Action row (open expand form) ──────────────────────────────────────── */
+
+.action-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 13px 16px;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--brand);
+  font-size: 15px;
+  font-weight: 500;
+  border-top: 1px solid var(--divider);
+  background: none;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  width: 100%;
+  transition: opacity 0.15s ease;
+}
+
+.action-row:active {
+  opacity: 0.6;
+}
+
+/* ─── Save indicator ─────────────────────────────────────────────────────── */
+
+.save-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--brand);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.4; transform: scale(0.7); }
+}
+
+/* ─── Full-screen states ─────────────────────────────────────────────────── */
+
+.centered {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  gap: 16px;
+  padding: 32px;
+  text-align: center;
+}
+
+.centered h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.centered p {
+  margin: 0;
+  color: var(--hint);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+/* ─── Spinner ─────────────────────────────────────────────────────────────── */
+
+.spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid var(--glass-border);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+
+.spinner--sm {
+  width: 18px;
+  height: 18px;
+  border-width: 2px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

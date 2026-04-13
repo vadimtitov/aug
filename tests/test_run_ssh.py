@@ -23,7 +23,7 @@ _WORK = {
     "user": "vadim",
     "key_path": "/keys/work.pem",
 }
-_APPROVED_ALL = [{"pattern": ".*"}]
+_APPROVED_ALL = [{"tool": "*", "target": "*", "pattern": ".*"}]
 
 
 def test_list_ssh_targets_no_targets_configured():
@@ -163,8 +163,8 @@ async def test_run_ssh_empty_output_returns_no_output_marker():
 # download_ssh_file
 # ---------------------------------------------------------------------------
 
-_APPROVED_DOWNLOAD = [{"pattern": r"download.*"}]
-_APPROVED_UPLOAD = [{"pattern": r"upload.*"}]
+_APPROVED_DOWNLOAD = [{"tool": "download_ssh_file", "target": "*", "pattern": r".*"}]
+_APPROVED_UPLOAD = [{"tool": "upload_ssh_file", "target": "*", "pattern": r".*"}]
 
 
 @pytest.mark.asyncio

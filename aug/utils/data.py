@@ -1,5 +1,7 @@
 """Utilities for reading files from the /app/data volume."""
 
+import os
+import tempfile
 from pathlib import Path
 
 DATA_DIR = Path("/app/data")
@@ -16,7 +18,19 @@ def read_data_file(name: str) -> str:
 
 
 def write_data_file(name: str, content: str) -> None:
-    """Write content to a file in DATA_DIR by name, creating the directory if needed."""
+    """Write content to a file in DATA_DIR atomically.
+
+    Writes to a sibling temp file first, then uses os.replace() which is an
+    atomic operation on POSIX systems. This prevents partial reads if two
+    writes race, and avoids leaving a corrupt file on process crash.
+    """
     path = DATA_DIR / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, path)
+    except Exception:
+        os.unlink(tmp_path)
+        raise
