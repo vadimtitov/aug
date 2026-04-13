@@ -41,7 +41,6 @@ from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, MessageContent, run_reg
 from aug.core.state import AgentState
 from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
 from aug.utils.logging import set_correlation_id, set_thread_id
-from aug.utils.notify import register_notification_target
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +217,6 @@ class BaseInterface[ContextT](ABC):
     ) -> None:
         """Execute the full agent pipeline for a newly started run."""
         set_thread_id(incoming.thread_id)
-        register_notification_target(incoming.thread_id, incoming.interface, incoming.sender_id)
 
         agent = get_agent(incoming.agent_version)
 
@@ -332,7 +330,6 @@ class BaseInterface[ContextT](ABC):
             run_registry.set(thread_id, run)
 
         set_thread_id(thread_id)
-        register_notification_target(thread_id, interface, sender_id)
         stream = _resume_stream(Command(resume=decision), incoming, self._checkpointer, run)
         t0 = time.monotonic()
         logger.info(
@@ -454,6 +451,8 @@ async def _agent_stream(
     config: RunnableConfig = {
         "configurable": {
             "thread_id": message.thread_id,
+            "interface": message.interface,
+            "sender_id": message.sender_id,
             AGENT_RUN_CONFIG_KEY: run,
         }
     }
@@ -504,6 +503,8 @@ async def _resume_stream(
     config: RunnableConfig = {
         "configurable": {
             "thread_id": message.thread_id,
+            "interface": message.interface,
+            "sender_id": message.sender_id,
             AGENT_RUN_CONFIG_KEY: run,
         }
     }

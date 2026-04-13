@@ -32,14 +32,13 @@ from langchain_core.tools import tool
 
 from aug.core.tools.approval import requires_approval
 from aug.utils.data import DATA_DIR
+from aug.utils.file_settings import SshTarget, load_settings
 from aug.utils.ssh import find_target, get_targets
-from aug.utils.user_settings import get_setting
 
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 60
 _SSH_DOWNLOADS_DIR = DATA_DIR / "ssh_downloads"
-_DEFAULT_MAX_DOWNLOAD_BYTES = 1_073_741_824  # 1 GB
 
 
 @tool
@@ -57,11 +56,6 @@ async def run_ssh(target: str, command: str) -> str:
     cfg = find_target(target)
     if cfg is None:
         return f"SSH target '{target}' not found. Use list_ssh_targets() to see configured targets."
-
-    if "key_path" not in cfg:
-        return (
-            f"SSH target '{target}' has no key_path configured. Re-provision the target via /ssh."
-        )
 
     logger.info("run_ssh target=%s cmd=%.120r", target, command)
 
@@ -106,7 +100,7 @@ def list_ssh_targets() -> str:
     targets = get_targets()
     if not targets:
         return "No SSH targets configured. Add targets via the /ssh Telegram command."
-    names = [t.get("name", "<unnamed>") for t in targets]
+    names = [t.name for t in targets]
     return "Configured SSH targets:\n" + "\n".join(f"  • {n}" for n in names)
 
 
@@ -126,14 +120,7 @@ async def download_ssh_file(target: str, remote_path: str) -> str:
     if cfg is None:
         return f"SSH target '{target}' not found. Use list_ssh_targets() to see configured targets."
 
-    if "key_path" not in cfg:
-        return (
-            f"SSH target '{target}' has no key_path configured. Re-provision the target via /ssh."
-        )
-
-    max_bytes: int = get_setting(
-        "tools", "ssh", "max_download_bytes", default=_DEFAULT_MAX_DOWNLOAD_BYTES
-    )
+    max_bytes = load_settings().tools.ssh.max_download_bytes
 
     connect_kwargs = _build_connect_kwargs(cfg)
 
@@ -194,11 +181,6 @@ async def upload_ssh_file(target: str, local_path: str, remote_path: str) -> str
     if cfg is None:
         return f"SSH target '{target}' not found. Use list_ssh_targets() to see configured targets."
 
-    if "key_path" not in cfg:
-        return (
-            f"SSH target '{target}' has no key_path configured. Re-provision the target via /ssh."
-        )
-
     if not Path(local_path).exists():
         return f"Local file '{local_path}' does not exist."
 
@@ -236,17 +218,17 @@ async def upload_ssh_file(target: str, local_path: str, remote_path: str) -> str
 # ---------------------------------------------------------------------------
 
 
-def _build_connect_kwargs(cfg: dict) -> dict:
-    """Build asyncssh connection kwargs from a target config dict."""
+def _build_connect_kwargs(cfg: SshTarget) -> dict:
+    """Build asyncssh connection kwargs from an SshTarget."""
     kwargs: dict = {
-        "host": cfg["host"],
-        "port": int(cfg.get("port", 22)),
-        "username": cfg["user"],
-        "client_keys": [cfg["key_path"]],
+        "host": cfg.host,
+        "port": cfg.port,
+        "username": cfg.user,
+        "client_keys": [cfg.key_path],
         "connect_timeout": 30,
     }
-    if cfg.get("verify_host") is False:
+    if not cfg.verify_host:
         kwargs["known_hosts"] = None
-    elif "known_hosts" in cfg:
-        kwargs["known_hosts"] = cfg["known_hosts"]
+    elif cfg.known_hosts:
+        kwargs["known_hosts"] = cfg.known_hosts
     return kwargs

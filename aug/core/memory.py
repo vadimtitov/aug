@@ -31,12 +31,12 @@ from aug.core.prompts import (
     CONSOLIDATION_LIGHT_SYSTEM,
 )
 from aug.utils.data import MEMORY_DIR
-from aug.utils.user_settings import get_setting, set_setting
+from aug.utils.file_settings import load_settings
+from aug.utils.state import load_state, save_state
 
 logger = logging.getLogger(__name__)
 
 _NOTES_MAX_LINES = 100
-_DEFAULT_MODEL = "gpt-5.1"
 
 
 # ---------------------------------------------------------------------------
@@ -80,11 +80,11 @@ async def run_light_consolidation() -> bool:
     notes = _read("notes.md")
     if not notes.strip():
         logger.info("Light consolidation: no notes, skipping.")
-        _record("light")
+        _record_light()
         return False
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-    llm = build_chat_model(_model(), temperature=0.3)
+    llm = build_chat_model(load_settings().consolidation.model, temperature=0.3)
     response = await llm.ainvoke(
         [
             SystemMessage(content=CONSOLIDATION_LIGHT_SYSTEM),
@@ -106,7 +106,7 @@ async def run_light_consolidation() -> bool:
         _write("user.md", updated)
 
     _write("notes.md", "")
-    _record("light")
+    _record_light()
     logger.info("Light consolidation complete.")
     return True
 
@@ -114,7 +114,7 @@ async def run_light_consolidation() -> bool:
 async def run_deep_consolidation() -> None:
     """Weekly pass: reflect across all files, update what has genuinely shifted."""
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-    llm = build_chat_model(_model(), temperature=0.7)
+    llm = build_chat_model(load_settings().consolidation.model, temperature=0.7)
 
     # Stage 1 — reflect freely, no updates yet.
     reflect_response = await llm.ainvoke(
@@ -163,7 +163,7 @@ async def run_deep_consolidation() -> None:
         _write("reflections.md", (existing + "\n\n" + new_reflection).strip())
 
     _write("notes.md", "")
-    _record("deep")
+    _record_deep()
     logger.info("Deep consolidation complete.")
 
 
@@ -216,21 +216,15 @@ _MEMORY_MD = """\
 # ---------------------------------------------------------------------------
 
 
-def _model() -> str:
-    return get_setting("consolidation", "model", default=_DEFAULT_MODEL)
-
-
 async def _catch_up() -> None:
     today = datetime.now(UTC).date()
 
-    last_light = get_setting("consolidation", "last_light_run")
-    if _iso_date(last_light) != today:
+    if _iso_date(load_state().consolidation.last_light_run) != today:
         logger.info("Running missed light consolidation on startup.")
         await run_light_consolidation()
 
     this_week = today.isocalendar()[1]
-    last_deep = get_setting("consolidation", "last_deep_run")
-    if _iso_week(last_deep) != this_week:
+    if _iso_week(load_state().consolidation.last_deep_run) != this_week:
         logger.info("Running missed deep consolidation on startup.")
         await run_deep_consolidation()
 
@@ -243,13 +237,12 @@ async def _scheduler_loop() -> None:
                 now = datetime.now(UTC)
                 today = now.date()
 
-                last_light = get_setting("consolidation", "last_light_run")
-                if now.hour >= 3 and _iso_date(last_light) != today:
+                if now.hour >= 3 and _iso_date(load_state().consolidation.last_light_run) != today:
                     await run_light_consolidation()
 
                 this_week = today.isocalendar()[1]
-                last_deep = get_setting("consolidation", "last_deep_run")
-                if now.weekday() == 6 and now.hour >= 4 and _iso_week(last_deep) != this_week:
+                deep_run = load_state().consolidation.last_deep_run
+                if now.weekday() == 6 and now.hour >= 4 and _iso_week(deep_run) != this_week:
                     await run_deep_consolidation()
             except Exception:
                 logger.exception("Consolidation error — will retry next cycle")
@@ -265,8 +258,16 @@ def _iso_week(iso: str | None) -> object:
     return datetime.fromisoformat(iso).date().isocalendar()[1] if iso else None
 
 
-def _record(kind: str) -> None:
-    set_setting("consolidation", f"last_{kind}_run", value=datetime.now(UTC).isoformat())
+def _record_light() -> None:
+    st = load_state()
+    st.consolidation.last_light_run = datetime.now(UTC).isoformat()
+    save_state(st)
+
+
+def _record_deep() -> None:
+    st = load_state()
+    st.consolidation.last_deep_run = datetime.now(UTC).isoformat()
+    save_state(st)
 
 
 def _read(name: str) -> str:

@@ -53,7 +53,7 @@ from aug.api.interfaces.base import (
     TextContent,
 )
 from aug.api.interfaces.telegram.ssh import _SshMixin
-from aug.api.interfaces.telegram.utils import _escape, _is_allowed, _restricted, _thread_id
+from aug.api.interfaces.telegram.utils import escape, get_thread_id, is_allowed, restricted
 from aug.config import get_settings
 from aug.core.events import (
     AgentEvent,
@@ -75,8 +75,9 @@ from aug.core.tools.approval import (
 )
 from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
 from aug.utils.data import UPLOADS_DIR
+from aug.utils.file_settings import TelegramChatSettings, load_settings, save_settings
 from aug.utils.skills import SKILLS_DIR, load_skills
-from aug.utils.user_settings import get_setting, set_setting
+from aug.utils.state import TelegramChatState, load_state, save_state
 
 logger = logging.getLogger(__name__)
 
@@ -130,10 +131,10 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         if not msg:
             return None
         chat_id = context.effective_chat.id  # type: ignore[union-attr]
-        if not _is_allowed(chat_id):
+        if not is_allowed(chat_id):
             return None
 
-        thread_id = _thread_id(chat_id)
+        thread_id = get_thread_id(chat_id)
         upload_dir = UPLOADS_DIR / thread_id
 
         parts = []
@@ -222,9 +223,9 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             interface="telegram",
             sender_id=str(chat_id),
             thread_id=thread_id,
-            agent_version=get_setting(
-                "telegram", "chats", str(chat_id), "agent", default="default"
-            ),
+            agent_version=load_settings()
+            .telegram.chats.get(str(chat_id), TelegramChatSettings())
+            .agent,
         )
 
     async def send_stream(self, stream: AsyncIterator[AgentEvent], context: Update) -> None:
@@ -400,8 +401,10 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         """Send an approval prompt with inline buttons to the user."""
         msg = context.effective_message  # type: ignore[union-attr]
         chat_id = context.effective_chat.id  # type: ignore[union-attr]
-        thread_id = _thread_id(chat_id)
-        agent_version = get_setting("telegram", "chats", str(chat_id), "agent", default="default")
+        thread_id = get_thread_id(chat_id)
+        agent_version = (
+            load_settings().telegram.chats.get(str(chat_id), TelegramChatSettings()).agent
+        )
         buttons = [
             [
                 InlineKeyboardButton(
@@ -423,13 +426,13 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             ],
         ]
         resource_line = (
-            f"<b>Target:</b> <code>{_escape(request.resource)}</code>\n" if request.resource else ""
+            f"<b>Target:</b> <code>{escape(request.resource)}</code>\n" if request.resource else ""
         )
         text = (
             f"⚠️ <b>Approval required</b>\n\n"
-            f"<b>Tool:</b> <code>{_escape(request.tool_name)}</code>\n"
+            f"<b>Tool:</b> <code>{escape(request.tool_name)}</code>\n"
             f"{resource_line}"
-            f"<b>Operation:</b>\n<pre>{_escape(request.operation)}</pre>"
+            f"<b>Operation:</b>\n<pre>{escape(request.operation)}</pre>"
         )
         try:
             await msg.reply_text(  # type: ignore[union-attr]
@@ -562,24 +565,26 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     # Command handlers
     # ------------------------------------------------------------------
 
-    @_restricted
+    @restricted
     async def _handle_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        stopped = self.stop_run(_thread_id(chat_id))
+        stopped = self.stop_run(get_thread_id(chat_id))
         msg = "Stopping..." if stopped else "Nothing is running."
         await update.message.reply_text(msg)  # type: ignore[union-attr]
 
-    @_restricted
+    @restricted
     async def _handle_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        current = get_setting("telegram", "chats", str(chat_id), "session", default=0)
-        set_setting("telegram", "chats", str(chat_id), "session", value=current + 1)
+        st = load_state()
+        current = st.telegram.chats.get(str(chat_id), TelegramChatState()).session
+        st.telegram.chats[str(chat_id)] = TelegramChatState(session=current + 1)
+        save_state(st)
         await update.message.reply_text("Context cleared. Starting fresh.")  # type: ignore[union-attr]
 
-    @_restricted
+    @restricted
     async def _handle_version(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        current = get_setting("telegram", "chats", str(chat_id), "agent", default="default")
+        current = load_settings().telegram.chats.get(str(chat_id), TelegramChatSettings()).agent
         agents = [a for a in list_agents() if a != "fake"]
         buttons = [
             [
@@ -590,12 +595,12 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             for a in agents
         ]
         await update.message.reply_text(  # type: ignore[union-attr]
-            f"Current version: <code>{_escape(current)}</code>\nChoose a version:",
+            f"Current version: <code>{escape(current)}</code>\nChoose a version:",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(buttons),
         )
 
-    @_restricted
+    @restricted
     async def _handle_version_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -608,12 +613,16 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         if agent_name not in list_agents():
             await query.edit_message_text("Unknown version.")
             return
-        set_setting("telegram", "chats", str(chat_id), "agent", value=agent_name)
+        s = load_settings()
+        if str(chat_id) not in s.telegram.chats:
+            s.telegram.chats[str(chat_id)] = TelegramChatSettings()
+        s.telegram.chats[str(chat_id)].agent = agent_name
+        save_settings(s)
         await query.edit_message_text(
-            f"Switched to <code>{_escape(agent_name)}</code>.", parse_mode="HTML"
+            f"Switched to <code>{escape(agent_name)}</code>.", parse_mode="HTML"
         )
 
-    @_restricted
+    @restricted
     async def _handle_skills(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         index = await asyncio.to_thread(load_skills)
         all_skills = index.always_on + index.on_demand
@@ -628,7 +637,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             reply_markup=InlineKeyboardMarkup(buttons),
         )
 
-    @_restricted
+    @restricted
     async def _handle_skills_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -646,7 +655,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             await query.edit_message_text(f"Skill '{skill_name}' has no files.")
             return
         await query.edit_message_text(
-            f"Sending {len(files)} file(s) for skill <code>{_escape(skill_name)}</code>:",
+            f"Sending {len(files)} file(s) for skill <code>{escape(skill_name)}</code>:",
             parse_mode="HTML",
         )
         msg = update.effective_message
@@ -657,12 +666,12 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                 document=io.BytesIO(file_bytes), filename=str(rel)
             )
 
-    @_restricted
+    @restricted
     async def _handle_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         state = AgentState(
             messages=[],
-            thread_id=_thread_id(chat_id),
+            thread_id=get_thread_id(chat_id),
             interface="telegram",
         )
         prompt_text = build_system_prompt(state)
@@ -670,13 +679,15 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         file.name = "system_prompt.txt"
         await update.message.reply_document(document=file, filename="system_prompt.txt")  # type: ignore[union-attr]
 
-    @_restricted
+    @restricted
     async def _handle_compact(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        agent_version = get_setting("telegram", "chats", str(chat_id), "agent", default="default")
+        agent_version = (
+            load_settings().telegram.chats.get(str(chat_id), TelegramChatSettings()).agent
+        )
         await update.message.reply_text("🗜 Compacting conversation…")  # type: ignore[union-attr]
         try:
-            ran = await self._execute_compact(_thread_id(chat_id), agent_version)
+            ran = await self._execute_compact(get_thread_id(chat_id), agent_version)
             await update.message.reply_text("✅ Done." if ran else "Nothing to compact.")  # type: ignore[union-attr]
         except ValueError as e:
             await update.message.reply_text(str(e))  # type: ignore[union-attr]
@@ -684,7 +695,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             logger.exception("Manual compaction failed")
             await update.message.reply_text("Compaction failed — check logs.")  # type: ignore[union-attr]
 
-    @_restricted
+    @restricted
     async def _handle_consolidate(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Running memory consolidation...")  # type: ignore[union-attr]
         try:
@@ -695,7 +706,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             logger.exception("Manual consolidation failed")
             await update.message.reply_text("Consolidation failed — check logs.")  # type: ignore[union-attr]
 
-    @_restricted
+    @restricted
     async def _handle_consolidate_deep(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -711,7 +722,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     # Approval handlers (Slices 4 & 5)
     # ------------------------------------------------------------------
 
-    @_restricted
+    @restricted
     async def _handle_approval_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -757,7 +768,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             context=update,
         )
 
-    @_restricted
+    @restricted
     async def _handle_approvals(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """List saved approval rules with per-rule Revoke buttons."""
         rules = list_approvals()
@@ -767,12 +778,12 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         lines = []
         buttons = []
         for i, rule in enumerate(rules, start=1):
-            tool = rule.get("tool", "*")
-            target = rule.get("target", "*")
-            pattern = rule.get("pattern", "?")
+            tool = rule.tool
+            target = rule.target
+            pattern = rule.pattern
             lines.append(
-                f"{i}. <code>{_escape(tool)}</code> @ <code>{_escape(target)}</code>"
-                f": <code>{_escape(pattern)}</code>"
+                f"{i}. <code>{escape(tool)}</code> @ <code>{escape(target)}</code>"
+                f": <code>{escape(pattern)}</code>"
             )
             buttons.append(
                 [InlineKeyboardButton(f"Revoke #{i}", callback_data=f"approval_revoke:{i - 1}")]
@@ -785,7 +796,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             link_preview_options=_NO_PREVIEW,
         )
 
-    @_restricted
+    @restricted
     async def _handle_approvals_revoke_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -806,7 +817,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                 "Could not revoke rule — it may have already been removed."
             )
 
-    @_restricted
+    @restricted
     async def _secret_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         msg = await update.message.reply_text("Enter secret name:")  # type: ignore[union-attr]
         context.user_data["secret_msgs"] = [update.message.message_id, msg.message_id]  # type: ignore[union-attr]
@@ -886,15 +897,15 @@ def _format_tool_call(
         if isinstance(urls, str):
             urls = [urls]
         links = ", ".join(
-            f'<a href="{_escape(url)}">{_escape(urlparse(url).netloc or url)}</a>' for url in urls
+            f'<a href="{escape(url)}">{escape(urlparse(url).netloc or url)}</a>' for url in urls
         )
-        return f"{icon} <code>{_escape(display)}(</code>{links}<code>)</code>"
+        return f"{icon} <code>{escape(display)}(</code>{links}<code>)</code>"
     if tool_name == "respond_with_file":
-        filename = _escape(args.get("filename", "file"))
-        return f"{icon} <code>{_escape(display)}({filename})</code>"
+        filename = escape(args.get("filename", "file"))
+        return f"{icon} <code>{escape(display)}({filename})</code>"
     inner = _format_args(args)
     call = f"{display}({inner})" if inner else f"{display}()"
-    return f"{icon} <code>{_escape(call)}</code>"
+    return f"{icon} <code>{escape(call)}</code>"
 
 
 def _format_args(args: dict) -> str:
@@ -917,7 +928,7 @@ async def _spinner_task(msg, tool_name: str, args: dict, step_holder: list[str])
         try:
             header = _format_tool_call(tool_name, args, done=False, spin=i)
             step = step_holder[0]
-            text = f"{header}\n<code>{_escape(step)}</code>" if step else header
+            text = f"{header}\n<code>{escape(step)}</code>" if step else header
             await msg.edit_text(text, parse_mode="HTML", link_preview_options=_NO_PREVIEW)
         except Exception:
             return
@@ -980,7 +991,7 @@ class _TelegramSanitizer(HTMLParser):
             self._out.append("\n")
 
     def handle_data(self, data: str) -> None:
-        self._out.append(_escape(data))
+        self._out.append(escape(data))
 
     def handle_entityref(self, name: str) -> None:
         self._out.append(f"&{name};")

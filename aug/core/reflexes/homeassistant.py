@@ -22,8 +22,8 @@ from aug.core.llm import build_chat_model
 from aug.core.prompts import HA_REFLEX_SYSTEM_PROMPT
 from aug.core.reflexes import Reflex, ReflexOutput
 from aug.core.run import MessageContent
+from aug.utils.file_settings import load_settings
 from aug.utils.homeassistant import Entity, HomeAssistantClient
-from aug.utils.user_settings import get_setting
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +98,7 @@ def homeassistant_reflex(model: str = _DEFAULT_MODEL) -> Reflex:
             logger.info("ha_reflex_skip reason=not_configured")
             return None
 
-        label: str = get_setting("reflexes", "homeassistant", "entity_label", default="aug")
+        label: str = load_settings().reflexes.homeassistant.entity_label
         entities = await client.get_entities(label or None)
         if not entities:
             logger.warning("ha_reflex_skip reason=no_entities label=%s", label or "<all>")

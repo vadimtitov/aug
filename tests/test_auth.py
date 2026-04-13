@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from aug.api.interfaces.telegram import TelegramInterface
 from aug.app import create_app
 from aug.core.auth import create_jwt, verify_telegram_init_data
+from aug.utils.file_settings import AppSettings
 
 _BOT_TOKEN = "123456:ABC-test-token"
 _API_HEADERS = {"X-API-Key": "test-api-key"}
@@ -176,7 +177,7 @@ def test_settings_accessible_with_valid_jwt(client: TestClient) -> None:
     token = create_jwt({"sub": "1"}, secret=_BOT_TOKEN)
     with (
         patch("aug.api.security.get_settings") as mock_settings,
-        patch("aug.api.routers.settings.get_all_settings", return_value={}),
+        patch("aug.api.routers.settings.load_settings", return_value=AppSettings()),
     ):
         mock_settings.return_value.API_KEY = "test-api-key"
         mock_settings.return_value.TELEGRAM_BOT_TOKEN = _BOT_TOKEN
@@ -190,6 +191,6 @@ def test_settings_rejects_invalid_jwt(client: TestClient) -> None:
 
 
 def test_settings_still_accepts_api_key(client: TestClient) -> None:
-    with patch("aug.api.routers.settings.get_all_settings", return_value={}):
+    with patch("aug.api.routers.settings.load_settings", return_value=AppSettings()):
         response = client.get("/settings", headers=_API_HEADERS)
     assert response.status_code == 200

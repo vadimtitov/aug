@@ -28,10 +28,7 @@ from functools import wraps
 
 from langgraph.types import interrupt
 
-from aug.utils.user_settings import get_setting, set_setting
-
-_SETTING_PATH = ("tools", "approvals")
-
+from aug.utils.file_settings import ApprovalRule, load_settings, save_settings
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -138,17 +135,13 @@ def requires_approval(fn=None, *, describe=None):
 
 def is_approved(tool_name: str, resource: str, operation: str) -> bool:
     """Return True if a saved rule permits *operation* for *tool_name* on *resource*."""
-    rules: list[dict] = get_setting(*_SETTING_PATH, default=[]) or []
-    for rule in rules:
-        rule_tool = rule.get("tool", "*")
-        rule_target = rule.get("target", "*")
-        pattern = rule.get("pattern", "")
-        if rule_tool not in (tool_name, "*"):
+    for rule in load_settings().tools.approvals:
+        if rule.tool not in (tool_name, "*"):
             continue
-        if rule_target not in (resource, "*"):
+        if rule.target not in (resource, "*"):
             continue
         try:
-            if re.search(pattern, operation):
+            if re.search(rule.pattern, operation):
                 return True
         except re.error:
             # Corrupted or manually-edited pattern — skip rather than crash.
@@ -161,22 +154,20 @@ def save_approval(tool_name: str, resource: str, operation: str) -> None:
 
     No-op if an identical rule already exists.
     """
-    rules: list[dict] = get_setting(*_SETTING_PATH, default=[]) or []
+    s = load_settings()
     pattern = re.escape(operation)
     if any(
-        r.get("tool", "*") == tool_name
-        and r.get("target", "*") == resource
-        and r.get("pattern") == pattern
-        for r in rules
+        r.tool == tool_name and r.target == resource and r.pattern == pattern
+        for r in s.tools.approvals
     ):
         return
-    rules.append({"tool": tool_name, "target": resource, "pattern": pattern})
-    set_setting(*_SETTING_PATH, value=rules)
+    s.tools.approvals.append(ApprovalRule(tool=tool_name, target=resource, pattern=pattern))
+    save_settings(s)
 
 
-def list_approvals() -> list[dict]:
+def list_approvals() -> list[ApprovalRule]:
     """Return all saved approval rules."""
-    return get_setting(*_SETTING_PATH, default=[]) or []
+    return load_settings().tools.approvals
 
 
 def revoke_approval(index: int) -> None:
@@ -185,8 +176,9 @@ def revoke_approval(index: int) -> None:
     Raises:
         IndexError: if *index* is out of range.
     """
-    rules: list[dict] = get_setting(*_SETTING_PATH, default=[]) or []
-    if index < 0 or index >= len(rules):
-        raise IndexError(f"Approval index {index} out of range (have {len(rules)} rules)")
-    rules.pop(index)
-    set_setting(*_SETTING_PATH, value=rules)
+    s = load_settings()
+    if index < 0 or index >= len(s.tools.approvals):
+        n = len(s.tools.approvals)
+        raise IndexError(f"Approval index {index} out of range (have {n} rules)")
+    s.tools.approvals.pop(index)
+    save_settings(s)

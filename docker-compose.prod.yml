@@ -62,7 +62,7 @@ services:
     build:
       context: ./miniapp
       args:
-        VITE_API_URL: ${MINIAPP_API_URL}
+        VITE_API_URL: ${BASE_URL}
     ports:
       - "3013:80"
     restart: unless-stopped

@@ -5,29 +5,49 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from aug.utils.file_settings import (
+    ApprovalRule,
+    AppSettings,
+    SshTarget,
+    SshToolSettings,
+    ToolSettings,
+)
+
+# ---------------------------------------------------------------------------
+# Test fixtures
+# ---------------------------------------------------------------------------
+
+_HOME = SshTarget(
+    name="homeserver", host="192.168.1.10", port=22, user="admin", key_path="/keys/home.pem"
+)
+_WORK = SshTarget(
+    name="workstation", host="10.0.0.5", port=22, user="vadim", key_path="/keys/work.pem"
+)
+_APPROVED_ALL = [ApprovalRule(tool="*", target="*", pattern=".*")]
+_APPROVED_DOWNLOAD = [ApprovalRule(tool="download_ssh_file", target="*", pattern=r".*")]
+_APPROVED_UPLOAD = [ApprovalRule(tool="upload_ssh_file", target="*", pattern=r".*")]
+
+_P_SSH = "aug.utils.ssh.load_settings"
+_P_APPROVAL = "aug.core.tools.approval.load_settings"
+_P_RUN_SSH = "aug.core.tools.run_ssh.load_settings"
+_P_CONNECT = "aug.core.tools.run_ssh.asyncssh.connect"
+
+
+def _settings(targets=None, approvals=None, max_download_bytes=None) -> AppSettings:
+    ssh = SshToolSettings(
+        targets=targets or [],
+        max_download_bytes=max_download_bytes or 1_073_741_824,
+    )
+    return AppSettings(tools=ToolSettings(ssh=ssh, approvals=approvals or []))
+
+
 # ---------------------------------------------------------------------------
 # list_ssh_targets
 # ---------------------------------------------------------------------------
 
-_HOME = {
-    "name": "homeserver",
-    "host": "192.168.1.10",
-    "port": 22,
-    "user": "admin",
-    "key_path": "/keys/home.pem",
-}
-_WORK = {
-    "name": "workstation",
-    "host": "10.0.0.5",
-    "port": 22,
-    "user": "vadim",
-    "key_path": "/keys/work.pem",
-}
-_APPROVED_ALL = [{"tool": "*", "target": "*", "pattern": ".*"}]
-
 
 def test_list_ssh_targets_no_targets_configured():
-    with patch("aug.utils.ssh.get_setting", return_value=[]):
+    with patch(_P_SSH, return_value=_settings()):
         from aug.core.tools.run_ssh import list_ssh_targets
 
         result = list_ssh_targets.invoke({})
@@ -36,7 +56,7 @@ def test_list_ssh_targets_no_targets_configured():
 
 
 def test_list_ssh_targets_returns_names():
-    with patch("aug.utils.ssh.get_setting", return_value=[_HOME, _WORK]):
+    with patch(_P_SSH, return_value=_settings(targets=[_HOME, _WORK])):
         from aug.core.tools.run_ssh import list_ssh_targets
 
         result = list_ssh_targets.invoke({})
@@ -53,8 +73,8 @@ def test_list_ssh_targets_returns_names():
 @pytest.mark.asyncio
 async def test_run_ssh_unknown_target_returns_error():
     with (
-        patch("aug.utils.ssh.get_setting", return_value=[]),
-        patch("aug.core.tools.approval.get_setting", return_value=[{"pattern": ".*"}]),
+        patch(_P_SSH, return_value=_settings()),
+        patch(_P_APPROVAL, return_value=_settings(approvals=[ApprovalRule(pattern=".*")])),
     ):
         from aug.core.tools.run_ssh import run_ssh
 
@@ -80,9 +100,9 @@ async def test_run_ssh_successful_command():
     mock_conn.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch("aug.utils.ssh.get_setting", return_value=[_HOME]),
-        patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_ALL),
-        patch("aug.core.tools.run_ssh.asyncssh.connect", return_value=mock_conn),
+        patch(_P_SSH, return_value=_settings(targets=[_HOME])),
+        patch(_P_APPROVAL, return_value=_settings(approvals=_APPROVED_ALL)),
+        patch(_P_CONNECT, return_value=mock_conn),
     ):
         from aug.core.tools.run_ssh import run_ssh
 
@@ -105,9 +125,9 @@ async def test_run_ssh_nonzero_exit_code_includes_stderr():
     mock_conn.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch("aug.utils.ssh.get_setting", return_value=[_HOME]),
-        patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_ALL),
-        patch("aug.core.tools.run_ssh.asyncssh.connect", return_value=mock_conn),
+        patch(_P_SSH, return_value=_settings(targets=[_HOME])),
+        patch(_P_APPROVAL, return_value=_settings(approvals=_APPROVED_ALL)),
+        patch(_P_CONNECT, return_value=mock_conn),
     ):
         from aug.core.tools.run_ssh import run_ssh
 
@@ -119,8 +139,8 @@ async def test_run_ssh_nonzero_exit_code_includes_stderr():
 @pytest.mark.asyncio
 async def test_run_ssh_connection_failure_returns_clear_error():
     with (
-        patch("aug.utils.ssh.get_setting", return_value=[_HOME]),
-        patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_ALL),
+        patch(_P_SSH, return_value=_settings(targets=[_HOME])),
+        patch(_P_APPROVAL, return_value=_settings(approvals=_APPROVED_ALL)),
         patch(
             "aug.core.tools.run_ssh.asyncssh.connect",
             side_effect=OSError("Connection refused"),
@@ -131,7 +151,7 @@ async def test_run_ssh_connection_failure_returns_clear_error():
         result = await run_ssh.ainvoke({"target": "homeserver", "command": "uptime"})
 
     assert "failed" in result.lower() or "error" in result.lower() or "connection" in result.lower()
-    assert "uptime" not in result  # should NOT claim command ran
+    assert "uptime" not in result
 
 
 @pytest.mark.asyncio
@@ -147,15 +167,15 @@ async def test_run_ssh_empty_output_returns_no_output_marker():
     mock_conn.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch("aug.utils.ssh.get_setting", return_value=[_HOME]),
-        patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_ALL),
-        patch("aug.core.tools.run_ssh.asyncssh.connect", return_value=mock_conn),
+        patch(_P_SSH, return_value=_settings(targets=[_HOME])),
+        patch(_P_APPROVAL, return_value=_settings(approvals=_APPROVED_ALL)),
+        patch(_P_CONNECT, return_value=mock_conn),
     ):
         from aug.core.tools.run_ssh import run_ssh
 
         result = await run_ssh.ainvoke({"target": "homeserver", "command": "true"})
 
-    assert result  # must not be empty string
+    assert result
     assert "(no output)" in result
 
 
@@ -163,15 +183,12 @@ async def test_run_ssh_empty_output_returns_no_output_marker():
 # download_ssh_file
 # ---------------------------------------------------------------------------
 
-_APPROVED_DOWNLOAD = [{"tool": "download_ssh_file", "target": "*", "pattern": r".*"}]
-_APPROVED_UPLOAD = [{"tool": "upload_ssh_file", "target": "*", "pattern": r".*"}]
-
 
 @pytest.mark.asyncio
 async def test_download_ssh_file_unknown_target_returns_error():
     with (
-        patch("aug.utils.ssh.get_setting", return_value=[]),
-        patch("aug.core.tools.approval.get_setting", return_value=[{"pattern": ".*"}]),
+        patch(_P_SSH, return_value=_settings()),
+        patch(_P_APPROVAL, return_value=_settings(approvals=[ApprovalRule(pattern=".*")])),
     ):
         from aug.core.tools.run_ssh import download_ssh_file
 
@@ -196,10 +213,10 @@ async def test_download_ssh_file_exceeds_size_limit(tmp_path):
     mock_conn.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch("aug.utils.ssh.get_setting", return_value=[_HOME]),
-        patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_DOWNLOAD),
-        patch("aug.core.tools.run_ssh.asyncssh.connect", return_value=mock_conn),
-        patch("aug.core.tools.run_ssh.get_setting", return_value=100_000_000),  # 100 MB limit
+        patch(_P_SSH, return_value=_settings(targets=[_HOME])),
+        patch(_P_APPROVAL, return_value=_settings(approvals=_APPROVED_DOWNLOAD)),
+        patch(_P_CONNECT, return_value=mock_conn),
+        patch(_P_RUN_SSH, return_value=_settings(max_download_bytes=100_000_000)),
     ):
         from aug.core.tools.run_ssh import download_ssh_file
 
@@ -208,11 +225,6 @@ async def test_download_ssh_file_exceeds_size_limit(tmp_path):
         )
 
     assert "exceeds" in result.lower() or "limit" in result.lower()
-    assert (
-        "download" not in result.lower()
-        or "did not" in result.lower()
-        or "exceeds" in result.lower()
-    )
 
 
 @pytest.mark.asyncio
@@ -230,10 +242,10 @@ async def test_download_ssh_file_stat_failure_returns_error():
     mock_conn.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch("aug.utils.ssh.get_setting", return_value=[_HOME]),
-        patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_DOWNLOAD),
-        patch("aug.core.tools.run_ssh.asyncssh.connect", return_value=mock_conn),
-        patch("aug.core.tools.run_ssh.get_setting", return_value=1_073_741_824),
+        patch(_P_SSH, return_value=_settings(targets=[_HOME])),
+        patch(_P_APPROVAL, return_value=_settings(approvals=_APPROVED_DOWNLOAD)),
+        patch(_P_CONNECT, return_value=mock_conn),
+        patch(_P_RUN_SSH, return_value=_settings()),
     ):
         from aug.core.tools.run_ssh import download_ssh_file
 
@@ -265,10 +277,10 @@ async def test_download_ssh_file_success(tmp_path):
     mock_conn.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch("aug.utils.ssh.get_setting", return_value=[_HOME]),
-        patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_DOWNLOAD),
-        patch("aug.core.tools.run_ssh.asyncssh.connect", return_value=mock_conn),
-        patch("aug.core.tools.run_ssh.get_setting", return_value=1_073_741_824),
+        patch(_P_SSH, return_value=_settings(targets=[_HOME])),
+        patch(_P_APPROVAL, return_value=_settings(approvals=_APPROVED_DOWNLOAD)),
+        patch(_P_CONNECT, return_value=mock_conn),
+        patch(_P_RUN_SSH, return_value=_settings()),
         patch("aug.core.tools.run_ssh._SSH_DOWNLOADS_DIR", tmp_path),
     ):
         from aug.core.tools.run_ssh import download_ssh_file
@@ -286,13 +298,13 @@ async def test_download_ssh_file_success(tmp_path):
 @pytest.mark.asyncio
 async def test_download_ssh_file_connection_failure_returns_clear_error():
     with (
-        patch("aug.utils.ssh.get_setting", return_value=[_HOME]),
-        patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_DOWNLOAD),
+        patch(_P_SSH, return_value=_settings(targets=[_HOME])),
+        patch(_P_APPROVAL, return_value=_settings(approvals=_APPROVED_DOWNLOAD)),
         patch(
             "aug.core.tools.run_ssh.asyncssh.connect",
             side_effect=OSError("Connection refused"),
         ),
-        patch("aug.core.tools.run_ssh.get_setting", return_value=1_073_741_824),
+        patch(_P_RUN_SSH, return_value=_settings()),
     ):
         from aug.core.tools.run_ssh import download_ssh_file
 
@@ -311,8 +323,8 @@ async def test_download_ssh_file_connection_failure_returns_clear_error():
 @pytest.mark.asyncio
 async def test_upload_ssh_file_unknown_target_returns_error():
     with (
-        patch("aug.utils.ssh.get_setting", return_value=[]),
-        patch("aug.core.tools.approval.get_setting", return_value=[{"pattern": ".*"}]),
+        patch(_P_SSH, return_value=_settings()),
+        patch(_P_APPROVAL, return_value=_settings(approvals=[ApprovalRule(pattern=".*")])),
     ):
         from aug.core.tools.run_ssh import upload_ssh_file
 
@@ -326,8 +338,8 @@ async def test_upload_ssh_file_unknown_target_returns_error():
 @pytest.mark.asyncio
 async def test_upload_ssh_file_missing_local_file_returns_error():
     with (
-        patch("aug.utils.ssh.get_setting", return_value=[_HOME]),
-        patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_UPLOAD),
+        patch(_P_SSH, return_value=_settings(targets=[_HOME])),
+        patch(_P_APPROVAL, return_value=_settings(approvals=_APPROVED_UPLOAD)),
     ):
         from aug.core.tools.run_ssh import upload_ssh_file
 
@@ -358,9 +370,9 @@ async def test_upload_ssh_file_success(tmp_path):
     mock_conn.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch("aug.utils.ssh.get_setting", return_value=[_HOME]),
-        patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_UPLOAD),
-        patch("aug.core.tools.run_ssh.asyncssh.connect", return_value=mock_conn),
+        patch(_P_SSH, return_value=_settings(targets=[_HOME])),
+        patch(_P_APPROVAL, return_value=_settings(approvals=_APPROVED_UPLOAD)),
+        patch(_P_CONNECT, return_value=mock_conn),
     ):
         from aug.core.tools.run_ssh import upload_ssh_file
 
@@ -374,7 +386,7 @@ async def test_upload_ssh_file_success(tmp_path):
 
     assert "homeserver" in result
     assert "/etc/config.txt" in result
-    assert "11" in result  # len("hello world")
+    assert "11" in result
     mock_sftp.put.assert_awaited_once_with(str(local_file), "/etc/config.txt")
 
 
@@ -384,8 +396,8 @@ async def test_upload_ssh_file_connection_failure_returns_clear_error(tmp_path):
     local_file.write_bytes(b"data")
 
     with (
-        patch("aug.utils.ssh.get_setting", return_value=[_HOME]),
-        patch("aug.core.tools.approval.get_setting", return_value=_APPROVED_UPLOAD),
+        patch(_P_SSH, return_value=_settings(targets=[_HOME])),
+        patch(_P_APPROVAL, return_value=_settings(approvals=_APPROVED_UPLOAD)),
         patch(
             "aug.core.tools.run_ssh.asyncssh.connect",
             side_effect=OSError("Connection refused"),
