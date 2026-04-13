@@ -122,10 +122,10 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
   const consolidationModel = (getPath(settings, "consolidation", "model") as string) ?? "";
   const imageGenModel = (getPath(settings, "tools", "image_gen", "model") as string) ?? "";
   const bashBlacklist = (getPath(settings, "tools", "bash", "blacklist") as string[]) ?? [];
-  const sshTargets = (getPath(settings, "ssh", "targets") as SshTarget[]) ?? [];
+  const sshTargets = (getPath(settings, "tools", "ssh", "targets") as SshTarget[]) ?? [];
   const haLabel = (getPath(settings, "reflexes", "homeassistant", "entity_label") as string) ?? "";
   const approvalRules = (getPath(settings, "tools", "approvals") as ApprovalRule[]) ?? [];
-  const sshMaxBytes = (getPath(settings, "tools", "run_ssh", "max_bytes") as number) ?? "";
+  const sshMaxBytes = (getPath(settings, "tools", "ssh", "max_download_bytes") as number) ?? "";
 
   return (
     <div className="screen">
@@ -192,7 +192,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
                 placeholder="1048576"
                 value={sshMaxBytes.toString()}
                 onChange={(e) =>
-                  update(["tools", "run_ssh", "max_bytes"], Number(e.target.value) || undefined)
+                  update(["tools", "ssh", "max_download_bytes"], Number(e.target.value) || undefined)
                 }
               />
             </div>
@@ -210,7 +210,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
         {/* SSH targets */}
         <SshTargetList
           targets={sshTargets}
-          onChange={(v) => update(["ssh", "targets"], v)}
+          onChange={(v) => update(["tools", "ssh", "targets"], v)}
         />
 
         {/* Approval rules */}

@@ -18,7 +18,7 @@ import jwt
 
 _JWT_ALGORITHM = "HS256"
 _JWT_EXPIRES_SECONDS = 86400  # 24 hours
-_INIT_DATA_MAX_AGE_SECONDS = 3600  # 1 hour
+_INIT_DATA_MAX_AGE_SECONDS = 86400  # 24 hours (Telegram recommendation)
 
 
 def verify_telegram_init_data(init_data: str, bot_token: str) -> dict:
@@ -39,6 +39,9 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> dict:
     received_hash = params.pop("hash", None)
     if not received_hash:
         raise ValueError("Hash missing from init data")
+
+    # `signature` (Ed25519, Bot API 7.7+) is not part of the HMAC data check string.
+    params.pop("signature", None)
 
     auth_date = int(params.get("auth_date", 0))
     if time.time() - auth_date > _INIT_DATA_MAX_AGE_SECONDS:
