@@ -107,7 +107,7 @@ async def test_light_consolidation_skips_when_no_notes(tmp_path: Path) -> None:
         patch("aug.core.memory.MEMORY_DIR", tmp_path),
         patch("aug.core.memory.build_chat_model") as mock_build,
         patch("aug.core.memory.get_setting", return_value=None),
-        patch("aug.core.memory.set_setting"),
+        patch("aug.core.memory.set_state"),
     ):
         await run_light_consolidation()
         mock_build.assert_not_called()
@@ -125,7 +125,7 @@ async def test_light_consolidation_writes_context_and_user(tmp_path: Path) -> No
         patch("aug.core.memory.MEMORY_DIR", tmp_path),
         patch("aug.core.memory.build_chat_model", return_value=_mock_llm(response)),
         patch("aug.core.memory.get_setting", return_value=None),
-        patch("aug.core.memory.set_setting"),
+        patch("aug.core.memory.set_state"),
     ):
         await run_light_consolidation()
 
@@ -147,7 +147,7 @@ async def test_light_consolidation_writes_env_facts_to_user(tmp_path: Path) -> N
         patch("aug.core.memory.MEMORY_DIR", tmp_path),
         patch("aug.core.memory.build_chat_model", return_value=_mock_llm(response)),
         patch("aug.core.memory.get_setting", return_value=None),
-        patch("aug.core.memory.set_setting"),
+        patch("aug.core.memory.set_state"),
     ):
         await run_light_consolidation()
 
@@ -167,7 +167,7 @@ async def test_light_consolidation_skips_missing_tags(tmp_path: Path) -> None:
         patch("aug.core.memory.MEMORY_DIR", tmp_path),
         patch("aug.core.memory.build_chat_model", return_value=_mock_llm(response)),
         patch("aug.core.memory.get_setting", return_value=None),
-        patch("aug.core.memory.set_setting"),
+        patch("aug.core.memory.set_state"),
     ):
         await run_light_consolidation()
 

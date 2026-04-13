@@ -76,6 +76,7 @@ from aug.core.tools.approval import (
 from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
 from aug.utils.data import UPLOADS_DIR
 from aug.utils.skills import SKILLS_DIR, load_skills
+from aug.utils.state import get_state, set_state
 from aug.utils.user_settings import get_setting, set_setting
 
 logger = logging.getLogger(__name__)
@@ -572,8 +573,8 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     @_restricted
     async def _handle_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        current = get_setting("telegram", "chats", str(chat_id), "session", default=0)
-        set_setting("telegram", "chats", str(chat_id), "session", value=current + 1)
+        current = get_state("telegram", "chats", str(chat_id), "session", default=0)
+        set_state("telegram", "chats", str(chat_id), "session", value=current + 1)
         await update.message.reply_text("Context cleared. Starting fresh.")  # type: ignore[union-attr]
 
     @_restricted

@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from aug.config import get_settings
-from aug.utils.user_settings import get_setting
+from aug.utils.state import get_state
 
 
 def _is_allowed(chat_id: int) -> bool:
@@ -35,5 +35,5 @@ def _escape(text: str) -> str:
 
 
 def _thread_id(chat_id: int) -> str:
-    session = get_setting("telegram", "chats", str(chat_id), "session", default=0)
+    session = get_state("telegram", "chats", str(chat_id), "session", default=0)
     return f"tg-{chat_id}-{session}"

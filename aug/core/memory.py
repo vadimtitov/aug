@@ -31,7 +31,8 @@ from aug.core.prompts import (
     CONSOLIDATION_LIGHT_SYSTEM,
 )
 from aug.utils.data import MEMORY_DIR
-from aug.utils.user_settings import get_setting, set_setting
+from aug.utils.state import get_state, set_state
+from aug.utils.user_settings import get_setting
 
 logger = logging.getLogger(__name__)
 
@@ -223,13 +224,13 @@ def _model() -> str:
 async def _catch_up() -> None:
     today = datetime.now(UTC).date()
 
-    last_light = get_setting("consolidation", "last_light_run")
+    last_light = get_state("consolidation", "last_light_run")
     if _iso_date(last_light) != today:
         logger.info("Running missed light consolidation on startup.")
         await run_light_consolidation()
 
     this_week = today.isocalendar()[1]
-    last_deep = get_setting("consolidation", "last_deep_run")
+    last_deep = get_state("consolidation", "last_deep_run")
     if _iso_week(last_deep) != this_week:
         logger.info("Running missed deep consolidation on startup.")
         await run_deep_consolidation()
@@ -243,12 +244,12 @@ async def _scheduler_loop() -> None:
                 now = datetime.now(UTC)
                 today = now.date()
 
-                last_light = get_setting("consolidation", "last_light_run")
+                last_light = get_state("consolidation", "last_light_run")
                 if now.hour >= 3 and _iso_date(last_light) != today:
                     await run_light_consolidation()
 
                 this_week = today.isocalendar()[1]
-                last_deep = get_setting("consolidation", "last_deep_run")
+                last_deep = get_state("consolidation", "last_deep_run")
                 if now.weekday() == 6 and now.hour >= 4 and _iso_week(last_deep) != this_week:
                     await run_deep_consolidation()
             except Exception:
@@ -266,7 +267,7 @@ def _iso_week(iso: str | None) -> object:
 
 
 def _record(kind: str) -> None:
-    set_setting("consolidation", f"last_{kind}_run", value=datetime.now(UTC).isoformat())
+    set_state("consolidation", f"last_{kind}_run", value=datetime.now(UTC).isoformat())
 
 
 def _read(name: str) -> str:
