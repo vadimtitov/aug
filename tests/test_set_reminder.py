@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-_CONFIG = {"configurable": {"thread_id": "test-thread"}}
+_CONFIG = {"configurable": {"thread_id": "test-thread", "interface": "", "sender_id": ""}}
 
 
 def _future_iso(hours: float = 2.0) -> str:
@@ -37,10 +37,7 @@ async def test_set_reminder_success():
     mock_conn.fetchval = AsyncMock(return_value="uuid-1234")
     mock_conn.close = AsyncMock()
 
-    with (
-        patch("aug.core.tools.set_reminder.asyncpg.connect", AsyncMock(return_value=mock_conn)),
-        patch("aug.core.tools.set_reminder.get_setting", return_value=""),
-    ):
+    with patch("aug.core.tools.set_reminder.asyncpg.connect", AsyncMock(return_value=mock_conn)):
         result = await _invoke(_future_iso(2), "call dentist")
 
     assert "call dentist" in result
@@ -52,12 +49,9 @@ async def test_set_reminder_success():
 async def test_set_reminder_db_error():
     import asyncpg
 
-    with (
-        patch(
-            "aug.core.tools.set_reminder.asyncpg.connect",
-            AsyncMock(side_effect=asyncpg.PostgresError("conn refused")),
-        ),
-        patch("aug.core.tools.set_reminder.get_setting", return_value=""),
+    with patch(
+        "aug.core.tools.set_reminder.asyncpg.connect",
+        AsyncMock(side_effect=asyncpg.PostgresError("conn refused")),
     ):
         result = await _invoke(_future_iso(2), "test")
 
@@ -73,10 +67,7 @@ async def test_set_reminder_naive_datetime_accepted():
     mock_conn.fetchval = AsyncMock(return_value="uuid-9999")
     mock_conn.close = AsyncMock()
 
-    with (
-        patch("aug.core.tools.set_reminder.asyncpg.connect", AsyncMock(return_value=mock_conn)),
-        patch("aug.core.tools.set_reminder.get_setting", return_value=""),
-    ):
+    with patch("aug.core.tools.set_reminder.asyncpg.connect", AsyncMock(return_value=mock_conn)):
         result = await _invoke(naive, "naive test")
 
     assert "naive test" in result
@@ -84,23 +75,25 @@ async def test_set_reminder_naive_datetime_accepted():
 
 @pytest.mark.asyncio
 async def test_set_reminder_stores_notification_target():
-    """Notification interface and target should be stored on the reminder."""
+    """Notification interface and target from config should be stored on the reminder."""
+    from aug.core.tools.set_reminder import set_reminder
+
     mock_conn = AsyncMock()
     mock_conn.fetchval = AsyncMock(return_value="uuid-5678")
     mock_conn.close = AsyncMock()
 
-    def _get_setting(ns, key, field, default=""):
-        if field == "interface":
-            return "telegram"
-        if field == "id":
-            return "999888777"
-        return default
+    config = {
+        "configurable": {
+            "thread_id": "test-thread",
+            "interface": "telegram",
+            "sender_id": "999888777",
+        }
+    }
 
-    with (
-        patch("aug.core.tools.set_reminder.asyncpg.connect", AsyncMock(return_value=mock_conn)),
-        patch("aug.core.tools.set_reminder.get_setting", side_effect=_get_setting),
-    ):
-        result = await _invoke(_future_iso(1), "buy milk")
+    with patch("aug.core.tools.set_reminder.asyncpg.connect", AsyncMock(return_value=mock_conn)):
+        result = await set_reminder.ainvoke(
+            {"when": _future_iso(1), "message": "buy milk"}, config=config
+        )
 
     assert "buy milk" in result
     call_args = mock_conn.fetchval.call_args

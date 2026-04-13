@@ -10,7 +10,6 @@ from langchain_core.tools import tool
 from aug.config import get_settings
 from aug.utils.db import strip_driver
 from aug.utils.reminders import create_reminder
-from aug.utils.user_settings import get_setting
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +38,9 @@ async def set_reminder(when: str, message: str, config: RunnableConfig) -> str:
     if trigger_at <= now:
         return f"Reminder time {when!r} is in the past. Please provide a future datetime."
 
-    thread_id = (config.get("configurable") or {}).get("thread_id", "")
-    notification_interface = get_setting("thread_notifications", thread_id, "interface", default="")
-    notification_target = get_setting("thread_notifications", thread_id, "id", default="")
+    configurable = config.get("configurable") or {}
+    notification_interface = configurable.get("interface", "")
+    notification_target = configurable.get("sender_id", "")
 
     dsn = strip_driver(get_settings().DATABASE_URL)
     try:

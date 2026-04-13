@@ -7,15 +7,7 @@ without requiring an incoming request context. Used by reminders.
 import logging
 from typing import Literal
 
-from aug.utils.user_settings import set_setting
-
 logger = logging.getLogger(__name__)
-
-
-def register_notification_target(thread_id: str, interface: str, sender_id: str) -> None:
-    """Persist the sender's interface and ID so reminders can route back to them."""
-    set_setting("thread_notifications", thread_id, "interface", value=interface)
-    set_setting("thread_notifications", thread_id, "id", value=sender_id)
 
 
 async def send_notification(app, interface: Literal["telegram"], target_id: str, text: str) -> None:
