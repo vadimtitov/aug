@@ -23,11 +23,10 @@ from aug.core.events import send_tool_progress_update
 from aug.core.prompts import BROWSER_TASK_CONSTRAINTS
 from aug.core.run import AGENT_RUN_CONFIG_KEY, MessageContent
 from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
-from aug.utils.user_settings import get_setting
+from aug.utils.file_settings import load_settings
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "gpt-5.1"
 _DOWNLOADS_DIR = "/app/browser-downloads"
 
 
@@ -135,14 +134,10 @@ async def browser(
         await b.stop()
 
 
-def _model() -> str:
-    return get_setting("tools", "browser", "model", default=_DEFAULT_MODEL)
-
-
 def _llm() -> BrowserLLM:
     settings = get_settings()
     return BrowserLLM(
-        model=_model(),
+        model=load_settings().tools.browser.model,
         api_key=settings.LLM_API_KEY,
         base_url=settings.LLM_BASE_URL,
         frequency_penalty=None,

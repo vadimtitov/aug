@@ -12,6 +12,7 @@ from aug.core.reflexes.homeassistant import (
 from aug.core.reflexes.homeassistant import (
     homeassistant_reflex as _homeassistant_reflex_factory,
 )
+from aug.utils.file_settings import AppSettings
 from aug.utils.homeassistant import Entity, HomeAssistantClient
 
 homeassistant_reflex = _homeassistant_reflex_factory()
@@ -280,7 +281,7 @@ async def test_reflex_returns_none_when_no_entities():
 
     with (
         patch("aug.core.reflexes.homeassistant._get_client", return_value=mock_client),
-        patch("aug.core.reflexes.homeassistant.get_setting", return_value="aug"),
+        patch("aug.core.reflexes.homeassistant.load_settings", return_value=AppSettings()),
     ):
         result = await homeassistant_reflex("turn on lights", [])
 
@@ -293,7 +294,7 @@ async def test_reflex_returns_none_when_llm_finds_no_action():
 
     with (
         patch("aug.core.reflexes.homeassistant._get_client", return_value=mock_client),
-        patch("aug.core.reflexes.homeassistant.get_setting", return_value="aug"),
+        patch("aug.core.reflexes.homeassistant.load_settings", return_value=AppSettings()),
         patch("aug.core.reflexes.homeassistant._decide", new=AsyncMock(return_value=[])),
     ):
         result = await homeassistant_reflex("are the lights on?", [])
@@ -309,7 +310,7 @@ async def test_reflex_calls_service_and_returns_output():
 
     with (
         patch("aug.core.reflexes.homeassistant._get_client", return_value=mock_client),
-        patch("aug.core.reflexes.homeassistant.get_setting", return_value="aug"),
+        patch("aug.core.reflexes.homeassistant.load_settings", return_value=AppSettings()),
         patch("aug.core.reflexes.homeassistant._decide", new=AsyncMock(return_value=actions)),
     ):
         result = await homeassistant_reflex("turn on the kitchen light", [])
@@ -332,7 +333,7 @@ async def test_reflex_reports_partial_failure():
 
     with (
         patch("aug.core.reflexes.homeassistant._get_client", return_value=mock_client),
-        patch("aug.core.reflexes.homeassistant.get_setting", return_value="aug"),
+        patch("aug.core.reflexes.homeassistant.load_settings", return_value=AppSettings()),
         patch("aug.core.reflexes.homeassistant._decide", new=AsyncMock(return_value=actions)),
     ):
         result = await homeassistant_reflex("turn off all lights", [])

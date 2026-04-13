@@ -7,7 +7,7 @@ import subprocess
 from langchain_core.tools import tool
 
 from aug.utils.data import DATA_DIR
-from aug.utils.user_settings import get_setting
+from aug.utils.file_settings import load_settings
 
 # SSH private keys must never be readable by the agent, regardless of
 # user-configured blacklist entries.
@@ -63,7 +63,7 @@ def _check_blacklist(command: str) -> str | None:
     if _KEYS_DIR in command:
         logger.warning("run_bash blocked keys dir access: %s", command)
         return f"Command blocked: access to {_KEYS_DIR} is not permitted."
-    patterns: list[str] = get_setting("tools", "bash", "blacklist", default=[])
+    patterns = load_settings().tools.bash.blacklist
     for pattern in patterns:
         if re.search(pattern, command):
             logger.warning("run_bash blocked by blacklist pattern %r: %s", pattern, command)

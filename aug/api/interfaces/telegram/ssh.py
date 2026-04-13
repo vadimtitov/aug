@@ -25,7 +25,7 @@ from telegram.ext import (
     filters,
 )
 
-from aug.api.interfaces.telegram.utils import _escape, _restricted
+from aug.api.interfaces.telegram.utils import escape, restricted
 from aug.utils.ssh import (
     cleanup_keys,
     find_target,
@@ -89,7 +89,7 @@ class _SshMixin:
     # Handlers
     # ------------------------------------------------------------------
 
-    @_restricted
+    @restricted
     async def _handle_ssh(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show the /ssh management menu."""
         buttons = [
@@ -102,7 +102,7 @@ class _SshMixin:
             reply_markup=InlineKeyboardMarkup(buttons),
         )
 
-    @_restricted
+    @restricted
     async def _ssh_add_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Entry point for the Add conversation — triggered by the Add button."""
         query = update.callback_query
@@ -119,7 +119,7 @@ class _SshMixin:
             return _SSH_ADD_NAME
         if find_target(name) is not None:
             await update.message.reply_text(  # type: ignore[union-attr]
-                f"A target named <code>{_escape(name)}</code> already exists. "
+                f"A target named <code>{escape(name)}</code> already exists. "
                 "Remove it first via /ssh.",
                 parse_mode="HTML",
             )
@@ -178,7 +178,7 @@ class _SshMixin:
 
         data = context.user_data["ssh_add"]
         status_msg = await update.effective_chat.send_message(  # type: ignore[union-attr]
-            f"⏳ Provisioning <code>{_escape(data['name'])}</code>…", parse_mode="HTML"
+            f"⏳ Provisioning <code>{escape(data['name'])}</code>…", parse_mode="HTML"
         )
 
         try:
@@ -194,7 +194,7 @@ class _SshMixin:
             cleanup_keys(data["name"])
             context.user_data.pop("ssh_add", None)
             await status_msg.edit_text(
-                f"❌ Provisioning failed: <code>{_escape(str(exc))}</code>",
+                f"❌ Provisioning failed: <code>{escape(str(exc))}</code>",
                 parse_mode="HTML",
             )
             return ConversationHandler.END
@@ -214,8 +214,8 @@ class _SshMixin:
             ]
         ]
         await status_msg.edit_text(
-            f"🔑 <b>Host fingerprint for {_escape(data['host'])}:</b>\n"
-            f"<code>{_escape(fingerprint)}</code>\n\n"
+            f"🔑 <b>Host fingerprint for {escape(data['host'])}:</b>\n"
+            f"<code>{escape(fingerprint)}</code>\n\n"
             "Is this your server?",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(buttons),
@@ -241,7 +241,7 @@ class _SshMixin:
                 known_hosts_path=data["known_hosts_path"],
             )
             await query.edit_message_text(
-                f"✅ Target <code>{_escape(data['name'])}</code> saved.",
+                f"✅ Target <code>{escape(data['name'])}</code> saved.",
                 parse_mode="HTML",
             )
         else:
@@ -263,7 +263,7 @@ class _SshMixin:
             cleanup_keys(name)
         return ConversationHandler.END
 
-    @_restricted
+    @restricted
     async def _ssh_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query
         if query is None:
@@ -274,8 +274,8 @@ class _SshMixin:
             await query.edit_message_text("No SSH targets configured.")
             return
         lines = [
-            f"• <code>{_escape(t.get('name', '?'))}</code> — "
-            f"{_escape(t.get('user', '?'))}@{_escape(t.get('host', '?'))}:{t.get('port', 22)}"
+            f"• <code>{escape(t.get('name', '?'))}</code> — "
+            f"{escape(t.get('user', '?'))}@{escape(t.get('host', '?'))}:{t.get('port', 22)}"
             for t in targets
         ]
         await query.edit_message_text(
@@ -283,7 +283,7 @@ class _SshMixin:
             parse_mode="HTML",
         )
 
-    @_restricted
+    @restricted
     async def _ssh_remove_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query
         if query is None:
@@ -302,7 +302,7 @@ class _SshMixin:
             reply_markup=InlineKeyboardMarkup(buttons),
         )
 
-    @_restricted
+    @restricted
     async def _ssh_remove_target(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query
         if query is None:
@@ -315,6 +315,6 @@ class _SshMixin:
         remove_target(name)
         cleanup_keys(name)
         await query.edit_message_text(
-            f"Target <code>{_escape(name)}</code> removed.",
+            f"Target <code>{escape(name)}</code> removed.",
             parse_mode="HTML",
         )

@@ -5,6 +5,12 @@ from unittest.mock import patch
 
 from aug.core.tools.note import note
 from aug.core.tools.run_bash import _check_blacklist
+from aug.utils.file_settings import AppSettings, BashToolSettings, ToolSettings
+
+
+def _bash_settings(blacklist: list[str]) -> AppSettings:
+    return AppSettings(tools=ToolSettings(bash=BashToolSettings(blacklist=blacklist)))
+
 
 # ---------------------------------------------------------------------------
 # note tool
@@ -45,23 +51,24 @@ def test_note_includes_timestamp(tmp_path: Path) -> None:
 
 
 def test_blacklist_allows_clean_command() -> None:
-    with patch("aug.core.tools.run_bash.get_setting", return_value=["rm -rf"]):
+    with patch("aug.core.tools.run_bash.load_settings", return_value=_bash_settings(["rm -rf"])):
         assert _check_blacklist("ls -la") is None
 
 
 def test_blacklist_blocks_matching_command() -> None:
-    with patch("aug.core.tools.run_bash.get_setting", return_value=[r"rm\s+-rf"]):
+    with patch("aug.core.tools.run_bash.load_settings", return_value=_bash_settings([r"rm\s+-rf"])):
         result = _check_blacklist("rm -rf /")
         assert result is not None
         assert "blacklist" in result.lower()
 
 
 def test_blacklist_empty_by_default() -> None:
-    with patch("aug.core.tools.run_bash.get_setting", return_value=[]):
+    with patch("aug.core.tools.run_bash.load_settings", return_value=_bash_settings([])):
         assert _check_blacklist("anything") is None
 
 
 def test_blacklist_uses_regex() -> None:
-    with patch("aug.core.tools.run_bash.get_setting", return_value=[r"DROP\s+TABLE"]):
+    pattern = [r"DROP\s+TABLE"]
+    with patch("aug.core.tools.run_bash.load_settings", return_value=_bash_settings(pattern)):
         assert _check_blacklist("DROP TABLE users") is not None
         assert _check_blacklist("drop table users") is None  # case-sensitive

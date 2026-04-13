@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from aug.api.interfaces.telegram import TelegramInterface
 from aug.app import create_app
+from aug.utils.file_settings import AppSettings
 
 _HEADERS = {"X-API-Key": "test-api-key"}
 
@@ -43,18 +44,18 @@ def client():
 
 
 def test_get_settings_returns_empty_when_no_file(client: TestClient) -> None:
-    with patch("aug.api.routers.settings.get_all_settings", return_value={}):
+    with patch("aug.api.routers.settings.load_settings", return_value=AppSettings()):
         response = client.get("/settings", headers=_HEADERS)
     assert response.status_code == 200
-    assert response.json() == {}
+    assert response.json() == AppSettings().model_dump()
 
 
 def test_get_settings_returns_current_settings(client: TestClient) -> None:
-    data = {"tools": {"bash": {"blacklist": ["rm -rf"]}}}
-    with patch("aug.api.routers.settings.get_all_settings", return_value=data):
+    settings = AppSettings.model_validate({"tools": {"bash": {"blacklist": ["rm -rf"]}}})
+    with patch("aug.api.routers.settings.load_settings", return_value=settings):
         response = client.get("/settings", headers=_HEADERS)
     assert response.status_code == 200
-    assert response.json() == data
+    assert response.json()["tools"]["bash"]["blacklist"] == ["rm -rf"]
 
 
 def test_get_settings_requires_auth(client: TestClient) -> None:
@@ -69,11 +70,11 @@ def test_get_settings_requires_auth(client: TestClient) -> None:
 
 def test_put_settings_writes_and_returns_data(client: TestClient) -> None:
     data = {"tools": {"bash": {"blacklist": ["rm -rf", "shutdown"]}}}
-    with patch("aug.api.routers.settings.set_all_settings") as mock_write:
+    with patch("aug.api.routers.settings.save_settings") as mock_write:
         response = client.put("/settings", json=data, headers=_HEADERS)
     assert response.status_code == 200
     assert response.json() == data
-    mock_write.assert_called_once_with(data)
+    mock_write.assert_called_once_with(AppSettings.model_validate(data))
 
 
 def test_put_settings_requires_auth(client: TestClient) -> None:

@@ -16,10 +16,9 @@ import shlex
 import asyncssh
 
 from aug.utils.data import DATA_DIR
-from aug.utils.user_settings import get_setting, set_setting
+from aug.utils.file_settings import SshTarget, load_settings, save_settings
 
 KEYS_DIR = DATA_DIR / "keys"
-_SETTING_PATH = ("tools", "ssh", "targets")
 
 
 async def provision_target(
@@ -98,32 +97,33 @@ def save_target(
     known_hosts_path: str,
 ) -> None:
     """Add or silently overwrite an SSH target in settings."""
-    targets: list[dict] = get_setting(*_SETTING_PATH, default=[]) or []
-    targets = [t for t in targets if t.get("name") != name]
-    targets.append(
-        {
-            "name": name,
-            "host": host,
-            "port": port,
-            "user": user,
-            "key_path": key_path,
-            "known_hosts": known_hosts_path,
-        }
+    s = load_settings()
+    s.tools.ssh.targets = [t for t in s.tools.ssh.targets if t.name != name]
+    s.tools.ssh.targets.append(
+        SshTarget(
+            name=name,
+            host=host,
+            port=port,
+            user=user,
+            key_path=key_path,
+            known_hosts=known_hosts_path,
+        )
     )
-    set_setting(*_SETTING_PATH, value=targets)
+    save_settings(s)
 
 
 def remove_target(name: str) -> None:
     """Remove an SSH target by name from settings."""
-    targets: list[dict] = get_setting(*_SETTING_PATH, default=[]) or []
-    set_setting(*_SETTING_PATH, value=[t for t in targets if t.get("name") != name])
+    s = load_settings()
+    s.tools.ssh.targets = [t for t in s.tools.ssh.targets if t.name != name]
+    save_settings(s)
 
 
-def get_targets() -> list[dict]:
+def get_targets() -> list[SshTarget]:
     """Return all configured SSH targets."""
-    return get_setting(*_SETTING_PATH, default=[]) or []
+    return load_settings().tools.ssh.targets
 
 
-def find_target(name: str) -> dict | None:
-    """Return the target config dict for *name*, or None if not found."""
-    return next((t for t in get_targets() if t.get("name") == name), None)
+def find_target(name: str) -> SshTarget | None:
+    """Return the SshTarget for *name*, or None if not found."""
+    return next((t for t in get_targets() if t.name == name), None)

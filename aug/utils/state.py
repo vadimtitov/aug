@@ -1,45 +1,63 @@
-"""Runtime state persisted across restarts.
+"""Typed runtime state backed by data/state.json.
 
 Stores values written by the app itself (counters, scheduler timestamps).
-Not for user-facing configuration — use aug/utils/user_settings.py for that.
+Not for user-facing configuration — use aug/utils/file_settings.py for that.
 
-API mirrors user_settings.py intentionally.
+    from aug.utils.state import load_state, save_state
+
+    st = load_state()
+    session = st.telegram.chats.get(chat_id, TelegramChatState()).session
+
+    st = load_state()
+    st.telegram.chats[chat_id] = TelegramChatState(session=n + 1)
+    save_state(st)
 """
 
+from __future__ import annotations
+
 import json
-from typing import Any
+
+from pydantic import BaseModel, ConfigDict
 
 from aug.utils.data import read_data_file, write_data_file
 
 _STATE_FILE = "state.json"
 
 
-def get_state(*path: str, default: Any = None) -> Any:
-    """Read a value at an arbitrary nested path."""
-    node = _load()
-    for key in path:
-        if not isinstance(node, dict):
-            return default
-        node = node.get(key)
-        if node is None:
-            return default
-    return node
+class TelegramChatState(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    session: int = 0
 
 
-def set_state(*path: str, value: Any) -> None:
-    """Write a value at an arbitrary nested path, creating intermediate dicts as needed."""
-    data = _load()
-    node = data
-    for key in path[:-1]:
-        if key not in node or not isinstance(node[key], dict):
-            node[key] = {}
-        node = node[key]
-    node[path[-1]] = value
-    write_data_file(_STATE_FILE, json.dumps(data, indent=2))
+class TelegramState(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    chats: dict[str, TelegramChatState] = {}
 
 
-def _load() -> dict:
+class ConsolidationState(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    last_light_run: str | None = None
+    last_deep_run: str | None = None
+
+
+class AppState(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    telegram: TelegramState = TelegramState()
+    consolidation: ConsolidationState = ConsolidationState()
+
+
+def load_state() -> AppState:
+    """Load runtime state from data/state.json, filling in defaults for any missing fields."""
     raw = read_data_file(_STATE_FILE)
     if not raw:
-        return {}
-    return json.loads(raw)
+        return AppState()
+    return AppState.model_validate_json(raw)
+
+
+def save_state(state: AppState) -> None:
+    """Persist runtime state to data/state.json."""
+    write_data_file(_STATE_FILE, json.dumps(state.model_dump(), indent=2))

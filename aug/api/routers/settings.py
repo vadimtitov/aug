@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from aug.api.security import require_api_key
 from aug.config import get_settings
-from aug.utils.user_settings import get_all_settings, set_all_settings
+from aug.utils.file_settings import AppSettings, load_settings, save_settings
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +20,13 @@ router = APIRouter(
 @router.get("/settings")
 async def read_settings() -> dict:
     """Return the full user settings object."""
-    return get_all_settings()
+    return load_settings().model_dump()
 
 
 @router.put("/settings")
 async def write_settings(data: dict) -> dict:
     """Overwrite the full user settings object."""
-    set_all_settings(data)
+    save_settings(AppSettings.model_validate(data))
     return data
 
 
