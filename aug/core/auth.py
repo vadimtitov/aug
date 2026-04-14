@@ -50,26 +50,43 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> dict:
     if time.time() - auth_date > _INIT_DATA_MAX_AGE_SECONDS:
         raise ValueError("Init data expired")
 
+    # Approach 1 (current): URL-decoded values
     data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(params.items()))
-    secret_key = hmac.new(b"WebAppData", bot_token.encode(), digestmod=hashlib.sha256).digest()
-    computed_hash = hmac.new(
-        secret_key, data_check_string.encode(), digestmod=hashlib.sha256
-    ).hexdigest()
+
+    # Approach 2: raw URL-encoded values (excluding hash and signature)
+    raw_pairs = {
+        k: v
+        for part in init_data.split("&")
+        if "=" in part
+        for k, v in [part.split("=", 1)]
+        if k not in ("hash", "signature")
+    }
+    data_check_string_raw = "\n".join(f"{k}={v}" for k, v in sorted(raw_pairs.items()))
+
+    def _compute(dcs: str) -> str:
+        sk = hmac.new(b"WebAppData", bot_token.encode(), digestmod=hashlib.sha256).digest()
+        return hmac.new(sk, dcs.encode(), digestmod=hashlib.sha256).hexdigest()
+
+    computed_hash = _compute(data_check_string)
+    computed_hash_raw = _compute(data_check_string_raw)
 
     bot_id = bot_token.split(":")[0] if ":" in bot_token else "NO_COLON"
     logger.info(
-        "telegram_hmac_check bot_id=%s token_len=%d params_keys=%s computed=%s received=%s dcs=%r",
+        "telegram_hmac_check bot_id=%s token_len=%d decoded_match=%s raw_match=%s received=%s",
         bot_id,
         len(bot_token),
-        list(sorted(params.keys())),
-        computed_hash,
+        computed_hash == received_hash,
+        computed_hash_raw == received_hash,
         received_hash,
-        data_check_string,
     )
+
+    if hmac.compare_digest(computed_hash_raw, received_hash):
+        # Raw URL-encoded approach matches — use raw params for the return value
+        return {k: v for k, v in raw_pairs.items() if k != "auth_date"}
 
     if not hmac.compare_digest(computed_hash, received_hash):
         raise ValueError(
-            f"Invalid hash — computed={computed_hash} received={received_hash} "
+            f"Invalid hash — decoded_match=False raw_match=False "
             f"data_check_string={data_check_string!r}"
         )
 
