@@ -903,6 +903,13 @@ def _format_tool_call(
     if tool_name == "respond_with_file":
         filename = escape(args.get("filename", "file"))
         return f"{icon} <code>{escape(display)}({filename})</code>"
+    if tool_name in ("run_ssh", "download_ssh_file", "upload_ssh_file"):
+        target = escape(str(args.get("target", "?")))
+        cmd = str(args.get("command") or args.get("remote_path") or args.get("local_path") or "")
+        if len(cmd) > _ARG_TRUNCATE:
+            cmd = cmd[:_ARG_TRUNCATE] + "…"
+        inner_text = f"{target}: {escape(cmd)}" if cmd else target
+        return f"{icon} <code>{escape(display)}({inner_text})</code>"
     inner = _format_args(args)
     call = f"{display}({inner})" if inner else f"{display}()"
     return f"{icon} <code>{escape(call)}</code>"

@@ -15,41 +15,65 @@ _NOT_CONFIGURED = "Portainer is not configured: PORTAINER_URL and PORTAINER_API_
 
 @tool
 async def portainer_list_containers() -> str:
-    """List all Docker containers with their current status.
+    """List all Docker containers across all Portainer environments, grouped by environment.
 
-    Returns container names, image, status, and uptime.
+    Use this to discover available environments and their containers before
+    performing any targeted operations.
     """
     client = PortainerClient()
     if not client.is_configured():
         return _NOT_CONFIGURED
     try:
-        containers = await client.list_containers()
-    except httpx.HTTPStatusError as e:
-        return f"Portainer error: HTTP {e.response.status_code} — {e.response.text[:200]}"
+        endpoints = await client.list_endpoints()
     except httpx.RequestError as e:
         return f"Portainer unreachable: {e}"
 
-    if not containers:
-        return "No containers found."
+    if not endpoints:
+        return "No environments found in Portainer."
 
-    lines = []
-    for c in containers:
-        name = ", ".join(n.lstrip("/") for n in c.get("Names", ["?"]))
-        lines.append(
-            f"• {name}  [{c.get('State', '?')}] {c.get('Status', '?')}"
-            f"  image={c.get('Image', '?')}  id={c.get('Id', '')[:12]}"
-        )
-    logger.info("portainer_list_containers: %d containers", len(lines))
-    return f"{len(lines)} containers:\n" + "\n".join(lines)
+    sections = []
+    total = 0
+    for ep in endpoints:
+        ep_id = ep["Id"]
+        ep_name = ep.get("Name", str(ep_id))
+        try:
+            containers = await client.list_containers(ep_id)
+        except httpx.HTTPStatusError as e:
+            sections.append(f"**{ep_name}**\n  Error: HTTP {e.response.status_code}")
+            continue
+        except httpx.RequestError as e:
+            sections.append(f"**{ep_name}**\n  Unreachable: {e}")
+            continue
+
+        if not containers:
+            sections.append(f"**{ep_name}**\n  (no containers)")
+            continue
+
+        lines = []
+        for c in containers:
+            name = ", ".join(n.lstrip("/") for n in c.get("Names", ["?"]))
+            lines.append(
+                f"  • {name}  [{c.get('State', '?')}] {c.get('Status', '?')}"
+                f"  image={c.get('Image', '?')}  id={c.get('Id', '')[:12]}"
+            )
+        total += len(lines)
+        sections.append(f"**{ep_name}**\n" + "\n".join(lines))
+
+    logger.info(
+        "portainer_list_containers: %d containers across %d environments", total, len(endpoints)
+    )
+    return "\n\n".join(sections)
 
 
 @tool
-async def portainer_container_logs(container: str, tail: int = 100) -> str:
+async def portainer_container_logs(container: str, environment: str, tail: int = 100) -> str:
     """Get recent logs from a Docker container.
 
     Args:
-        container: Container name or ID (partial IDs accepted).
-        tail: Number of log lines to return (default 100, max 500).
+        container:   Container name or ID (partial IDs accepted).
+        environment: Portainer environment name (e.g. "musya", "dusya").
+                     Use portainer_list_containers to discover available environments.
+        tail:        Number of log lines to return (default 100, max 500).
     """
     client = PortainerClient()
     if not client.is_configured():
@@ -57,22 +81,35 @@ async def portainer_container_logs(container: str, tail: int = 100) -> str:
 
     tail = min(tail, 500)
     try:
-        container_id = await client.find_container_id(container)
+        ep = await client.resolve_endpoint(environment)
+    except ValueError as e:
+        return str(e)
+    except httpx.RequestError as e:
+        return f"Portainer unreachable: {e}"
+
+    ep_id = ep["Id"]
+    try:
+        container_id = await client.find_container_id(container, ep_id)
     except httpx.RequestError as e:
         return f"Portainer unreachable: {e}"
 
     if not container_id:
-        return f"Container not found: {container!r}"
+        return f"Container {container!r} not found in environment {environment!r}."
 
     try:
-        raw = await client.container_logs(container_id, tail)
+        raw = await client.container_logs(container_id, ep_id, tail)
     except httpx.HTTPStatusError as e:
         return f"Portainer error: HTTP {e.response.status_code} — {e.response.text[:200]}"
     except httpx.RequestError as e:
         return f"Portainer unreachable: {e}"
 
     text = strip_docker_log_headers(raw)
-    logger.info("portainer_container_logs container=%r lines=%d", container, text.count("\n"))
+    logger.info(
+        "portainer_container_logs container=%r env=%r lines=%d",
+        container,
+        environment,
+        text.count("\n"),
+    )
     return text or "(no log output)"
 
 
@@ -80,44 +117,62 @@ async def portainer_container_logs(container: str, tail: int = 100) -> str:
 async def portainer_container_action(
     container: str,
     action: Literal["start", "stop", "restart", "remove"],
+    environment: str,
 ) -> str:
     """Perform a lifecycle action on a Docker container.
 
     Args:
-        container: Container name or ID (partial IDs accepted).
-        action:    One of: start, stop, restart, remove.
+        container:   Container name or ID (partial IDs accepted).
+        action:      One of: start, stop, restart, remove.
+        environment: Portainer environment name (e.g. "musya", "dusya").
+                     Use portainer_list_containers to discover available environments.
     """
     client = PortainerClient()
     if not client.is_configured():
         return _NOT_CONFIGURED
 
     try:
-        container_id = await client.find_container_id(container)
+        ep = await client.resolve_endpoint(environment)
+    except ValueError as e:
+        return str(e)
+    except httpx.RequestError as e:
+        return f"Portainer unreachable: {e}"
+
+    ep_id = ep["Id"]
+    try:
+        container_id = await client.find_container_id(container, ep_id)
     except httpx.RequestError as e:
         return f"Portainer unreachable: {e}"
 
     if not container_id:
-        return f"Container not found: {container!r}"
+        return f"Container {container!r} not found in environment {environment!r}."
 
     try:
-        await client.container_action(container_id, action)
+        await client.container_action(container_id, ep_id, action)
     except httpx.HTTPStatusError as e:
         return f"Action '{action}' failed: HTTP {e.response.status_code} — {e.response.text[:200]}"
     except httpx.RequestError as e:
         return f"Portainer unreachable: {e}"
 
-    logger.info("portainer_container_action container=%r action=%s", container, action)
-    return f"Container {container!r}: {action} succeeded."
+    logger.info(
+        "portainer_container_action container=%r env=%r action=%s", container, environment, action
+    )
+    return f"Container {container!r} in {environment!r}: {action} succeeded."
 
 
 @tool
 async def portainer_list_stacks() -> str:
-    """List all stacks (docker-compose deployments) in Portainer with their status."""
+    """List all stacks (docker-compose deployments) across all Portainer environments.
+
+    Use this to discover available environments and their stacks before
+    performing any targeted operations.
+    """
     client = PortainerClient()
     if not client.is_configured():
         return _NOT_CONFIGURED
 
     try:
+        endpoints = await client.list_endpoints()
         stacks = await client.list_stacks()
     except httpx.HTTPStatusError as e:
         return f"Portainer error: HTTP {e.response.status_code} — {e.response.text[:200]}"
@@ -127,107 +182,100 @@ async def portainer_list_stacks() -> str:
     if not stacks:
         return "No stacks found."
 
-    lines = []
+    ep_names = {ep["Id"]: ep.get("Name", str(ep["Id"])) for ep in endpoints}
+    by_env: dict[str, list[str]] = {}
     for s in stacks:
+        ep_name = ep_names.get(s.get("EndpointId", -1), "unknown")
         status_label = "active" if s.get("Status") == 1 else "inactive"
-        lines.append(f"• {s.get('Name', '?')}  [{status_label}]  id={s.get('Id', '?')}")
-    logger.info("portainer_list_stacks: %d stacks", len(lines))
-    return f"{len(lines)} stacks:\n" + "\n".join(lines)
+        line = f"  • {s.get('Name', '?')}  [{status_label}]  id={s.get('Id', '?')}"
+        by_env.setdefault(ep_name, []).append(line)
+
+    sections = [f"**{env}**\n" + "\n".join(lines) for env, lines in by_env.items()]
+    logger.info("portainer_list_stacks: %d stacks across %d environments", len(stacks), len(by_env))
+    return "\n\n".join(sections)
 
 
 @tool
-async def portainer_deploy_stack(name: str, compose: str) -> str:
-    """Deploy a new stack (docker-compose) to Portainer, or update an existing one.
+async def portainer_deploy_stack(name: str, compose: str, environment: str) -> str:
+    """Deploy a new stack (docker-compose) to a Portainer environment, or update an existing one.
 
     Use this to deploy services — media servers, databases, monitoring tools, etc.
-    If a stack with the given name already exists it will be updated with the new compose.
+    If a stack with the given name already exists in the environment it will be updated.
 
     Args:
-        name:    Stack name (lowercase, no spaces, e.g. "jellyfin", "my-media-server").
-        compose: Full docker-compose.yml content as a string.
+        name:        Stack name (lowercase, no spaces, e.g. "jellyfin", "my-media-server").
+        compose:     Full docker-compose.yml content as a string.
+        environment: Portainer environment name to deploy to (e.g. "musya", "dusya").
+                     Use portainer_list_stacks to discover available environments.
     """
     client = PortainerClient()
     if not client.is_configured():
         return _NOT_CONFIGURED
 
     try:
-        data, action = await client.deploy_stack(name, compose)
+        ep = await client.resolve_endpoint(environment)
+    except ValueError as e:
+        return str(e)
+    except httpx.RequestError as e:
+        return f"Portainer unreachable: {e}"
+
+    try:
+        data, action = await client.deploy_stack(name, compose, ep["Id"])
     except httpx.HTTPStatusError as e:
         return f"Stack operation failed: HTTP {e.response.status_code} — {e.response.text[:300]}"
     except httpx.RequestError as e:
         return f"Portainer unreachable: {e}"
 
     stack_id = data.get("Id", "?")
-    logger.info("portainer_deploy_stack name=%r action=%s id=%s", name, action, stack_id)
-    return f"Stack {name!r} {action} successfully (id={stack_id})."
+    logger.info(
+        "portainer_deploy_stack name=%r env=%r action=%s id=%s", name, environment, action, stack_id
+    )
+    return f"Stack {name!r} {action} successfully in {environment!r} (id={stack_id})."
 
 
 @tool
 async def portainer_stack_action(
     name: str,
     action: Literal["start", "stop"],
+    environment: str,
 ) -> str:
     """Perform a lifecycle action on a Portainer stack.
 
     Args:
-        name:   Stack name.
-        action: One of: start, stop.
+        name:        Stack name.
+        action:      One of: start, stop.
+        environment: Portainer environment name (e.g. "musya", "dusya").
+                     Use portainer_list_stacks to discover available environments.
     """
     client = PortainerClient()
     if not client.is_configured():
         return _NOT_CONFIGURED
 
     try:
-        stack = await client.find_stack(name)
+        ep = await client.resolve_endpoint(environment)
+    except ValueError as e:
+        return str(e)
+    except httpx.RequestError as e:
+        return f"Portainer unreachable: {e}"
+
+    ep_id = ep["Id"]
+    try:
+        stack = await client.find_stack(name, ep_id)
     except httpx.RequestError as e:
         return f"Portainer unreachable: {e}"
 
     if not stack:
-        return f"Stack not found: {name!r}"
+        return f"Stack {name!r} not found in environment {environment!r}."
 
     stack_id = stack["Id"]
     try:
-        await client.stack_action(stack_id, action)
+        await client.stack_action(stack_id, ep_id, action)
     except httpx.HTTPStatusError as e:
         return f"Stack '{action}' failed: HTTP {e.response.status_code} — {e.response.text[:200]}"
     except httpx.RequestError as e:
         return f"Portainer unreachable: {e}"
 
-    logger.info("portainer_stack_action name=%r action=%s id=%s", name, action, stack_id)
-    return f"Stack {name!r}: {action} succeeded."
-
-
-# ---------------------------------------------------------------------------
-# Kept for backward compatibility with agents that reference this directly.
-# New agents should use portainer_container_action instead.
-# ---------------------------------------------------------------------------
-
-
-@tool
-async def portainer_restart_container(container: str) -> str:
-    """Restart a Docker container.
-
-    Args:
-        container: Container name or ID (partial IDs accepted).
-    """
-    client = PortainerClient()
-    if not client.is_configured():
-        return _NOT_CONFIGURED
-
-    try:
-        container_id = await client.find_container_id(container)
-    except httpx.RequestError as e:
-        return f"Portainer unreachable: {e}"
-
-    if not container_id:
-        return f"Container not found: {container!r}"
-
-    try:
-        await client.container_action(container_id, "restart")
-    except httpx.HTTPStatusError as e:
-        return f"Restart failed: HTTP {e.response.status_code} — {e.response.text[:200]}"
-    except httpx.RequestError as e:
-        return f"Portainer unreachable: {e}"
-
-    logger.info("portainer_restart_container container=%r id=%s", container, container_id[:12])
-    return f"Container {container!r} restarted successfully."
+    logger.info(
+        "portainer_stack_action name=%r env=%r action=%s id=%s", name, environment, action, stack_id
+    )
+    return f"Stack {name!r} in {environment!r}: {action} succeeded."

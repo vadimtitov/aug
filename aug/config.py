@@ -51,7 +51,6 @@ class Settings(BaseSettings):
     # Portainer (optional — portainer tools disabled if absent)
     PORTAINER_URL: str | None = None
     PORTAINER_API_TOKEN: str | None = None
-    PORTAINER_ENDPOINT_ID: int = 1
 
     # Base URL used for OAuth redirect URIs and auth links sent to users.
     # Defaults to auto-detected LAN IP on port 8012.

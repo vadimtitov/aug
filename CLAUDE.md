@@ -249,6 +249,5 @@ only when there is a clear, immediate reason.
 | `BRAVE_API_KEY` | No | Web search tool disabled if absent |
 | `PORTAINER_URL` | No | Portainer instance URL, e.g. `http://portainer:9000` |
 | `PORTAINER_API_TOKEN` | No | Portainer API token (generate in Portainer → Account Settings) |
-| `PORTAINER_ENDPOINT_ID` | No | Portainer environment ID (default: `1`) |
 | `DEBUG` | No | `true` → human-readable logs; `false` (default) → JSON. Does NOT affect auth. |
 | `DEV_AUTH_BYPASS` | No | `true` → skip Telegram initData HMAC verification. Local dev only. **Must be `false` in production.** |
