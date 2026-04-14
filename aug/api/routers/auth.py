@@ -34,10 +34,11 @@ async def auth_telegram(body: TelegramAuthRequest) -> TelegramAuthResponse:
     settings = get_settings()
     bot_token = settings.TELEGRAM_BOT_TOKEN
     logger.info(
-        "telegram_auth_attempt bypass=%s bot_token_set=%s init_data_len=%d",
+        "telegram_auth_attempt bypass=%s bot_token_set=%s init_data_len=%d init_data=%r",
         settings.DEV_AUTH_BYPASS,
         bool(bot_token),
         len(body.init_data),
+        body.init_data,
     )
     if not bot_token:
         raise HTTPException(

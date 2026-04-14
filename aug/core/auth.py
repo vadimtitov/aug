@@ -10,11 +10,14 @@ Provides:
 
 import hashlib
 import hmac
+import logging
 import time
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qsl
 
 import jwt
+
+logger = logging.getLogger(__name__)
 
 _JWT_ALGORITHM = "HS256"
 _JWT_EXPIRES_SECONDS = 86400  # 24 hours
@@ -53,8 +56,20 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> dict:
         secret_key, data_check_string.encode(), digestmod=hashlib.sha256
     ).hexdigest()
 
+    logger.info(
+        "telegram_hmac_check token_len=%d params_keys=%s computed=%s received=%s dcs=%r",
+        len(bot_token),
+        list(sorted(params.keys())),
+        computed_hash,
+        received_hash,
+        data_check_string,
+    )
+
     if not hmac.compare_digest(computed_hash, received_hash):
-        raise ValueError("Invalid hash — init data may have been tampered with")
+        raise ValueError(
+            f"Invalid hash — computed={computed_hash} received={received_hash} "
+            f"data_check_string={data_check_string!r}"
+        )
 
     return params
 
