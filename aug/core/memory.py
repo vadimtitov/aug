@@ -1,17 +1,16 @@
 """Memory file management and consolidation.
 
 File layout:
-  self.md        — AUG's identity, updated by deep consolidation.
+  self.md        — AUG's identity, updated by both light and deep consolidation.
   user.md        — Who the user is: profile, preferences, behavioural rules, env facts.
-  context.md     — Volatile: Present + Recent. Replaced by light consolidation.
-  memory.md      — Stable: Patterns + Significant moments.
+  context.md     — Volatile: Present / Upcoming / Recent with dated entries.
   reflections.md — Deep consolidation diary. Never loaded at runtime.
-  notes.md       — Ring buffer of raw notes. Cleared after each consolidation.
+  notes.md       — Ring buffer of raw notes. Cleared after each light consolidation.
 
 Consolidation schedule (background asyncio loop, checks hourly):
-  Light (nightly, 03:00 UTC)  — folds notes into context.md / user.md.
-  Deep  (weekly,  04:00 UTC)  — reflects across all files; updates memory.md,
-                                 self.md, user.md, appends to reflections.md.
+  Light (nightly, 03:00 UTC)  — folds notes into context.md, user.md, self.md.
+  Deep  (weekly,  04:00 UTC)  — reflects across all files; updates self.md,
+                                 user.md, context.md, appends to reflections.md.
 """
 
 import asyncio
@@ -50,7 +49,6 @@ def init_memory_files() -> None:
     _init("self.md", _SELF_MD)
     _init("user.md", _USER_MD)
     _init("context.md", _CONTEXT_MD)
-    _init("memory.md", _MEMORY_MD)
     _init("reflections.md", "")
     _init("notes.md", "")
 
@@ -73,9 +71,10 @@ def append_note(content: str) -> None:
 
 
 async def run_light_consolidation() -> bool:
-    """Nightly pass: fold notes into context.md, user.md.
+    """Nightly pass: fold notes into context.md, user.md, and optionally self.md.
 
-    Returns True if it ran, False if there were no notes to process.
+    Passes all memory files as context so the LLM can make cross-file deduplication
+    decisions in a single call. Returns True if it ran, False if no notes to process.
     """
     notes = _read("notes.md")
     if not notes.strip():
@@ -91,6 +90,7 @@ async def run_light_consolidation() -> bool:
             HumanMessage(
                 content=CONSOLIDATION_LIGHT_PROMPT.format(
                     notes=notes,
+                    self_md=_read("self.md"),
                     context=_read("context.md"),
                     user=_read("user.md"),
                     now=now,
@@ -104,6 +104,8 @@ async def run_light_consolidation() -> bool:
         _write("context.md", updated)
     if updated := _extract("user", text):
         _write("user.md", updated)
+    if updated := _extract("self", text):
+        _write("self.md", updated)
 
     _write("notes.md", "")
     _record_light()
@@ -125,7 +127,6 @@ async def run_deep_consolidation() -> None:
                     self_md=_read("self.md"),
                     user=_read("user.md"),
                     context=_read("context.md"),
-                    memory=_read("memory.md"),
                     reflections=_read("reflections.md"),
                     notes=_read("notes.md"),
                     now=now,
@@ -143,8 +144,8 @@ async def run_deep_consolidation() -> None:
                 content=CONSOLIDATION_DEEP_UPDATE_PROMPT.format(
                     reflection=reflection,
                     self_md=_read("self.md"),
-                    memory=_read("memory.md"),
                     user=_read("user.md"),
+                    context=_read("context.md"),
                     now=now,
                 )
             ),
@@ -152,8 +153,6 @@ async def run_deep_consolidation() -> None:
     )
 
     text = update_response.content
-    if updated := _extract("memory", text):
-        _write("memory.md", updated)
     if updated := _extract("user", text):
         _write("user.md", updated)
     if updated := _extract("self", text):
@@ -196,20 +195,14 @@ Nothing is known about this person yet.
 
 _CONTEXT_MD = """\
 ## Present
+[YYYY-MM-DD] Brief description of current focus.
 
+## Upcoming
+- [YYYY-MM-DD] Upcoming event or deadline.
 
 ## Recent
-
+- [YYYY-MM-DD] Recent notable event or completed situation.
 """
-
-_MEMORY_MD = """\
-## Patterns
-
-
-## Significant moments
-
-"""
-
 
 # ---------------------------------------------------------------------------
 # Private helpers

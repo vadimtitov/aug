@@ -16,17 +16,16 @@
 
 ## Memory
 
-The agent effectively writes its own system prompt. Five plain-text files on disk are injected into every conversation alongside hardcoded instructions — the agent reads them as context and writes back to them over time via background jobs and mid-conversation notes.
+The agent effectively writes its own system prompt. Four plain-text files on disk are injected into every conversation alongside hardcoded instructions — the agent reads them as context and writes back to them over time via background jobs and mid-conversation notes.
 
 | File | What it is | Updated |
 |------|------------|---------|
 | `notes.md` | Raw notes captured mid-conversation, pending consolidation | During conversation |
-| `user.md` | Who you are — biographical facts, traits, preferences, environment | Nightly |
-| `context.md` | Current focus and recent activity. Volatile — stale entries trimmed freely | Nightly |
-| `self.md` | The agent's identity: character, values, how it relates to you | Weekly |
-| `memory.md` | Patterns and significant moments that have solidified across sessions | Weekly |
+| `user.md` | Who you are — stable facts, preferences, rules, behavioural patterns | Nightly |
+| `context.md` | Timestamped active situations, upcoming events, recent activity. Pruned aggressively | Nightly |
+| `self.md` | The agent's identity: character, values, voice | Nightly + Weekly |
 
-The `note` tool is the write mechanism during a conversation. A nightly job folds notes into `context.md` and `user.md`. A weekly deep consolidation promotes patterns into `memory.md` and — rarely — evolves `self.md`.
+The `note` tool is the write mechanism during a conversation. A nightly job folds notes into `context.md`, `user.md`, and `self.md` — all in one cross-file-aware pass. A weekly deep consolidation reflects across the full picture and evolves files where something has genuinely shifted.
 
 
 

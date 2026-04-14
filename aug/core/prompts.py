@@ -43,8 +43,7 @@ question is asked, a completed action when a task is given. Know when you have i
 
 Take notes liberally using the note tool. Any fact about the user, preference, correction,
 or operational detail worth remembering next time should be noted. Default to noting —
-the cost of an unnecessary note is negligible; the cost of forgetting is not. If a note
-relates to an existing skill, update that skill instead."""
+the cost of an unnecessary note is negligible; the cost of forgetting is not."""
 
 
 def build_system_prompt(state: AgentState) -> str:
@@ -63,7 +62,6 @@ def build_system_prompt(state: AgentState) -> str:
         ("user", _read("user.md")),
         ("skills", skills_content),
         ("context", _read("context.md")),
-        ("memory", _read("memory.md")),
         ("notes", _read("notes.md")),
         ("interface", interface_context),
         ("response_format", response_format),
@@ -89,21 +87,49 @@ Notes:
 {notes}
 </notes>
 
-Current files:
+Current files (read-only context — use to avoid duplication):
+<self>
+{self_md}
+</self>
 <context>
 {context}
 </context>
 <user>
 {user}
 </user>
+
 Update the files based on the notes. Rules:
-- `context.md` (Present + Recent): replace Present with the user's current focus. \
-Add genuinely notable things to Recent — not everything, only what has weight. \
-Volatile — trim stale entries freely.
-- `user.md`: everything worth knowing about this person — who they are, how they think, \
-their preferences and rules, their environment, their tools and systems, their accounts. \
-If it would help AUG serve them better next time, it goes here.
-- Be concise. A well-chosen sentence beats a paragraph. Only return files that changed.
+
+context.md rules:
+- All entries must carry an ISO date prefix: [YYYY-MM-DD].
+- Present: one entry describing what the user is focused on right now.
+- Upcoming: dated future events (trips, deadlines, interviews).
+- Recent: notable events from the past few weeks.
+- Prune aggressively: remove any entry whose date is more than 6 weeks ago (unless \
+still clearly active), any entry for an event that has already passed, and any entry \
+that has been absorbed as a permanent rule in user.md or self.md. Do not keep both.
+- Target: under 300 words total.
+
+user.md rules:
+- Stable facts only: preferences, rules, household, systems, accounts, behavioural \
+patterns. If it has an expiry date, it belongs in context.md, not here.
+- Do not duplicate anything already in self.md.
+- Target: under 600 words total. If over budget, remove stale or redundant entries.
+
+self.md rules:
+- AUG's own identity, character, voice, and values only. No operational rules, no user facts.
+- Update only if the notes contain clear feedback about how AUG should behave, speak, \
+or present itself (e.g. "be more concise", "be funnier", "less formal").
+- Write in first-person prose.
+
+Cross-file deduplication (critical):
+- If you write something to self.md, remove it from user.md and context.md.
+- If you write something to user.md, remove it from context.md if it was there.
+- Never keep the same fact in two files.
+
+Only return a tag if you are actually changing that file. If a file needs no update, \
+omit its tag entirely — do not repeat its current content back. \
+Output tokens cost real money; silence is correct when nothing has changed.
 
 Return updated files (omit unchanged ones):
 <context>
@@ -112,6 +138,9 @@ Return updated files (omit unchanged ones):
 <user>
 [full updated user.md, or omit if unchanged]
 </user>
+<self>
+[full updated self.md, or omit if unchanged]
+</self>
 """
 
 CONSOLIDATION_DEEP_SYSTEM = """\
@@ -138,10 +167,6 @@ Read everything carefully.
 {context}
 </context>
 
-<memory>
-{memory}
-</memory>
-
 <past_reflections>
 {reflections}
 </past_reflections>
@@ -155,6 +180,8 @@ Write a free reflection. Cover all of:
 - What has solidified into patterns?
 - Has your sense of your own role, character, or identity evolved? \
 Does the current <self> still feel accurate, or has something about it aged badly or grown?
+- Look carefully at the current <self> text: which sentences feel stale, overstated, \
+or no longer quite right? Even small drift is worth noting.
 
 Write in the first person, as the agent. Genuine thinking — not a summary. \
 This will inform what gets updated next.
@@ -173,45 +200,51 @@ Current files:
 {self_md}
 </self>
 
-<memory>
-{memory}
-</memory>
-
 <user>
 {user}
 </user>
 
-Based on your reflection, update the files.
+<context>
+{context}
+</context>
 
-memory.md rules:
-- Must contain ONLY `## Patterns` and `## Significant moments`. Nothing else.
-- If it currently contains `## Reflections`, `## Longer arc`, `## Present`, or `## Recent`, \
-strip those sections entirely — they belong elsewhere and must not remain here.
-- `## Patterns`: promote observations that have solidified across multiple sessions. \
-A single data point does not earn a pattern. Remove patterns that no longer hold.
-- `## Significant moments`: add only genuinely important moments. Keep it short.
+Based on your reflection, update the files.
 
 user.md rules:
 - Contains everything worth knowing about this person — who they are, how they think, \
 their preferences and rules, their environment, their tools and systems, their accounts. \
-If user.md currently has a separate skills/integrations section, merge it in here.
+Includes behavioural patterns that have solidified across sessions.
 - Update only where understanding has solidified — confirmed facts, not fleeting impressions.
 
+context.md rules:
+- All entries must carry an ISO date prefix: [YYYY-MM-DD].
+- Prune entries older than 6 weeks unless still clearly active; remove entries for \
+events that have passed; remove entries absorbed as permanent rules in user.md or self.md.
+- Target: under 300 words.
+
 self.md rules:
-- Update if your sense of identity, role, or character has shifted — not just refined, \
-but actually moved. Also update if the current text feels stale or no longer accurate.
+- Update if your sense of identity, role, or character has shifted or been meaningfully \
+refined. Also update if any part of the current text feels stale or no longer accurate. \
+The threshold is refinement, not revolution — small but genuine updates are welcome.
 - Write in first-person prose. Do not add meta-commentary about the update.
 
+Cross-file deduplication: if you write something to self.md, remove it from user.md \
+and context.md. If you write something to user.md, remove it from context.md.
+
+Only return a tag if you are actually changing that file. If a file needs no update, \
+omit its tag entirely — do not repeat its current content back. Output tokens cost money; \
+silence is the correct response when nothing has changed.
+
 Return updated files (omit unchanged ones) plus the new reflection to append:
-<memory>
-[full updated memory.md, or omit if unchanged]
-</memory>
 <user>
 [full updated user.md, or omit if unchanged]
 </user>
 <self>
 [full updated self.md, or omit if unchanged]
 </self>
+<context>
+[full updated context.md, or omit if unchanged]
+</context>
 <new_reflection>
 [the reflection text to append to reflections.md, with date prefix]
 </new_reflection>

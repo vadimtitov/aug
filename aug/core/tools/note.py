@@ -15,8 +15,11 @@ def note(content: str) -> str:
     if you think "I might want to know this next time", note it.
 
     Keep each note brief and self-contained. A separate process folds notes
-    into persistent memory later. If the note relates to an existing skill,
-    update that skill instead.
+    into persistent memory later.
+
+    NEVER record passwords, tokens, API keys, authentication credentials,
+    RTSP URLs with embedded passwords, or anything resembling a secret —
+    even if the user mentions it directly.
 
     Args:
         content: Brief note to save.

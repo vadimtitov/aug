@@ -47,15 +47,20 @@ def test_context_section_present(tmp_path: Path) -> None:
     assert "working on infra" in prompt
 
 
-def test_memory_section_present(tmp_path: Path) -> None:
+def test_memory_section_absent(tmp_path: Path) -> None:
     prompt = _build(tmp_path, files={"memory.md": "## Patterns\nprefers brevity"})
-    assert "<memory>" in prompt
-    assert "prefers brevity" in prompt
+    assert "<memory>" not in prompt
 
 
 # ---------------------------------------------------------------------------
 # Removed sections
 # ---------------------------------------------------------------------------
+
+
+def test_approach_no_skill_update_instruction(tmp_path: Path) -> None:
+    from aug.core.prompts import _APPROACH
+
+    assert "update that skill" not in _APPROACH.lower()
 
 
 def test_no_structure_section(tmp_path: Path) -> None:
