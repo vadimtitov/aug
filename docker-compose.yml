@@ -59,13 +59,14 @@ services:
       target: builder
     ports:
       - "5173:5173"
-    environment:
-      VITE_API_URL: ${VITE_API_URL:-http://localhost:8012}
     volumes:
       - ./miniapp/src:/app/src
       - ./miniapp/public:/app/public
       - ./miniapp/index.html:/app/index.html
+      - ./miniapp/vite.config.ts:/app/vite.config.ts
     command: ["npm", "run", "dev"]
+    depends_on:
+      - aug
 
 volumes:
   postgres_data:
