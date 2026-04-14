@@ -33,6 +33,12 @@ async def auth_telegram(body: TelegramAuthRequest) -> TelegramAuthResponse:
     """
     settings = get_settings()
     bot_token = settings.TELEGRAM_BOT_TOKEN
+    logger.info(
+        "telegram_auth_attempt bypass=%s bot_token_set=%s init_data_len=%d",
+        settings.DEV_AUTH_BYPASS,
+        bool(bot_token),
+        len(body.init_data),
+    )
     if not bot_token:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -49,7 +55,14 @@ async def auth_telegram(body: TelegramAuthRequest) -> TelegramAuthResponse:
         try:
             payload = verify_telegram_init_data(body.init_data, bot_token)
         except ValueError as exc:
-            logger.warning("telegram_auth_failed reason=%s", exc)
+            _params = dict(parse_qsl(body.init_data, keep_blank_values=True))
+            logger.warning(
+                "telegram_auth_failed reason=%s auth_date=%s hash_present=%s fields=%s",
+                exc,
+                _params.get("auth_date", "MISSING"),
+                "hash" in _params,
+                list(_params.keys()),
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or expired Telegram init data.",
