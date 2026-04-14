@@ -10,14 +10,11 @@ Provides:
 
 import hashlib
 import hmac
-import logging
 import time
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qsl
 
 import jwt
-
-logger = logging.getLogger(__name__)
 
 _JWT_ALGORITHM = "HS256"
 _JWT_EXPIRES_SECONDS = 86400  # 24 hours
@@ -43,52 +40,18 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> dict:
     if not received_hash:
         raise ValueError("Hash missing from init data")
 
-    # `signature` (Ed25519, Bot API 7.7+) is not part of the HMAC data check string.
-    params.pop("signature", None)
-
     auth_date = int(params.get("auth_date", 0))
     if time.time() - auth_date > _INIT_DATA_MAX_AGE_SECONDS:
         raise ValueError("Init data expired")
 
-    # Approach 1 (current): URL-decoded values
     data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(params.items()))
-
-    # Approach 2: raw URL-encoded values (excluding hash and signature)
-    raw_pairs = {
-        k: v
-        for part in init_data.split("&")
-        if "=" in part
-        for k, v in [part.split("=", 1)]
-        if k not in ("hash", "signature")
-    }
-    data_check_string_raw = "\n".join(f"{k}={v}" for k, v in sorted(raw_pairs.items()))
-
-    def _compute(dcs: str) -> str:
-        sk = hmac.new(b"WebAppData", bot_token.encode(), digestmod=hashlib.sha256).digest()
-        return hmac.new(sk, dcs.encode(), digestmod=hashlib.sha256).hexdigest()
-
-    computed_hash = _compute(data_check_string)
-    computed_hash_raw = _compute(data_check_string_raw)
-
-    bot_id = bot_token.split(":")[0] if ":" in bot_token else "NO_COLON"
-    logger.info(
-        "telegram_hmac_check bot_id=%s token_len=%d decoded_match=%s raw_match=%s received=%s",
-        bot_id,
-        len(bot_token),
-        computed_hash == received_hash,
-        computed_hash_raw == received_hash,
-        received_hash,
-    )
-
-    if hmac.compare_digest(computed_hash_raw, received_hash):
-        # Raw URL-encoded approach matches — use raw params for the return value
-        return {k: v for k, v in raw_pairs.items() if k != "auth_date"}
+    secret_key = hmac.new(b"WebAppData", bot_token.encode(), digestmod=hashlib.sha256).digest()
+    computed_hash = hmac.new(
+        secret_key, data_check_string.encode(), digestmod=hashlib.sha256
+    ).hexdigest()
 
     if not hmac.compare_digest(computed_hash, received_hash):
-        raise ValueError(
-            f"Invalid hash — decoded_match=False raw_match=False "
-            f"data_check_string={data_check_string!r}"
-        )
+        raise ValueError("Invalid hash — init data may have been tampered with")
 
     return params
 
