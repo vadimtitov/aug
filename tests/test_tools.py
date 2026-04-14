@@ -45,6 +45,16 @@ def test_note_includes_timestamp(tmp_path: Path) -> None:
     assert "UTC]" in notes
 
 
+def test_note_description_prohibits_credentials() -> None:
+    desc = note.description or ""
+    assert "password" in desc.lower() or "credential" in desc.lower()
+
+
+def test_note_description_no_skill_update_instruction() -> None:
+    desc = note.description or ""
+    assert "update that skill" not in desc.lower()
+
+
 # ---------------------------------------------------------------------------
 # run_bash blacklist
 # ---------------------------------------------------------------------------

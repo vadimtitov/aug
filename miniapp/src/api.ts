@@ -8,7 +8,7 @@
  *   4. No secrets are ever baked into the bundle.
  */
 
-const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
+const BASE_URL = "";
 const TIMEOUT_MS = 15_000;
 
 let _token: string | null = null;
