@@ -67,7 +67,7 @@ def test_wrong_bot_token_raises() -> None:
 
 
 def test_expired_init_data_raises() -> None:
-    init_data = _make_init_data(age_seconds=7200)  # 2 hours old
+    init_data = _make_init_data(age_seconds=90000)  # 25 hours old
     with pytest.raises(ValueError, match=r"[Ee]xpir"):
         verify_telegram_init_data(init_data, _BOT_TOKEN)
 

@@ -274,8 +274,7 @@ class _SshMixin:
             await query.edit_message_text("No SSH targets configured.")
             return
         lines = [
-            f"• <code>{escape(t.get('name', '?'))}</code> — "
-            f"{escape(t.get('user', '?'))}@{escape(t.get('host', '?'))}:{t.get('port', 22)}"
+            f"• <code>{escape(t.name)}</code> — {escape(t.user)}@{escape(t.host)}:{t.port}"
             for t in targets
         ]
         await query.edit_message_text(
@@ -294,8 +293,7 @@ class _SshMixin:
             await query.edit_message_text("No SSH targets configured.")
             return
         buttons = [
-            [InlineKeyboardButton(t.get("name", "?"), callback_data=f"ssh:remove:{t.get('name')}")]
-            for t in targets
+            [InlineKeyboardButton(t.name, callback_data=f"ssh:remove:{t.name}")] for t in targets
         ]
         await query.edit_message_text(
             "Select a target to remove:",
