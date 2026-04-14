@@ -56,8 +56,10 @@ def verify_telegram_init_data(init_data: str, bot_token: str) -> dict:
         secret_key, data_check_string.encode(), digestmod=hashlib.sha256
     ).hexdigest()
 
+    bot_id = bot_token.split(":")[0] if ":" in bot_token else "NO_COLON"
     logger.info(
-        "telegram_hmac_check token_len=%d params_keys=%s computed=%s received=%s dcs=%r",
+        "telegram_hmac_check bot_id=%s token_len=%d params_keys=%s computed=%s received=%s dcs=%r",
+        bot_id,
         len(bot_token),
         list(sorted(params.keys())),
         computed_hash,
