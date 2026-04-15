@@ -20,6 +20,7 @@ eggs/
 .eggs/
 lib/
 lib64/
+!miniapp/src/lib/
 parts/
 sdist/
 var/
