@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import {
   ChevronLeft, Pencil, Check, X, File,
   AlertTriangle, Download, RefreshCw, Star, Users,
@@ -15,6 +15,9 @@ import {
   updateSkill,
 } from "../api.ts";
 import type { ClawHubSkillDetail as ClawHubDetail, PageState, SkillDetail } from "../types.ts";
+import { errorMessage, tg } from "../lib/tg.ts";
+import { bumpInstalledVersion } from "../lib/installedVersion.ts";
+import { BackHandlerContext } from "../lib/backHandler.ts";
 
 interface Props {
   skillName: string;
@@ -74,8 +77,27 @@ function LocalSkillDetail({
   const [alwaysOn, setAlwaysOn] = useState(false);
   const [savingToggle, setSavingToggle] = useState(false);
 
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const backHandler = useContext(BackHandlerContext);
+
+  const safeBack = useCallback(() => {
+    if (!editing) { onBack(); return; }
+    tg()?.showConfirm("Discard unsaved changes?", (ok: boolean) => {
+      if (ok) onBack();
+    });
+  }, [editing, onBack]);
+
+  useEffect(() => {
+    backHandler.current = safeBack;
+    return () => { backHandler.current = onBack; };
+  }, [safeBack, onBack, backHandler]);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, []);
 
   useEffect(() => {
     getSkillDetail(skillName)
@@ -85,9 +107,18 @@ function LocalSkillDetail({
         setAlwaysOn(s.always_on);
         setEditBody(s.body);
       })
-      .catch((e) => setError(String(e)))
+      .catch((e) => setError(errorMessage(e)))
       .finally(() => setLoading(false));
   }, [skillName]);
+
+  // Auto-resize textarea when editing starts or content changes
+  useEffect(() => {
+    if (editing && textareaRef.current) {
+      const el = textareaRef.current;
+      el.style.height = "auto";
+      el.style.height = `${el.scrollHeight}px`;
+    }
+  }, [editing, editBody]);
 
   function startEdit() {
     setEditBody(skill!.body);
@@ -104,10 +135,12 @@ function LocalSkillDetail({
     setSaving(true);
     try {
       await updateSkill(skillName, { body: editBody });
+      tg()?.HapticFeedback?.notificationOccurred("success");
       setSkill({ ...skill, body: editBody });
       setEditing(false);
     } catch (e) {
-      alert(`Failed to save: ${e}`);
+      tg()?.HapticFeedback?.notificationOccurred("error");
+      tg()?.showAlert(errorMessage(e));
     } finally {
       setSaving(false);
     }
@@ -118,8 +151,10 @@ function LocalSkillDetail({
     setSavingDesc(true);
     try {
       await updateSkill(skillName, { description: desc });
+      tg()?.HapticFeedback?.notificationOccurred("success");
       setSkill({ ...skill, description: desc });
     } catch {
+      tg()?.HapticFeedback?.notificationOccurred("error");
       setDesc(skill.description);
     } finally {
       setSavingDesc(false);
@@ -131,10 +166,12 @@ function LocalSkillDetail({
     const next = !alwaysOn;
     setAlwaysOn(next);
     setSavingToggle(true);
+    tg()?.HapticFeedback?.impactOccurred("light");
     try {
       await updateSkill(skillName, { always_on: next });
       setSkill({ ...skill, always_on: next });
     } catch {
+      tg()?.HapticFeedback?.notificationOccurred("error");
       setAlwaysOn(!next);
     } finally {
       setSavingToggle(false);
@@ -145,12 +182,20 @@ function LocalSkillDetail({
     setDeleting(true);
     try {
       await deleteSkill(skillName);
+      tg()?.HapticFeedback?.notificationOccurred("success");
       onDeleted();
     } catch (e) {
-      alert(`Failed to delete: ${e}`);
+      tg()?.HapticFeedback?.notificationOccurred("error");
+      tg()?.showAlert(errorMessage(e));
       setDeleting(false);
-      setConfirmDelete(false);
     }
+  }
+
+  function confirmDelete() {
+    tg()?.HapticFeedback?.impactOccurred("light");
+    tg()?.showConfirm(`Delete "${skill?.name}"?`, (ok: boolean) => {
+      if (ok) handleDelete();
+    });
   }
 
   if (loading) return <LoadingScreen onBack={onBack} title={skillName} />;
@@ -159,7 +204,7 @@ function LocalSkillDetail({
   return (
     <div className="screen">
       <div className="page-header">
-        <button className="back-btn" onClick={onBack}>
+        <button className="back-btn" onClick={safeBack}>
           <ChevronLeft size={20} />
           Back
         </button>
@@ -180,7 +225,7 @@ function LocalSkillDetail({
         )}
       </div>
 
-      <div className="detail-content">
+      <div className="detail-content" ref={scrollRef}>
         <div className="settings-section">
           <div className="settings-section-label">Description</div>
           <div className="settings-card">
@@ -221,10 +266,15 @@ function LocalSkillDetail({
           <div className="settings-section-label">Instructions</div>
           {editing ? (
             <textarea
+              ref={textareaRef}
               className="edit-textarea"
               value={editBody}
-              onChange={(e) => setEditBody(e.target.value)}
-              rows={16}
+              onChange={(e) => {
+                setEditBody(e.target.value);
+                const el = e.currentTarget;
+                el.style.height = "auto";
+                el.style.height = `${el.scrollHeight}px`;
+              }}
             />
           ) : (
             <div className="markdown-body">
@@ -260,32 +310,11 @@ function LocalSkillDetail({
         )}
 
         <div style={{ padding: "8px 0 40px" }}>
-          <button className="btn-danger" onClick={() => setConfirmDelete(true)}>
-            Delete Skill
+          <button className="btn-danger" onClick={confirmDelete} disabled={deleting}>
+            {deleting ? "Deleting…" : "Delete Skill"}
           </button>
         </div>
       </div>
-
-      {confirmDelete && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3 className="modal-title">Delete "{skill.name}"?</h3>
-            <p className="modal-body">This cannot be undone.</p>
-            <div className="modal-actions">
-              <button
-                className="btn-secondary"
-                onClick={() => setConfirmDelete(false)}
-                disabled={deleting}
-              >
-                Cancel
-              </button>
-              <button className="btn-danger" onClick={handleDelete} disabled={deleting}>
-                {deleting ? "Deleting…" : "Delete"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -309,7 +338,12 @@ function ClawHubSkillDetailPage({
   const [error, setError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installed, setInstalled] = useState(false);
-  const [confirmOverwrite, setConfirmOverwrite] = useState(false);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, []);
 
   useEffect(() => {
     Promise.all([
@@ -320,7 +354,7 @@ function ClawHubSkillDetailPage({
         setDetail(d);
         setBody(b);
       })
-      .catch((e) => setError(String(e)))
+      .catch((e) => setError(errorMessage(e)))
       .finally(() => setLoading(false));
   }, [slug]);
 
@@ -333,12 +367,14 @@ function ClawHubSkillDetailPage({
   async function doInstall() {
     if (!detail) return;
     setInstalling(true);
-    setConfirmOverwrite(false);
     try {
       await installSkill(slug, slug, detail.latestVersion.version);
+      tg()?.HapticFeedback?.notificationOccurred("success");
       setInstalled(true);
+      bumpInstalledVersion();
     } catch (e) {
-      alert(`Install failed: ${e}`);
+      tg()?.HapticFeedback?.notificationOccurred("error");
+      tg()?.showAlert(errorMessage(e));
     } finally {
       setInstalling(false);
     }
@@ -346,7 +382,10 @@ function ClawHubSkillDetailPage({
 
   function handleInstallClick() {
     if (installed) {
-      setConfirmOverwrite(true);
+      tg()?.showConfirm(
+        `Update "${slug}"? Your local edits will be overwritten.`,
+        (ok: boolean) => { if (ok) doInstall(); }
+      );
     } else {
       doInstall();
     }
@@ -370,8 +409,7 @@ function ClawHubSkillDetailPage({
         <h1 style={{ fontSize: 20 }}>{skill.displayName || slug}</h1>
       </div>
 
-      <div className="detail-content">
-        {/* Stats bar */}
+      <div className="detail-content" ref={scrollRef}>
         <div className="ch-stats-bar">
           {stats.downloads > 0 && (
             <span className="ch-stat">
@@ -394,7 +432,6 @@ function ClawHubSkillDetailPage({
           </span>
         </div>
 
-        {/* Meta */}
         <div className="settings-section">
           <div className="settings-card">
             <div className="settings-row">
@@ -414,7 +451,6 @@ function ClawHubSkillDetailPage({
           </div>
         </div>
 
-        {/* Description */}
         {skill.summary && (
           <div className="settings-section">
             <div className="settings-section-label">Description</div>
@@ -426,7 +462,6 @@ function ClawHubSkillDetailPage({
           </div>
         )}
 
-        {/* Body */}
         {body && (
           <div className="settings-section">
             <div className="settings-section-label">Instructions</div>
@@ -436,7 +471,6 @@ function ClawHubSkillDetailPage({
           </div>
         )}
 
-        {/* Files declared in frontmatter */}
         {files.length > 0 && (
           <div className="settings-section">
             <div className="settings-section-label">Files</div>
@@ -464,7 +498,6 @@ function ClawHubSkillDetailPage({
           </div>
         )}
 
-        {/* Install button */}
         <div style={{ padding: "8px 0 40px" }}>
           <button
             className="btn-primary"
@@ -480,25 +513,6 @@ function ClawHubSkillDetailPage({
           </button>
         </div>
       </div>
-
-      {confirmOverwrite && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3 className="modal-title">Update "{slug}"?</h3>
-            <p className="modal-body">
-              This will overwrite your local copy. Any edits you made will be lost.
-            </p>
-            <div className="modal-actions">
-              <button className="btn-secondary" onClick={() => setConfirmOverwrite(false)}>
-                Cancel
-              </button>
-              <button className="btn-primary" onClick={doInstall} disabled={installing}>
-                {installing ? "Updating…" : "Update"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -557,12 +571,29 @@ function _inferFiles(raw: string): string[] {
   const end = raw.indexOf("\n---", 3);
   if (end === -1) return [];
   const fm = raw.slice(3, end);
-  const matches = fm.match(/files:\s*\[([^\]]*)\]/);
-  if (!matches) return [];
-  return matches[1]
-    .split(",")
-    .map((s) => s.trim().replace(/['"]/g, ""))
-    .filter(Boolean);
+
+  // Inline form: files: [a.py, b.md]
+  const inline = fm.match(/^files:\s*\[([^\]]*)\]/m);
+  if (inline) {
+    return inline[1]
+      .split(",")
+      .map((s) => s.trim().replace(/['"]/g, ""))
+      .filter(Boolean);
+  }
+
+  // Block form:
+  //   files:
+  //     - a.py
+  //     - b.md
+  const block = fm.match(/^files:\s*\n((?:[ \t]+-[^\n]*\n?)+)/m);
+  if (block) {
+    return block[1]
+      .split("\n")
+      .map((l) => l.replace(/^[ \t]+-\s*/, "").trim().replace(/['"]/g, ""))
+      .filter(Boolean);
+  }
+
+  return [];
 }
 
 function _fmt(n: number): string {

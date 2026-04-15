@@ -110,16 +110,17 @@ input, select, textarea {
 /* ─── Home screen ────────────────────────────────────────────────────────── */
 
 .home-screen {
-  padding: 20px 16px 32px;
+  padding: 56px 16px 32px;
   flex: 1;
 }
 
 .home-greeting {
   margin-bottom: 28px;
+  text-align: center;
 }
 
 .home-greeting h1 {
-  margin: 0 0 4px;
+  margin: 0;
   font-size: 32px;
   font-weight: 800;
   letter-spacing: -0.8px;
@@ -127,12 +128,6 @@ input, select, textarea {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-}
-
-.home-greeting p {
-  margin: 0;
-  color: var(--hint);
-  font-size: 15px;
 }
 
 .tile-grid {
@@ -1008,9 +1003,10 @@ input, select, textarea {
   font-family: "SF Mono", "Fira Code", monospace;
   color: var(--text);
   outline: none;
-  resize: vertical;
+  resize: none;
   line-height: 1.6;
   min-height: 200px;
+  overflow-y: hidden;
 }
 
 .edit-textarea--full {
@@ -1065,9 +1061,23 @@ input, select, textarea {
 .file-content {
   flex: 1;
   overflow-y: auto;
+  overflow-x: auto;
   background: var(--secondary-bg);
   border-top: 1px solid var(--divider);
   border-bottom: 1px solid var(--divider);
+}
+
+.file-content-plain {
+  flex: 1;
+  margin: 0;
+  padding: 16px;
+  font-size: 13px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  color: var(--text);
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre;
+  word-break: normal;
 }
 
 /* ─── Moderation badge ───────────────────────────────────────────────────── */
@@ -1158,4 +1168,9 @@ input, select, textarea {
 .modal-actions {
   display: flex;
   gap: 10px;
+}
+
+/* Hide in-app back buttons when Telegram's native BackButton is active */
+body.in-telegram .back-btn {
+  display: none;
 }

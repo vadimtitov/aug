@@ -51,7 +51,6 @@ export function HomePage({ onNavigate }: HomePageProps) {
     <div className="screen home-screen">
       <div className="home-greeting">
         <h1>AUG</h1>
-        <p>Deus Ex Machina</p>
       </div>
 
       <div className="tile-grid">

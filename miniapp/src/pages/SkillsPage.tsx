@@ -13,6 +13,7 @@ import type {
   PageState,
   SkillSummary,
 } from "../types.ts";
+import { onInstalledVersionChange } from "../lib/installedVersion.ts";
 
 interface SkillStats {
   downloads: number;
@@ -20,8 +21,12 @@ interface SkillStats {
   stars: number;
 }
 
-// Shared cache so navigating back doesn't refetch
+// Session-scoped caches — persist across tab switches and back navigation
 const _statsCache = new Map<string, SkillStats>();
+let _trendingCache: { items: ClawHubSkillCard[]; nextCursor: string | null } | null = null;
+let _lastTab: Tab = "mine";
+let _lastQuery = "";
+let _lastSearchResults: ClawHubSearchResult[] = [];
 
 type Tab = "mine" | "clawhub";
 
@@ -31,7 +36,7 @@ interface Props {
 }
 
 export function SkillsPage({ onBack, onNavigate }: Props) {
-  const [tab, setTab] = useState<Tab>("mine");
+  const [tab, setTab] = useState<Tab>(_lastTab);
 
   return (
     <div className="screen">
@@ -46,13 +51,13 @@ export function SkillsPage({ onBack, onNavigate }: Props) {
       <div className="tab-bar">
         <button
           className={`tab${tab === "mine" ? " tab--active" : ""}`}
-          onClick={() => setTab("mine")}
+          onClick={() => { _lastTab = "mine"; setTab("mine"); }}
         >
           Mine
         </button>
         <button
           className={`tab${tab === "clawhub" ? " tab--active" : ""}`}
-          onClick={() => setTab("clawhub")}
+          onClick={() => { _lastTab = "clawhub"; setTab("clawhub"); }}
         >
           ClawHub
         </button>
@@ -76,11 +81,18 @@ function MineTab({ onNavigate }: { onNavigate: (s: PageState) => void }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  function fetchSkills() {
+    setLoading(true);
     listSkills()
       .then(setSkills)
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    fetchSkills();
+    // Re-fetch whenever a skill is installed from ClawHub
+    return onInstalledVersionChange(fetchSkills);
   }, []);
 
   if (loading) return <LoadingState />;
@@ -130,16 +142,17 @@ function MineTab({ onNavigate }: { onNavigate: (s: PageState) => void }) {
 // ---------------------------------------------------------------------------
 
 function ClawHubTab({ onNavigate }: { onNavigate: (s: PageState) => void }) {
-  const [query, setQuery] = useState("");
-  const [trending, setTrending] = useState<ClawHubSkillCard[]>([]);
-  const [searchResults, setSearchResults] = useState<ClawHubSearchResult[]>([]);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState(_lastQuery);
+  const [trending, setTrending] = useState<ClawHubSkillCard[]>(_trendingCache?.items ?? []);
+  const [searchResults, setSearchResults] = useState<ClawHubSearchResult[]>(_lastSearchResults);
+  const [nextCursor, setNextCursor] = useState<string | null>(_trendingCache?.nextCursor ?? null);
+  const [loading, setLoading] = useState(_trendingCache === null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [installedSlugs, setInstalledSlugs] = useState<Set<string>>(new Set());
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedQuery = useRef(query); // track query at mount to skip re-fetching restored results
 
   useEffect(() => {
     listSkills()
@@ -148,8 +161,10 @@ function ClawHubTab({ onNavigate }: { onNavigate: (s: PageState) => void }) {
   }, []);
 
   useEffect(() => {
+    if (_trendingCache) return;
     clawhubList()
       .then((res: ClawHubListResponse) => {
+        _trendingCache = { items: res.items, nextCursor: res.nextCursor };
         setTrending(res.items);
         setNextCursor(res.nextCursor);
       })
@@ -160,16 +175,18 @@ function ClawHubTab({ onNavigate }: { onNavigate: (s: PageState) => void }) {
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
     if (!query.trim()) {
-      setSearchResults([]);
+      if (query !== mountedQuery.current) setSearchResults([]);
       return;
     }
+    // Skip re-fetching on mount if we restored previous results for this query
+    if (query === mountedQuery.current && _lastSearchResults.length > 0) return;
     searchTimer.current = setTimeout(() => {
       setSearching(true);
       clawhubSearch(query.trim())
-        .then(setSearchResults)
-        .catch(() => setSearchResults([]))
+        .then((r) => { _lastSearchResults = r; setSearchResults(r); })
+        .catch(() => { _lastSearchResults = []; setSearchResults([]); })
         .finally(() => setSearching(false));
-    }, 400);
+    }, 250);
     return () => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
@@ -180,7 +197,9 @@ function ClawHubTab({ onNavigate }: { onNavigate: (s: PageState) => void }) {
     setLoadingMore(true);
     clawhubList(nextCursor)
       .then((res: ClawHubListResponse) => {
-        setTrending((prev) => [...prev, ...res.items]);
+        const newItems = [...trending, ...res.items];
+        _trendingCache = { items: newItems, nextCursor: res.nextCursor };
+        setTrending(newItems);
         setNextCursor(res.nextCursor);
       })
       .catch(() => {})
@@ -197,10 +216,10 @@ function ClawHubTab({ onNavigate }: { onNavigate: (s: PageState) => void }) {
           className="search-bar"
           placeholder="Search skills…"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => { _lastQuery = e.target.value; setQuery(e.target.value); }}
         />
         {query && (
-          <button className="search-clear" onClick={() => setQuery("")}>
+          <button className="search-clear" onClick={() => { _lastQuery = ""; setQuery(""); }}>
             <X size={14} color="var(--hint)" />
           </button>
         )}
@@ -274,24 +293,35 @@ function ClawHubCard({
   onNavigate: (s: PageState) => void;
 }) {
   const [stats, setStats] = useState<SkillStats | null>(_statsCache.get(skill.name) ?? null);
+  const cardRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    if (_statsCache.has(skill.name)) return;
-    clawhubGetSkill(skill.name)
-      .then((d) => {
-        const s: SkillStats = {
-          downloads: d.skill.stats.downloads,
-          installsCurrent: d.skill.stats.installsCurrent,
-          stars: d.skill.stats.stars,
-        };
-        _statsCache.set(skill.name, s);
-        setStats(s);
-      })
-      .catch(() => {});
+    if (_statsCache.has(skill.name) || !cardRef.current) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) return;
+        observer.disconnect();
+        clawhubGetSkill(skill.name)
+          .then((d) => {
+            const s: SkillStats = {
+              downloads: d.skill.stats.downloads,
+              installsCurrent: d.skill.stats.installsCurrent,
+              stars: d.skill.stats.stars,
+            };
+            _statsCache.set(skill.name, s);
+            setStats(s);
+          })
+          .catch(() => {});
+      },
+      { threshold: 0.1, rootMargin: "0px 0px 100px 0px" }
+    );
+    observer.observe(cardRef.current);
+    return () => observer.disconnect();
   }, [skill.name]);
 
   return (
     <button
+      ref={cardRef}
       className="skill-card"
       onClick={() =>
         onNavigate({
@@ -352,24 +382,35 @@ function SearchResultCard({
 }) {
   const [stats, setStats] = useState<SkillStats | null>(_statsCache.get(result.slug) ?? null);
   const ago = result.updatedAt ? _timeAgo(result.updatedAt) : null;
+  const cardRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    if (_statsCache.has(result.slug)) return;
-    clawhubGetSkill(result.slug)
-      .then((d) => {
-        const s: SkillStats = {
-          downloads: d.skill.stats.downloads,
-          installsCurrent: d.skill.stats.installsCurrent,
-          stars: d.skill.stats.stars,
-        };
-        _statsCache.set(result.slug, s);
-        setStats(s);
-      })
-      .catch(() => {});
+    if (_statsCache.has(result.slug) || !cardRef.current) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) return;
+        observer.disconnect();
+        clawhubGetSkill(result.slug)
+          .then((d) => {
+            const s: SkillStats = {
+              downloads: d.skill.stats.downloads,
+              installsCurrent: d.skill.stats.installsCurrent,
+              stars: d.skill.stats.stars,
+            };
+            _statsCache.set(result.slug, s);
+            setStats(s);
+          })
+          .catch(() => {});
+      },
+      { threshold: 0.1, rootMargin: "0px 0px 100px 0px" }
+    );
+    observer.observe(cardRef.current);
+    return () => observer.disconnect();
   }, [result.slug]);
 
   return (
     <button
+      ref={cardRef}
       className="skill-card"
       onClick={() =>
         onNavigate({
