@@ -1003,9 +1003,10 @@ input, select, textarea {
   font-family: "SF Mono", "Fira Code", monospace;
   color: var(--text);
   outline: none;
-  resize: vertical;
+  resize: none;
   line-height: 1.6;
   min-height: 200px;
+  overflow-y: hidden;
 }
 
 .edit-textarea--full {
@@ -1060,9 +1061,23 @@ input, select, textarea {
 .file-content {
   flex: 1;
   overflow-y: auto;
+  overflow-x: auto;
   background: var(--secondary-bg);
   border-top: 1px solid var(--divider);
   border-bottom: 1px solid var(--divider);
+}
+
+.file-content-plain {
+  flex: 1;
+  margin: 0;
+  padding: 16px;
+  font-size: 13px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  color: var(--text);
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre;
+  word-break: normal;
 }
 
 /* ─── Moderation badge ───────────────────────────────────────────────────── */
@@ -1153,4 +1168,9 @@ input, select, textarea {
 .modal-actions {
   display: flex;
   gap: 10px;
+}
+
+/* Hide in-app back buttons when Telegram's native BackButton is active */
+body.in-telegram .back-btn {
+  display: none;
 }

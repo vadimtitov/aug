@@ -1,17 +1,25 @@
-import { useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { ChevronLeft, Pencil, Check, X } from "lucide-react";
 import { Light as SyntaxHighlighter } from "react-syntax-highlighter";
 import python from "react-syntax-highlighter/dist/esm/languages/hljs/python";
 import bash from "react-syntax-highlighter/dist/esm/languages/hljs/bash";
 import javascript from "react-syntax-highlighter/dist/esm/languages/hljs/javascript";
+import typescript from "react-syntax-highlighter/dist/esm/languages/hljs/typescript";
 import markdown from "react-syntax-highlighter/dist/esm/languages/hljs/markdown";
+import yaml from "react-syntax-highlighter/dist/esm/languages/hljs/yaml";
+import json from "react-syntax-highlighter/dist/esm/languages/hljs/json";
 import { atomOneDark } from "react-syntax-highlighter/dist/esm/styles/hljs";
 import { clawhubGetFile, deleteSkillFile, getSkillFile, updateSkillFile } from "../api.ts";
+import { errorMessage, tg } from "../lib/tg.ts";
+import { BackHandlerContext } from "../lib/backHandler.ts";
 
 SyntaxHighlighter.registerLanguage("python", python);
 SyntaxHighlighter.registerLanguage("bash", bash);
 SyntaxHighlighter.registerLanguage("javascript", javascript);
+SyntaxHighlighter.registerLanguage("typescript", typescript);
 SyntaxHighlighter.registerLanguage("markdown", markdown);
+SyntaxHighlighter.registerLanguage("yaml", yaml);
+SyntaxHighlighter.registerLanguage("json", json);
 
 interface Props {
   skillName: string;
@@ -31,12 +39,29 @@ export function FileViewerPage({ skillName, filePath, source, slug, onBack, onDe
   const [editContent, setEditContent] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   const fileName = filePath.split("/").pop() ?? filePath;
   const language = _detectLanguage(filePath);
   const readonly = source === "clawhub";
+
+  const backHandler = useContext(BackHandlerContext);
+
+  const safeBack = useCallback(() => {
+    if (!editing) { onBack(); return; }
+    tg()?.showConfirm("Discard unsaved changes?", (ok: boolean) => {
+      if (ok) onBack();
+    });
+  }, [editing, onBack]);
+
+  useEffect(() => {
+    backHandler.current = safeBack;
+    return () => { backHandler.current = onBack; };
+  }, [safeBack, onBack, backHandler]);
+
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, []);
 
   useEffect(() => {
     const fetcher =
@@ -49,7 +74,7 @@ export function FileViewerPage({ skillName, filePath, source, slug, onBack, onDe
         setContent(c);
         setEditContent(c);
       })
-      .catch((e) => setError(String(e)))
+      .catch((e) => setError(errorMessage(e)))
       .finally(() => setLoading(false));
   }, [skillName, filePath, source, slug]);
 
@@ -67,10 +92,12 @@ export function FileViewerPage({ skillName, filePath, source, slug, onBack, onDe
     setSaving(true);
     try {
       await updateSkillFile(skillName, filePath, editContent);
+      tg()?.HapticFeedback?.notificationOccurred("success");
       setContent(editContent);
       setEditing(false);
     } catch (e) {
-      alert(`Failed to save: ${e}`);
+      tg()?.HapticFeedback?.notificationOccurred("error");
+      tg()?.showAlert(errorMessage(e));
     } finally {
       setSaving(false);
     }
@@ -80,18 +107,26 @@ export function FileViewerPage({ skillName, filePath, source, slug, onBack, onDe
     setDeleting(true);
     try {
       await deleteSkillFile(skillName, filePath);
+      tg()?.HapticFeedback?.notificationOccurred("success");
       onDeleted();
     } catch (e) {
-      alert(`Failed to delete: ${e}`);
+      tg()?.HapticFeedback?.notificationOccurred("error");
+      tg()?.showAlert(errorMessage(e));
       setDeleting(false);
-      setConfirmDelete(false);
     }
+  }
+
+  function confirmDelete() {
+    tg()?.HapticFeedback?.impactOccurred("light");
+    tg()?.showConfirm(`Delete "${fileName}"?`, (ok: boolean) => {
+      if (ok) handleDelete();
+    });
   }
 
   return (
     <div className="screen">
       <div className="page-header">
-        <button className="back-btn" onClick={onBack}>
+        <button className="back-btn" onClick={safeBack}>
           <ChevronLeft size={20} />
           Back
         </button>
@@ -135,52 +170,34 @@ export function FileViewerPage({ skillName, filePath, source, slug, onBack, onDe
             />
           ) : (
             <div className="file-content">
-              <SyntaxHighlighter
-                language={language}
-                style={atomOneDark}
-                customStyle={{
-                  background: "transparent",
-                  padding: "16px",
-                  margin: 0,
-                  fontSize: 13,
-                  lineHeight: 1.6,
-                }}
-                wrapLongLines
-              >
-                {content}
-              </SyntaxHighlighter>
+              {language === "plaintext" ? (
+                <pre className="file-content-plain">{content}</pre>
+              ) : (
+                <SyntaxHighlighter
+                  language={language}
+                  style={atomOneDark}
+                  customStyle={{
+                    background: "transparent",
+                    padding: "16px",
+                    margin: 0,
+                    fontSize: 13,
+                    lineHeight: 1.6,
+                  }}
+                >
+                  {content}
+                </SyntaxHighlighter>
+              )}
             </div>
           )}
 
           {!readonly && !editing && (
             <div style={{ padding: "16px 16px 40px" }}>
-              <button className="btn-danger" onClick={() => setConfirmDelete(true)}>
-                Delete File
+              <button className="btn-danger" onClick={confirmDelete} disabled={deleting}>
+                {deleting ? "Deleting…" : "Delete File"}
               </button>
             </div>
           )}
         </>
-      )}
-
-      {confirmDelete && (
-        <div className="modal-overlay">
-          <div className="modal">
-            <h3 className="modal-title">Delete "{fileName}"?</h3>
-            <p className="modal-body">This cannot be undone.</p>
-            <div className="modal-actions">
-              <button
-                className="btn-secondary"
-                onClick={() => setConfirmDelete(false)}
-                disabled={deleting}
-              >
-                Cancel
-              </button>
-              <button className="btn-danger" onClick={handleDelete} disabled={deleting}>
-                {deleting ? "Deleting…" : "Delete"}
-              </button>
-            </div>
-          </div>
-        </div>
       )}
     </div>
   );
@@ -193,8 +210,11 @@ function _detectLanguage(path: string): string {
     sh: "bash",
     bash: "bash",
     js: "javascript",
-    ts: "javascript",
+    ts: "typescript",
     md: "markdown",
+    yaml: "yaml",
+    yml: "yaml",
+    json: "json",
   };
   return map[ext] ?? "plaintext";
 }
