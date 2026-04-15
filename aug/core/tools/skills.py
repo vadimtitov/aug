@@ -3,11 +3,10 @@
 import shutil
 from pathlib import Path
 
-import yaml
 from langchain_core.tools import tool
 
 from aug.core.tools.output import FileAttachment, ToolOutput
-from aug.utils.skills import ALWAYS_ON_MAX_CHARS, SKILLS_DIR, validate_name
+from aug.utils.skills import ALWAYS_ON_MAX_CHARS, SKILLS_DIR, validate_name, write_skill_md
 
 
 @tool
@@ -65,14 +64,8 @@ def save_skill(
 
     skill_dir = SKILLS_DIR / name
     skill_dir.mkdir(parents=True, exist_ok=True)
-
-    frontmatter: dict = {"name": name, "description": description}
-    if always_on:
-        frontmatter["metadata"] = {"always_on": "true"}
-
-    content = f"---\n{yaml.dump(frontmatter, default_flow_style=False).strip()}\n---\n\n{body}\n"
-    skill_md = skill_dir / "SKILL.md"
-    skill_md.write_text(content)
+    write_skill_md(skill_dir, name, description, body, always_on)
+    content = (skill_dir / "SKILL.md").read_text()
     output = ToolOutput(
         text=f"Skill '{name}' saved.",
         attachments=[FileAttachment(data=content.encode(), filename="SKILL.md")],

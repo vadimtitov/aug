@@ -24,7 +24,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from aug.api.interfaces.telegram import TelegramInterface
-from aug.api.routers import auth, chat, files, gmail_auth, settings, threads
+from aug.api.routers import auth, chat, files, gmail_auth, settings, skills, threads
 from aug.config import get_settings
 from aug.core.memory import init_memory_files, start_consolidation_scheduler
 from aug.utils.db import create_pool
@@ -170,6 +170,7 @@ def create_app() -> FastAPI:
     app.include_router(files.router)
     app.include_router(gmail_auth.router)
     app.include_router(settings.router)
+    app.include_router(skills.router)
 
     return app
 

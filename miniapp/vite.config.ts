@@ -13,6 +13,7 @@ export default defineConfig({
       '/settings': 'http://aug:8000',
       '/models': 'http://aug:8000',
       '/health': 'http://aug:8000',
+      '/skills': 'http://aug:8000',
     },
   },
 })

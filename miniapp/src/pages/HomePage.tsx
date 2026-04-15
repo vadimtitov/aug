@@ -1,4 +1,4 @@
-import { Settings, Globe, Bot, Cpu } from "lucide-react";
+import { Settings, Globe, Bot, Wand2 } from "lucide-react";
 
 interface Tile {
   id: string;
@@ -10,7 +10,7 @@ interface Tile {
 }
 
 interface HomePageProps {
-  onNavigate: (page: "settings") => void;
+  onNavigate: (page: "settings" | "skills") => void;
 }
 
 export function HomePage({ onNavigate }: HomePageProps) {
@@ -24,6 +24,14 @@ export function HomePage({ onNavigate }: HomePageProps) {
       onClick: () => onNavigate("settings"),
     },
     {
+      id: "skills",
+      name: "Skills",
+      desc: "Manage & install skills",
+      icon: <Wand2 size={24} color="#f59e0b" strokeWidth={2} />,
+      enabled: true,
+      onClick: () => onNavigate("skills"),
+    },
+    {
       id: "browser",
       name: "Browser",
       desc: "Coming soon",
@@ -35,13 +43,6 @@ export function HomePage({ onNavigate }: HomePageProps) {
       name: "Chat",
       desc: "Coming soon",
       icon: <Bot size={24} color="#f59e0b" strokeWidth={2} />,
-      enabled: false,
-    },
-    {
-      id: "models",
-      name: "Models",
-      desc: "Coming soon",
-      icon: <Cpu size={24} color="#f59e0b" strokeWidth={2} />,
       enabled: false,
     },
   ];
