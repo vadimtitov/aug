@@ -32,6 +32,15 @@ class Skill:
     always_on: bool = False
 
 
+@dataclass(frozen=True)
+class SkillDetail:
+    name: str
+    description: str
+    body: str
+    always_on: bool
+    files: list[str]
+
+
 @dataclass
 class SkillsIndex:
     always_on: list[Skill] = field(default_factory=list)
@@ -54,16 +63,17 @@ def validate_name(name: str) -> str | None:
     return None
 
 
-def load_skills() -> SkillsIndex:
-    """Read all skills from SKILLS_DIR and return categorised index.
+def load_skills(skills_dir: Path | None = None) -> SkillsIndex:
+    """Read all skills from skills_dir (defaults to SKILLS_DIR) and return categorised index.
 
     Malformed skill directories are skipped with a warning — never crash the prompt builder.
     """
+    directory = skills_dir or SKILLS_DIR
     index = SkillsIndex()
-    if not SKILLS_DIR.exists():
+    if not directory.exists():
         return index
 
-    for skill_dir in sorted(SKILLS_DIR.iterdir()):
+    for skill_dir in sorted(directory.iterdir()):
         if not skill_dir.is_dir():
             continue
         skill = _load_skill(skill_dir)
@@ -93,6 +103,46 @@ def build_skills_prompt(index: SkillsIndex) -> str:
         parts.append(f"Available skills — call get_skill(name) to load full instructions:\n{lines}")
 
     return "\n\n".join(parts)
+
+
+def write_skill_md(
+    skill_dir: Path, name: str, description: str, body: str, always_on: bool
+) -> None:
+    """Assemble and write SKILL.md from structured fields."""
+    frontmatter: dict = {"name": name, "description": description}
+    if always_on:
+        frontmatter["metadata"] = {"always_on": "true"}
+    content = f"---\n{yaml.dump(frontmatter, default_flow_style=False).strip()}\n---\n\n{body}\n"
+    (skill_dir / "SKILL.md").write_text(content)
+
+
+def list_skill_files(skill_dir: Path) -> list[str]:
+    """List supporting files relative to skill_dir, excluding SKILL.md."""
+    result = []
+    for f in sorted(skill_dir.rglob("*")):
+        if f.is_file() and f.name != "SKILL.md":
+            result.append(str(f.relative_to(skill_dir)))
+    return result
+
+
+def load_skill(name: str, skills_dir: Path | None = None) -> SkillDetail | None:
+    """Load a single skill by name with its supporting file list.
+
+    Returns None if the skill does not exist or fails to parse.
+    """
+    directory = skills_dir or SKILLS_DIR
+    skill_dir = directory / name
+    skill = _load_skill(skill_dir)
+    if skill is None:
+        return None
+    files = list_skill_files(skill_dir)
+    return SkillDetail(
+        name=skill.name,
+        description=skill.description,
+        body=skill.body,
+        always_on=skill.always_on,
+        files=files,
+    )
 
 
 # ---------------------------------------------------------------------------

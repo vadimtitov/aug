@@ -3,13 +3,26 @@ import { retrieveRawInitData } from "@telegram-apps/sdk-react";
 import { initAuth } from "./api.ts";
 import { HomePage } from "./pages/HomePage.tsx";
 import { SettingsPage } from "./pages/SettingsPage.tsx";
+import { SkillsPage } from "./pages/SkillsPage.tsx";
+import { SkillDetailPage } from "./pages/SkillDetailPage.tsx";
+import { FileViewerPage } from "./pages/FileViewerPage.tsx";
+import type { PageState } from "./types.ts";
 
 type AuthState = "pending" | "ready" | "error";
-type Page = "home" | "settings";
 
 export default function App() {
   const [authState, setAuthState] = useState<AuthState>("pending");
-  const [page, setPage] = useState<Page>("home");
+  const [stack, setStack] = useState<PageState[]>([{ page: "home" }]);
+
+  const current = stack[stack.length - 1];
+
+  function navigate(state: PageState) {
+    setStack((s) => [...s, state]);
+  }
+
+  function goBack() {
+    setStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
+  }
 
   useEffect(() => {
     async function authenticate() {
@@ -44,13 +57,46 @@ export default function App() {
     );
   }
 
-  if (page === "settings") {
-    return <SettingsPage onBack={() => setPage("home")} />;
+  if (current.page === "settings") {
+    return <SettingsPage onBack={goBack} />;
+  }
+
+  if (current.page === "skills") {
+    return <SkillsPage onBack={goBack} onNavigate={navigate} />;
+  }
+
+  if (current.page === "skill-detail") {
+    return (
+      <SkillDetailPage
+        skillName={current.skillName}
+        source={current.source}
+        slug={current.source === "clawhub" ? current.slug : undefined}
+        onBack={goBack}
+        onNavigate={navigate}
+        onDeleted={goBack}
+      />
+    );
+  }
+
+  if (current.page === "file-viewer") {
+    return (
+      <FileViewerPage
+        skillName={current.skillName}
+        filePath={current.filePath}
+        source={current.source}
+        slug={current.source === "clawhub" ? current.slug : undefined}
+        onBack={goBack}
+        onDeleted={goBack}
+      />
+    );
   }
 
   return (
     <HomePage
-      onNavigate={(dest) => setPage(dest)}
+      onNavigate={(dest) => {
+        if (dest === "settings") navigate({ page: "settings" });
+        if (dest === "skills") navigate({ page: "skills" });
+      }}
     />
   );
 }
