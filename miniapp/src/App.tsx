@@ -57,7 +57,7 @@ export default function App() {
   }, [stack.length]);
 
   useEffect(() => {
-    tg()?.requestFullscreen?.();
+    tg()?.expand?.();
     tg()?.disableVerticalSwipes?.();
     if (isInTelegram()) document.body.classList.add("in-telegram");
   }, []);

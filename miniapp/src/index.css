@@ -32,7 +32,7 @@
   --glass-border: rgba(255, 255, 255, 0.08);
 }
 
-html, body, #root {
+html, body {
   height: 100%;
   margin: 0;
   padding: 0;
@@ -46,7 +46,23 @@ body {
   font-size: 16px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  /* Prevent body-level scroll so Telegram never sees scrollY=0 and
+     intercepts the gesture as a "collapse sheet" command. */
+  overflow: hidden;
+}
+
+/* Sticky-app pattern: all scrolling happens inside #root, not on body.
+   overscroll-behavior: contain stops scroll from propagating to Telegram's
+   native BottomSheet handler.
+   The min-height: calc(100% + 1px) on .screen keeps scrollY > 0 inside
+   this container at all times, which is the final line of defence. */
+#root {
+  position: absolute;
+  inset: 0;
   overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 button {
@@ -64,7 +80,7 @@ input, select, textarea {
 /* ─── Screen layout ─────────────────────────────────────────────────────── */
 
 .screen {
-  min-height: 100%;
+  min-height: calc(100% + 1px); /* keep scrollY > 0 inside #root at all times */
   display: flex;
   flex-direction: column;
 }
