@@ -25,6 +25,12 @@ export default function App() {
   }
 
   useEffect(() => {
+    // Disable swipe-to-close so scrollable content doesn't trigger app dismissal.
+    // The native close button is always available in full-screen mode.
+    window.Telegram?.WebApp?.disableVerticalSwipes?.();
+  }, []);
+
+  useEffect(() => {
     async function authenticate() {
       try {
         const initDataRaw = retrieveRawInitData();

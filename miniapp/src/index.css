@@ -110,16 +110,17 @@ input, select, textarea {
 /* ─── Home screen ────────────────────────────────────────────────────────── */
 
 .home-screen {
-  padding: 20px 16px 32px;
+  padding: 56px 16px 32px;
   flex: 1;
 }
 
 .home-greeting {
   margin-bottom: 28px;
+  text-align: center;
 }
 
 .home-greeting h1 {
-  margin: 0 0 4px;
+  margin: 0;
   font-size: 32px;
   font-weight: 800;
   letter-spacing: -0.8px;
@@ -127,12 +128,6 @@ input, select, textarea {
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
-}
-
-.home-greeting p {
-  margin: 0;
-  color: var(--hint);
-  font-size: 15px;
 }
 
 .tile-grid {
