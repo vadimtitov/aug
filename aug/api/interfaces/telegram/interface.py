@@ -577,7 +577,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     @restricted
     async def _handle_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        stopped = self.stop_run(get_thread_id(chat_id))
+        stopped = self.stop_run(get_thread_id(chat_id, update.effective_message.message_thread_id))  # type: ignore[union-attr]
         msg = "Stopping..." if stopped else "Nothing is running."
         await update.message.reply_text(msg)  # type: ignore[union-attr]
 
@@ -686,7 +686,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         state = AgentState(
             messages=[],
-            thread_id=get_thread_id(chat_id),
+            thread_id=get_thread_id(chat_id, update.effective_message.message_thread_id),  # type: ignore[union-attr]
             interface="telegram",
         )
         prompt_text = build_system_prompt(state)
@@ -702,7 +702,8 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         )
         await update.message.reply_text("🗜 Compacting conversation…")  # type: ignore[union-attr]
         try:
-            ran = await self._execute_compact(get_thread_id(chat_id), agent_version)
+            topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
+            ran = await self._execute_compact(get_thread_id(chat_id, topic_id), agent_version)
             await update.message.reply_text("✅ Done." if ran else "Nothing to compact.")  # type: ignore[union-attr]
         except ValueError as e:
             await update.message.reply_text(str(e))  # type: ignore[union-attr]

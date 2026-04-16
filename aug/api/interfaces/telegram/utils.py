@@ -34,7 +34,7 @@ def escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def get_thread_id(chat_id: int, topic_id: int | None = None) -> str:
+def get_thread_id(chat_id: int, topic_id: int | None) -> str:
     if topic_id is not None:
         return f"tg-{chat_id}-topic-{topic_id}"
     session = load_state().telegram.chats.get(str(chat_id), TelegramChatState()).session
