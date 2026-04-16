@@ -408,7 +408,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         """Send an approval prompt with inline buttons to the user."""
         msg = context.effective_message  # type: ignore[union-attr]
         chat_id = context.effective_chat.id  # type: ignore[union-attr]
-        thread_id = get_thread_id(chat_id)
+        thread_id = get_thread_id(chat_id, topic_id=msg.message_thread_id)  # type: ignore[union-attr]
         agent_version = (
             load_settings().telegram.chats.get(str(chat_id), TelegramChatSettings()).agent
         )
@@ -447,12 +447,14 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(buttons),
                 link_preview_options=_NO_PREVIEW,
+                do_quote=False,
             )
         except Exception:
             logger.warning("approval_prompt_html_failed, retrying plain", exc_info=True)
             await msg.reply_text(  # type: ignore[union-attr]
                 f"⚠️ Approval required\n{request.description}",
                 reply_markup=InlineKeyboardMarkup(buttons),
+                do_quote=False,
             )
 
     # ------------------------------------------------------------------
