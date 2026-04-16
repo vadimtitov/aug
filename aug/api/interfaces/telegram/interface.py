@@ -33,7 +33,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ChatAction, MessageLimit
-from telegram.error import BadRequest, RetryAfter
+from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -44,6 +44,7 @@ from telegram.ext import (
     TypeHandler,
     filters,
 )
+from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt
 
 from aug.api.interfaces.base import (
     BaseInterface,
@@ -252,14 +253,14 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                         accumulated_text += delta
                         now = asyncio.get_running_loop().time()
                         if stream_msg is None:
-                            stream_msg = await msg.reply_text(  # type: ignore[union-attr]
+                            stream_msg = await _reply_text_with_retry(
+                                msg,  # type: ignore[arg-type]
                                 accumulated_text,
                                 link_preview_options=_NO_PREVIEW,
                                 disable_notification=True,
-                                do_quote=False,
                             )
                             last_stream_edit = now
-                        elif now - last_stream_edit >= 0.3 and len(accumulated_text) <= _TG_MAX_LEN:
+                        elif now - last_stream_edit >= 1.0 and len(accumulated_text) <= _TG_MAX_LEN:
                             try:
                                 await stream_msg.edit_text(
                                     accumulated_text, link_preview_options=_NO_PREVIEW
@@ -268,7 +269,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                             except RetryAfter as e:
                                 last_stream_edit = now + e.retry_after
                             except Exception:
-                                pass
+                                logger.debug("stream edit failed", exc_info=True)
                     case ToolStartEvent(
                         run_id=run_id, tool_name=tool_name, args=args, parent_ids=parent_ids
                     ):
@@ -288,8 +289,8 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                             tool_msgs[run_id] = (tool_name, args, tool_msg, spin, step_holder)
                             for pid in parent_ids:
                                 progress_index[pid] = run_id
-                        except RetryAfter:
-                            pass  # flood control — skip status message, run continues
+                        except (RetryAfter, TimedOut, NetworkError):
+                            logger.debug("tool status message skipped due to flood control")
                         if stream_msg is not None and accumulated_text:
                             try:
                                 await stream_msg.edit_text(
@@ -298,7 +299,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                                     link_preview_options=_NO_PREVIEW,
                                 )
                             except Exception:
-                                pass
+                                logger.debug("stream msg edit on tool start failed", exc_info=True)
                         accumulated_text = ""
                         stream_msg = None
                     case ToolProgressEvent(parent_ids=parent_ids, step=step) if step:
@@ -317,7 +318,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                                 do_quote=False,
                             )
                         except Exception:
-                            pass
+                            logger.debug("status event send failed", exc_info=True)
                     case ToolEndEvent(
                         run_id=run_id, tool_name=tool_name, output=output, error=error
                     ):
@@ -335,7 +336,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                                     link_preview_options=_NO_PREVIEW,
                                 )
                             except Exception:
-                                pass
+                                logger.debug("tool end edit failed", exc_info=True)
                             if isinstance(output, ToolOutput) and output.attachments:
                                 for attachment in output.attachments:
                                     await _send_attachment(msg, attachment)  # type: ignore[arg-type]
@@ -345,38 +346,29 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                 for i, chunk in enumerate(chunks):
                     html = _to_html(chunk)
                     is_last = i == len(chunks) - 1
+                    if i == 0 and stream_msg is not None:
+                        # Delete the silent intermediate message and send a fresh
+                        # one so the user gets exactly one notification per response.
+                        try:
+                            await stream_msg.delete()  # type: ignore[union-attr]
+                        except Exception:
+                            logger.debug("stream msg delete failed", exc_info=True)
+                        stream_msg = None
                     try:
-                        if i == 0 and stream_msg is not None:
-                            # Delete the silent intermediate message and send a fresh
-                            # one so the user gets exactly one notification per response.
-                            try:
-                                await stream_msg.delete()  # type: ignore[union-attr]
-                            except Exception:
-                                pass
-                            stream_msg = None
-                        await msg.reply_text(  # type: ignore[union-attr]
+                        await _reply_text_with_retry(
+                            msg,  # type: ignore[arg-type]
                             html,
                             parse_mode="HTML",
                             link_preview_options=_NO_PREVIEW,
                             disable_notification=not is_last,
-                            do_quote=False,
-                        )
-                    except RetryAfter as e:
-                        await asyncio.sleep(e.retry_after)
-                        await msg.reply_text(  # type: ignore[union-attr]
-                            html,
-                            parse_mode="HTML",
-                            link_preview_options=_NO_PREVIEW,
-                            disable_notification=not is_last,
-                            do_quote=False,
                         )
                     except BadRequest:
                         logger.warning("Failed to send HTML, falling back to plain", exc_info=True)
-                        await msg.reply_text(  # type: ignore[union-attr]
+                        await _reply_text_with_retry(
+                            msg,  # type: ignore[arg-type]
                             chunk,
                             link_preview_options=_NO_PREVIEW,
                             disable_notification=not is_last,
-                            do_quote=False,
                         )
 
             stream_completed_normally = True
@@ -398,11 +390,11 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                             link_preview_options=_NO_PREVIEW,
                         )
                 except Exception:
-                    pass
+                    logger.debug("tool cleanup failed", exc_info=True)
 
     async def send_message(self, message: str, context: Update) -> None:
         for chunk in _chunk(message):
-            await context.effective_message.reply_text(chunk, do_quote=False)  # type: ignore[union-attr]
+            await _reply_text_with_retry(context.effective_message, chunk)  # type: ignore[arg-type]
 
     async def request_approval(self, request: ApprovalRequest, context: Update) -> None:
         """Send an approval prompt with inline buttons to the user."""
@@ -943,16 +935,36 @@ def _format_args(args: dict) -> str:
     return text
 
 
+def _flood_wait(retry_state: RetryCallState) -> float:
+    exc = retry_state.outcome.exception()
+    return exc.retry_after if isinstance(exc, RetryAfter) else 2.0 * retry_state.attempt_number
+
+
+@retry(
+    retry=retry_if_exception_type((RetryAfter, TimedOut, NetworkError)),
+    stop=stop_after_attempt(3),
+    wait=_flood_wait,
+    reraise=True,
+)
+async def _reply_text_with_retry(msg: Message, text: str, **kwargs) -> Message:
+    """Send a reply with automatic retry on transient Telegram errors."""
+    return await msg.reply_text(text, do_quote=False, **kwargs)
+
+
 async def _spinner_task(msg, tool_name: str, args: dict, step_holder: list[str]) -> None:
     i = 0
+    delay = 1.0
     while True:
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(delay)
         i += 1
         try:
             header = _format_tool_call(tool_name, args, done=False, spin=i)
             step = step_holder[0]
             text = f"{header}\n<code>{escape(step)}</code>" if step else header
             await msg.edit_text(text, parse_mode="HTML", link_preview_options=_NO_PREVIEW)
+            delay = 1.0
+        except RetryAfter as e:
+            delay = e.retry_after + 1.0
         except Exception:
             return
 

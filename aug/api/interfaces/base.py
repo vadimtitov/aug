@@ -369,6 +369,7 @@ class BaseInterface[ContextT](ABC):
         such as leftover-injection checks).  Returns False if an approval prompt was
         sent or an error occurred — caller should return immediately.
         """
+        error_msg: str | None = None
         try:
             await self.send_stream(stream, context)
             approval = await _extract_approval_request(
@@ -382,31 +383,30 @@ class BaseInterface[ContextT](ABC):
             return True
         except psycopg.OperationalError:
             logger.exception("DB connection lost")
-            await self.send_message(
-                "Database connection lost. Please try again in a moment.", context
-            )
+            error_msg = "Database connection lost. Please try again in a moment."
         except RateLimitError:
             logger.warning("LLM rate limit hit")
-            await self.send_message(
-                "Context window is full. Use /clear to start a fresh conversation.", context
-            )
+            error_msg = "Context window is full. Use /clear to start a fresh conversation."
         except InternalServerError as e:
             logger.warning("LLM internal server error: %s", e)
-            await self.send_message(
-                "The AI model is overloaded. Please try again in a moment.", context
-            )
+            error_msg = "The AI model is overloaded. Please try again in a moment."
         except GraphRecursionError:
             logger.warning("Agent hit recursion limit")
-            await self.send_message(
-                "The agent got stuck in a loop and was stopped. Try rephrasing your request.",
-                context,
+            error_msg = (
+                "The agent got stuck in a loop and was stopped. Try rephrasing your request."
             )
         except Exception as e:
             logger.exception("Unhandled error in agent pipeline: %s: %s", type(e).__name__, e)
-            await self.send_message("Sorry, something went wrong.", context)
+            error_msg = "Sorry, something went wrong."
         finally:
             run.active = False
             run_registry.pop(incoming.thread_id)
+
+        if error_msg:
+            try:
+                await self.send_message(error_msg, context)
+            except Exception:
+                logger.warning("failed to deliver error message to user")
         return False
 
     async def _run_reflexes_and_inject(
