@@ -89,8 +89,8 @@ Interactive docs at `http://localhost:8000/docs`.
 | `LLM_API_KEY` | Yes | API key for your LLM provider |
 | `LLM_BASE_URL` | Yes | Any OpenAI-compatible endpoint, e.g. `https://api.openai.com/v1` |
 | `DATABASE_URL` | Yes | `postgresql+asyncpg://user:password@host:5432/dbname` |
-| `TELEGRAM_BOT_TOKEN` | No | Telegram bot; disabled if absent |
-| `TELEGRAM_ALLOWED_CHAT_IDS` | No | Comma-separated allowed chat IDs. Unset = all chats allowed. Get yours from `@userinfobot`. |
+| `TELEGRAM_BOT_TOKEN` | No | Telegram bot; disabled if absent. See [forum topics setup](docs/setup-guides/telegram-forum-setup.md) for multi-thread usage. |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | No | Comma-separated allowed user IDs. Unset = all users allowed. Get yours from `@userinfobot`. |
 | `BRAVE_API_KEY` | No | Enables web search |
 | `IMAGE_GEN_MODEL` | No | Image generation model via LiteLLM (default: `gpt-image-1.5`) |
 | `GMAIL_CLIENT_ID` | No | Gmail OAuth client ID (pair with `GMAIL_CLIENT_SECRET`) |
