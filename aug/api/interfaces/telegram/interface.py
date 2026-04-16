@@ -131,10 +131,11 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         if not msg:
             return None
         chat_id = context.effective_chat.id  # type: ignore[union-attr]
-        if not is_allowed(chat_id):
+        user_id = context.effective_user.id  # type: ignore[union-attr]
+        if not is_allowed(user_id):
             return None
 
-        thread_id = get_thread_id(chat_id)
+        thread_id = get_thread_id(chat_id, topic_id=msg.message_thread_id)
         upload_dir = UPLOADS_DIR / thread_id
 
         parts = []
@@ -255,6 +256,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                                 accumulated_text,
                                 link_preview_options=_NO_PREVIEW,
                                 disable_notification=True,
+                                do_quote=False,
                             )
                             last_stream_edit = now
                         elif now - last_stream_edit >= 0.3 and len(accumulated_text) <= _TG_MAX_LEN:
@@ -277,6 +279,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                                 parse_mode="HTML",
                                 link_preview_options=_NO_PREVIEW,
                                 disable_notification=True,
+                                do_quote=False,
                             )
                             step_holder: list[str] = [""]
                             spin = asyncio.create_task(
@@ -311,6 +314,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                             await msg.reply_text(  # type: ignore[union-attr]
                                 text,
                                 disable_notification=True,
+                                do_quote=False,
                             )
                         except Exception:
                             pass
@@ -355,6 +359,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                             parse_mode="HTML",
                             link_preview_options=_NO_PREVIEW,
                             disable_notification=not is_last,
+                            do_quote=False,
                         )
                     except RetryAfter as e:
                         await asyncio.sleep(e.retry_after)
@@ -363,6 +368,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                             parse_mode="HTML",
                             link_preview_options=_NO_PREVIEW,
                             disable_notification=not is_last,
+                            do_quote=False,
                         )
                     except BadRequest:
                         logger.warning("Failed to send HTML, falling back to plain", exc_info=True)
@@ -370,6 +376,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                             chunk,
                             link_preview_options=_NO_PREVIEW,
                             disable_notification=not is_last,
+                            do_quote=False,
                         )
 
             stream_completed_normally = True
@@ -395,7 +402,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
 
     async def send_message(self, message: str, context: Update) -> None:
         for chunk in _chunk(message):
-            await context.effective_message.reply_text(chunk)  # type: ignore[union-attr]
+            await context.effective_message.reply_text(chunk, do_quote=False)  # type: ignore[union-attr]
 
     async def request_approval(self, request: ApprovalRequest, context: Update) -> None:
         """Send an approval prompt with inline buttons to the user."""
@@ -574,6 +581,12 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
 
     @restricted
     async def _handle_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        topic_id = update.message.message_thread_id  # type: ignore[union-attr]
+        if topic_id is not None:
+            await update.message.reply_text(  # type: ignore[union-attr]
+                "Each topic is its own thread. Create a new topic to start a fresh conversation."
+            )
+            return
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         st = load_state()
         current = st.telegram.chats.get(str(chat_id), TelegramChatState()).session

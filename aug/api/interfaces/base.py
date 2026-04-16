@@ -218,7 +218,13 @@ class BaseInterface[ContextT](ABC):
         """Execute the full agent pipeline for a newly started run."""
         set_thread_id(incoming.thread_id)
 
-        agent = get_agent(incoming.agent_version)
+        try:
+            agent = get_agent(incoming.agent_version)
+        except ValueError:
+            await self.send_message(
+                "No agent selected. Use /version to pick one before chatting.", context
+            )
+            return
 
         # Fire reflexes in parallel with the agent run.  The task injects results
         # into the run as soon as they're available so the agent can pick them up
