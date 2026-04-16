@@ -968,8 +968,11 @@ async def _send_attachment(msg, attachment: Attachment) -> None:
 
 async def _typing_loop(update: Update, stop_event: asyncio.Event) -> None:
     chat_id = update.effective_chat.id  # type: ignore[union-attr]
+    topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
     while not stop_event.is_set():
-        await update.get_bot().send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        await update.get_bot().send_chat_action(
+            chat_id=chat_id, action=ChatAction.TYPING, message_thread_id=topic_id
+        )
         try:
             await asyncio.wait_for(asyncio.shield(stop_event.wait()), timeout=4.0)
         except TimeoutError:
