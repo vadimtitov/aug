@@ -637,8 +637,16 @@ async def _preprocess(parts: list[ContentPart]) -> MessageContent:
                 blocks.append({"type": "text", "text": f"[[img:{part.path}|{part.mime_type}]]"})
             elif part.transcribe:
                 transcript = await _transcribe(await part.read(), part.mime_type)
-                blocks.append({"type": "text", "text": transcript})
-                blocks.append({"type": "text", "text": f"[Audio saved to: {part.path}]"})
+                blocks.append(
+                    {
+                        "type": "text",
+                        "text": (
+                            f"[Voice message, already transcribed]\n"
+                            f"{transcript}\n"
+                            f"[Audio saved to: {part.path}]"
+                        ),
+                    }
+                )
             else:
                 blocks.append(
                     {
