@@ -114,6 +114,8 @@ _ARG_TRUNCATE = 50
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 _TG_MAX_LEN = MessageLimit.MAX_TEXT_LENGTH
 _SECRET_NAME, _SECRET_VALUE = range(2)
+# Chats where sendMessageDraft is not supported — learned at runtime, reset on restart
+_no_draft_chats: set[int] = set()
 
 
 class TelegramInterface(_SshMixin, BaseInterface[Update]):
@@ -232,12 +234,18 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
 
     async def send_stream(self, stream: AsyncIterator[AgentEvent], context: Update) -> None:
         msg = context.effective_message
+        chat_id = context.effective_chat.id  # type: ignore[union-attr]
+        bot = msg.get_bot()  # type: ignore[union-attr]
+
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(_typing_loop(context, stop_typing))
 
         accumulated_text = ""
-        stream_msg = None
-        last_stream_edit = 0.0
+        use_draft = chat_id not in _no_draft_chats
+        last_draft_time = 0.0
+        logger.debug("stream_mode=%s chat_id=%d", "draft" if use_draft else "edit", chat_id)
+        stream_msg = None  # only used when use_draft=False (editMessageText fallback)
+        last_stream_edit = 0.0  # only used when use_draft=False
         # tool_run_id → (tool_name, args, tool_msg, task, step_holder)
         # step_holder is a 1-element list so the spinner and progress
         # handler share the same mutable ref
@@ -252,27 +260,93 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                     case ChatModelStreamEvent(delta=delta) if delta:
                         accumulated_text += delta
                         now = asyncio.get_running_loop().time()
-                        if stream_msg is None:
-                            stream_msg = await _reply_text_with_retry(
-                                msg,  # type: ignore[arg-type]
-                                accumulated_text,
-                                link_preview_options=_NO_PREVIEW,
-                                disable_notification=True,
-                            )
-                            last_stream_edit = now
-                        elif now - last_stream_edit >= 1.0 and len(accumulated_text) <= _TG_MAX_LEN:
-                            try:
-                                await stream_msg.edit_text(
-                                    accumulated_text, link_preview_options=_NO_PREVIEW
+                        if use_draft:
+                            if now - last_draft_time >= 0.3:
+                                try:
+                                    await bot.send_message_draft(
+                                        chat_id=chat_id,
+                                        draft_id=1,
+                                        text=accumulated_text,
+                                        message_thread_id=msg.message_thread_id,  # type: ignore[union-attr]
+                                    )
+                                    last_draft_time = now
+                                except Exception as e:
+                                    if (
+                                        isinstance(e, BadRequest)
+                                        and "peer_invalid" in str(e).lower()
+                                    ):
+                                        logger.info(
+                                            "sendMessageDraft not supported in chat %d"
+                                            " (peer_invalid) — falling back to editMessageText",
+                                            chat_id,
+                                        )
+                                        _no_draft_chats.add(chat_id)
+                                    else:
+                                        logger.warning(
+                                            "sendMessageDraft failed,"
+                                            " falling back to editMessageText",
+                                            exc_info=True,
+                                        )
+                                    use_draft = False
+                                    stream_msg = await _reply_text_with_retry(
+                                        msg,  # type: ignore[arg-type]
+                                        accumulated_text,
+                                        link_preview_options=_NO_PREVIEW,
+                                        disable_notification=True,
+                                    )
+                                    last_stream_edit = asyncio.get_running_loop().time()
+                        else:
+                            if stream_msg is None:
+                                stream_msg = await _reply_text_with_retry(
+                                    msg,  # type: ignore[arg-type]
+                                    accumulated_text,
+                                    link_preview_options=_NO_PREVIEW,
+                                    disable_notification=True,
                                 )
                                 last_stream_edit = now
-                            except RetryAfter as e:
-                                last_stream_edit = now + e.retry_after
-                            except Exception:
-                                logger.debug("stream edit failed", exc_info=True)
+                            elif (
+                                now - last_stream_edit >= 1.0
+                                and len(accumulated_text) <= _TG_MAX_LEN
+                            ):
+                                try:
+                                    await stream_msg.edit_text(
+                                        accumulated_text, link_preview_options=_NO_PREVIEW
+                                    )
+                                    last_stream_edit = now
+                                except RetryAfter as e:
+                                    last_stream_edit = now + e.retry_after
+                                except Exception:
+                                    logger.debug("stream edit failed", exc_info=True)
                     case ToolStartEvent(
                         run_id=run_id, tool_name=tool_name, args=args, parent_ids=parent_ids
                     ):
+                        if accumulated_text:
+                            if stream_msg is not None:
+                                # Fallback mode: edit the silent message in-place to finalize it
+                                try:
+                                    await stream_msg.edit_text(
+                                        _to_html(accumulated_text),
+                                        parse_mode="HTML",
+                                        link_preview_options=_NO_PREVIEW,
+                                    )
+                                except Exception:
+                                    logger.debug(
+                                        "stream msg edit on tool start failed", exc_info=True
+                                    )
+                            else:
+                                # Draft mode: commit as a silent real message
+                                try:
+                                    await _reply_text_with_retry(
+                                        msg,  # type: ignore[arg-type]
+                                        _to_html(accumulated_text),
+                                        parse_mode="HTML",
+                                        link_preview_options=_NO_PREVIEW,
+                                        disable_notification=True,
+                                    )
+                                except Exception:
+                                    logger.debug("pre-tool commit failed", exc_info=True)
+                            accumulated_text = ""
+                            stream_msg = None
                         text = _format_tool_call(tool_name, args, done=False)
                         try:
                             tool_msg = await msg.reply_text(  # type: ignore[union-attr]
@@ -291,17 +365,6 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                                 progress_index[pid] = run_id
                         except (RetryAfter, TimedOut, NetworkError):
                             logger.debug("tool status message skipped due to flood control")
-                        if stream_msg is not None and accumulated_text:
-                            try:
-                                await stream_msg.edit_text(
-                                    _to_html(accumulated_text),
-                                    parse_mode="HTML",
-                                    link_preview_options=_NO_PREVIEW,
-                                )
-                            except Exception:
-                                logger.debug("stream msg edit on tool start failed", exc_info=True)
-                        accumulated_text = ""
-                        stream_msg = None
                     case ToolProgressEvent(parent_ids=parent_ids, step=step) if step:
                         tool_run_id = next(
                             (progress_index[pid] for pid in parent_ids if pid in progress_index),
@@ -347,12 +410,27 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                     html = _to_html(chunk)
                     is_last = i == len(chunks) - 1
                     if i == 0 and stream_msg is not None:
-                        # Delete the silent intermediate message and send a fresh
-                        # one so the user gets exactly one notification per response.
+                        # Fallback mode: edit the silent intermediate message to the final HTML
+                        # in-place — avoids the jarring delete+resend flash at the cost of no
+                        # notification sound (acceptable tradeoff vs. visible message flicker).
                         try:
-                            await stream_msg.delete()  # type: ignore[union-attr]
-                        except Exception:
-                            logger.debug("stream msg delete failed", exc_info=True)
+                            await stream_msg.edit_text(  # type: ignore[union-attr]
+                                html,
+                                parse_mode="HTML",
+                                link_preview_options=_NO_PREVIEW,
+                            )
+                            stream_msg = None
+                            continue
+                        except BadRequest:
+                            logger.warning(
+                                "Final edit failed, falling back to plain", exc_info=True
+                            )
+                            try:
+                                await stream_msg.edit_text(chunk, link_preview_options=_NO_PREVIEW)  # type: ignore[union-attr]
+                                stream_msg = None
+                                continue
+                            except Exception:
+                                logger.debug("Final plain edit also failed", exc_info=True)
                         stream_msg = None
                     try:
                         await _reply_text_with_retry(
@@ -969,6 +1047,12 @@ async def _spinner_task(msg, tool_name: str, args: dict, step_holder: list[str])
             return
 
 
+@retry(
+    retry=retry_if_exception_type((RetryAfter, TimedOut, NetworkError)),
+    stop=stop_after_attempt(3),
+    wait=_flood_wait,
+    reraise=True,
+)
 async def _send_attachment(msg, attachment: Attachment) -> None:
     data = io.BytesIO(attachment.data)
     caption = attachment.caption or None
