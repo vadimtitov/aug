@@ -421,6 +421,24 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                             )
                             stream_msg = None
                             continue
+                        except RetryAfter as e:
+                            logger.warning(
+                                "Final edit hit flood control, retrying after %ss", e.retry_after
+                            )
+                            await asyncio.sleep(e.retry_after)
+                            try:
+                                await stream_msg.edit_text(  # type: ignore[union-attr]
+                                    html,
+                                    parse_mode="HTML",
+                                    link_preview_options=_NO_PREVIEW,
+                                )
+                                stream_msg = None
+                                continue
+                            except Exception:
+                                logger.debug(
+                                    "Final edit retry failed, falling back to new message",
+                                    exc_info=True,
+                                )
                         except BadRequest:
                             logger.warning(
                                 "Final edit failed, falling back to plain", exc_info=True
