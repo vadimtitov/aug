@@ -14,6 +14,7 @@ import io
 import logging
 import re
 import subprocess
+import time
 from collections.abc import AsyncIterator
 from html.parser import HTMLParser
 from pathlib import Path
@@ -116,6 +117,7 @@ _TG_MAX_LEN = MessageLimit.MAX_TEXT_LENGTH
 _SECRET_NAME, _SECRET_VALUE = range(2)
 # Chats where sendMessageDraft is not supported — learned at runtime, reset on restart
 _no_draft_chats: set[int] = set()
+_monotonic = time.monotonic
 
 
 class TelegramInterface(_SshMixin, BaseInterface[Update]):
@@ -349,6 +351,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                             stream_msg = None
                         text = _format_tool_call(tool_name, args, done=False)
                         try:
+                            await _rate_limiter.throttle()
                             tool_msg = await msg.reply_text(  # type: ignore[union-attr]
                                 text,
                                 parse_mode="HTML",
@@ -393,6 +396,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                             tool_name, args, tool_msg, task, _ = entry
                             task.cancel()
                             try:
+                                await _rate_limiter.throttle()
                                 await tool_msg.edit_text(  # type: ignore[union-attr]
                                     _format_tool_call(tool_name, args, done=True, error=error),
                                     parse_mode="HTML",
@@ -475,6 +479,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             for tool_name, args, tool_msg, task, _ in tool_msgs.values():
                 task.cancel()
                 try:
+                    await _rate_limiter.throttle()
                     if stream_completed_normally:
                         # Stream ended cleanly (e.g. approval interrupt) — delete the
                         # pending tool message rather than showing it as errored.
@@ -1031,6 +1036,44 @@ def _format_args(args: dict) -> str:
     return text
 
 
+class _TelegramRateLimiter:
+    """Token bucket rate limiter for outgoing Telegram API calls.
+
+    Two access modes:
+    - throttle(): async, waits for a token — use for must-deliver calls.
+    - try_acquire(): sync, instant — returns False (drop) when budget exhausted.
+    """
+
+    def __init__(self, rate: float = 2.0, capacity: float = 5.0) -> None:
+        self._rate = rate
+        self._capacity = capacity
+        self._tokens = float(capacity)
+        self._last_refill = _monotonic()
+
+    def _refill(self) -> None:
+        now = _monotonic()
+        self._tokens = min(self._capacity, self._tokens + (now - self._last_refill) * self._rate)
+        self._last_refill = now
+
+    def try_acquire(self) -> bool:
+        self._refill()
+        if self._tokens >= 1.0:
+            self._tokens -= 1.0
+            return True
+        return False
+
+    async def throttle(self) -> None:
+        while True:
+            self._refill()
+            if self._tokens >= 1.0:
+                self._tokens -= 1.0
+                return
+            await asyncio.sleep((1.0 - self._tokens) / self._rate)
+
+
+_rate_limiter = _TelegramRateLimiter()
+
+
 def _flood_wait(retry_state: RetryCallState) -> float:
     exc = retry_state.outcome.exception()
     return exc.retry_after if isinstance(exc, RetryAfter) else 2.0 * retry_state.attempt_number
@@ -1044,6 +1087,7 @@ def _flood_wait(retry_state: RetryCallState) -> float:
 )
 async def _reply_text_with_retry(msg: Message, text: str, **kwargs) -> Message:
     """Send a reply with automatic retry on transient Telegram errors."""
+    await _rate_limiter.throttle()
     return await msg.reply_text(text, do_quote=False, **kwargs)
 
 
@@ -1053,6 +1097,8 @@ async def _spinner_task(msg, tool_name: str, args: dict, step_holder: list[str])
     while True:
         await asyncio.sleep(delay)
         i += 1
+        if not _rate_limiter.try_acquire():
+            continue
         try:
             header = _format_tool_call(tool_name, args, done=False, spin=i)
             step = step_holder[0]
