@@ -193,7 +193,7 @@ _REGISTRY: dict[str, BaseAgent] = {
         recursion_limit=100,
     ),
     "v9_glm5": AugAgent(
-        model="glm-5",
+        model="accounts/fireworks/models/glm-5p1",
         tools=_V9_TOOLS,
         temperature=0.0,
         recursion_limit=100,
@@ -240,12 +240,12 @@ _REGISTRY: dict[str, BaseAgent] = {
         max_summary_tokens=2000,
     ),
     "v10_glm5": AugAgent(
-        model="glm-5",
+        model="accounts/fireworks/models/glm-5p1",
         tools=_V10_TOOLS,
         temperature=0.0,
         recursion_limit=100,
         vision_description_model="gemini-2.5-flash",
-        compaction_model="glm-5",
+        compaction_model="accounts/fireworks/models/glm-5p1",
         compaction_threshold=0.8,
         context_window=200_000,
         max_summary_tokens=2000,
