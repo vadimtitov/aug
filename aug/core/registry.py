@@ -250,6 +250,16 @@ _REGISTRY: dict[str, BaseAgent] = {
         context_window=200_000,
         max_summary_tokens=2000,
     ),
+    "v10_kimi": AugAgent(
+        model="accounts/fireworks/models/kimi-k2p6",
+        tools=_V10_TOOLS,
+        temperature=0.0,
+        recursion_limit=100,
+        compaction_model="accounts/fireworks/models/kimi-k2p6",
+        compaction_threshold=0.8,
+        context_window=200_000,
+        max_summary_tokens=2000,
+    ),
 }
 
 
