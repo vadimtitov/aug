@@ -31,6 +31,8 @@ dependencies = [
     "pyyaml>=6.0",
     "asyncssh>=2.14",
     "PyJWT>=2.8",
+    "apscheduler[sqlalchemy]>=3.10",
+    "sqlalchemy>=2.0",
 ]
 
 [project.optional-dependencies]
