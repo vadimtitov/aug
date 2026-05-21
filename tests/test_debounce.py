@@ -85,6 +85,16 @@ def interface(isolated_registry):
         async def request_approval(self, request: ApprovalRequest, context: str) -> None:
             pass
 
+        async def resolve_thread(self, thread_id, *, topic_name=None, chat_id=None) -> str:
+            return thread_id
+
+        async def send_proactive(self, thread_id: str, text: str) -> None:
+            pass
+
+        async def send_proactive_stream(self, thread_id, stream) -> None:
+            async for _ in stream:
+                pass
+
     iface = _TestInterface(checkpointer=MagicMock())
     iface._execute_run = AsyncMock()
     return iface
