@@ -109,5 +109,3 @@ async def _reconcile(app: FastAPI) -> None:
 
     app.state._scheduler_cache = schedule_cache
     logger.debug("scheduler_reconcile total=%d enabled=%d", len(tasks), len(wanted_ids))
-
-
