@@ -1,10 +1,9 @@
 """APScheduler integration — timing engine for scheduled tasks.
 
-The scheduler uses a SQLAlchemy-backed PostgreSQL job store so jobs survive
-restarts.  On startup it loads all enabled tasks from the ``scheduled_tasks``
-table and registers them with APScheduler.  A background reconciler re-reads
-the table every 30 seconds to pick up changes made by agent tools (create,
-update, delete).
+Uses an in-memory job store; ``scheduled_tasks`` Postgres table is the
+authoritative store.  On startup the reconciler loads all enabled tasks and
+registers them with APScheduler.  A background reconciler re-reads the table
+every 30 seconds to pick up changes made by agent tools (create, update, delete).
 
 The scheduler is stored on ``app.state.scheduler`` for the reconciler loop
 and for graceful shutdown.
@@ -15,11 +14,9 @@ import json
 import logging
 from datetime import UTC
 
-from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 
-from aug.config import get_settings
 from aug.core.dispatch import TASK_RETRY_JOB_PREFIX, fire_task
 from aug.utils.job_control import set_fire_task_fn, set_scheduler
 from aug.utils.tasks import list_tasks, make_trigger
@@ -38,11 +35,7 @@ async def start_scheduler(app: FastAPI) -> asyncio.Task:
 
     The task should be cancelled during application shutdown.
     """
-    sqlalchemy_url = _to_sqlalchemy_url(get_settings().DATABASE_URL)
-    scheduler = AsyncIOScheduler(
-        jobstores={"default": SQLAlchemyJobStore(url=sqlalchemy_url)},
-        timezone=UTC,
-    )
+    scheduler = AsyncIOScheduler(timezone=UTC)
     scheduler.start()
     app.state.scheduler = scheduler
     set_scheduler(scheduler)
@@ -118,6 +111,3 @@ async def _reconcile(app: FastAPI) -> None:
     logger.debug("scheduler_reconcile total=%d enabled=%d", len(tasks), len(wanted_ids))
 
 
-def _to_sqlalchemy_url(database_url: str) -> str:
-    """Convert ``postgresql+asyncpg://`` to ``postgresql+psycopg://`` for SQLAlchemy."""
-    return database_url.replace("+asyncpg", "+psycopg")
