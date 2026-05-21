@@ -130,13 +130,6 @@ class BaseInterface[ContextT](ABC):
         """
 
     @abstractmethod
-    async def send_notification(self, target_id: str, text: str) -> None:
-        """Send a proactive message to a user outside of a request/response cycle.
-
-        Must raise on failure so callers (e.g. reminder loop) can retry.
-        """
-
-    @abstractmethod
     async def request_approval(self, request: ApprovalRequest, context: ContextT) -> None:
         """Send an approval prompt to the user (fire-and-forget).
 
@@ -144,6 +137,46 @@ class BaseInterface[ContextT](ABC):
         response here.  The run will exit after this call; resumption happens via
         a separate entry point (e.g. Telegram callback handler, REST endpoint)
         that calls _execute_resume with the user's ApprovalDecision.
+        """
+
+    @abstractmethod
+    async def resolve_thread(
+        self,
+        thread_id: str,
+        *,
+        topic_name: str | None = None,
+        chat_id: int | None = None,
+    ) -> str:
+        """Resolve a logical thread_id to a concrete thread ID for this interface.
+
+        Accepts:
+          ``"default"``    — the interface's canonical default delivery target
+                            (e.g. the DM chat for Telegram).
+          ``"new"``        — create a new thread (e.g. a Telegram forum topic).
+                            Requires ``chat_id`` for group-based interfaces and
+                            accepts an optional ``topic_name``.
+          any other value  — returned as-is (assumed to be a valid thread ID).
+
+        Raises:
+            ValueError: if the thread cannot be resolved (e.g. no default chat).
+        """
+
+    @abstractmethod
+    async def send_proactive(self, thread_id: str, text: str) -> None:
+        """Send a plain-text message to *thread_id* without an agent turn.
+
+        Used for ``type="forward"`` pushes.  Must raise on failure.
+        """
+
+    @abstractmethod
+    async def send_proactive_stream(
+        self, thread_id: str, stream: AsyncIterator[AgentEvent]
+    ) -> None:
+        """Consume an agent event stream and deliver the final response to *thread_id*.
+
+        Only the accumulated final text and any tool output attachments are
+        sent — intermediate streaming updates and tool call messages are
+        suppressed.  Used for ``type="agent"`` pushes and scheduled tasks.
         """
 
     async def send_stream(self, stream: AsyncIterator[AgentEvent], context: ContextT) -> None:

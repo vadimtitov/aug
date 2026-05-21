@@ -77,6 +77,35 @@ class RestApiInterface(BaseInterface[_RestContext]):
     async def send_notification(self, target_id: str, text: str) -> None:
         pass  # REST has no push channel — reminders set during REST sessions are silently dropped
 
+    async def resolve_thread(
+        self,
+        thread_id: str,
+        *,
+        topic_name: str | None = None,
+        chat_id: int | None = None,
+    ) -> str:
+        """Return *thread_id* unchanged; raise for logical aliases unsupported by REST.
+
+        REST has no persistent connection, so ``"default"`` and ``"new"`` have no
+        meaning.  Only concrete thread IDs are valid here.
+        """
+        if thread_id in ("default", "new"):
+            raise ValueError(
+                f"REST API does not support {thread_id!r} thread resolution — "
+                "push delivery requires a Telegram interface."
+            )
+        return thread_id
+
+    async def send_proactive(self, thread_id: str, text: str) -> None:
+        """No-op: REST has no push channel for forward-type pushes."""
+
+    async def send_proactive_stream(
+        self, thread_id: str, stream: AsyncIterator[AgentEvent]
+    ) -> None:
+        """Consume and discard the stream; REST has no push channel."""
+        async for _ in stream:
+            pass
+
     async def request_approval(self, request: ApprovalRequest, context: _RestContext) -> None:
         context._queue.put_nowait(
             f"\n⏸ Approval required: [{request.tool_name}] `{request.description}`. "

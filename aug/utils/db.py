@@ -40,6 +40,21 @@ CREATE INDEX IF NOT EXISTS reminders_pending_idx
     ON reminders (trigger_at) WHERE fired = FALSE;
 """
 
+_CREATE_SCHEDULED_TASKS_TABLE = """
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name            TEXT NOT NULL UNIQUE,
+    interface       TEXT NOT NULL,
+    thread_id       TEXT NOT NULL,
+    message         TEXT NOT NULL,
+    schedule_type   TEXT NOT NULL,
+    schedule_params JSONB NOT NULL DEFAULT '{}',
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+    push_type       TEXT NOT NULL DEFAULT 'agent',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+"""
+
 # Idempotent migrations — add columns introduced after initial schema creation.
 _MIGRATE_REMINDERS_COLUMNS = """
 ALTER TABLE reminders ADD COLUMN IF NOT EXISTS notification_interface TEXT NOT NULL DEFAULT '';
@@ -49,6 +64,51 @@ ALTER TABLE reminders ADD COLUMN IF NOT EXISTS next_retry_at    TIMESTAMPTZ;
 ALTER TABLE reminders ADD COLUMN IF NOT EXISTS last_error       TEXT;
 ALTER TABLE reminders ADD COLUMN IF NOT EXISTS dead_lettered_at TIMESTAMPTZ;
 """
+
+_MIGRATE_SCHEDULED_TASKS_COLUMNS = """
+ALTER TABLE scheduled_tasks ADD COLUMN IF NOT EXISTS push_type TEXT NOT NULL DEFAULT 'agent';
+"""
+
+# One-time migration: move unfired future reminders into scheduled_tasks so they
+# are delivered by the APScheduler path after the reminder loop is removed.
+_MIGRATE_REMINDERS_TO_TASKS = """
+INSERT INTO scheduled_tasks
+    (name, interface, thread_id, message, schedule_type, schedule_params, push_type, created_at)
+SELECT
+    'reminder-' || substr(id::text, 1, 8) AS name,
+    notification_interface                 AS interface,
+    CASE
+        WHEN notification_interface = 'telegram' AND notification_target <> ''
+            THEN 'default:' || notification_target
+        ELSE 'default'
+    END                                    AS thread_id,
+    chr(9200) || ' ' || message            AS message,
+    'date'                                 AS schedule_type,
+    jsonb_build_object('run_date', trigger_at::text) AS schedule_params,
+    'forward'                              AS push_type,
+    created_at
+FROM reminders
+WHERE fired = FALSE
+  AND dead_lettered_at IS NULL
+  AND trigger_at > NOW()
+ON CONFLICT (name) DO NOTHING;
+"""
+
+
+_pool: asyncpg.Pool | None = None
+
+
+def set_pool(pool: asyncpg.Pool) -> None:
+    """Store the application pool so tools and background jobs can use it."""
+    global _pool
+    _pool = pool
+
+
+def get_pool() -> asyncpg.Pool:
+    """Return the application pool.  Raises RuntimeError if not yet initialized."""
+    if _pool is None:
+        raise RuntimeError("DB pool not initialized — call set_pool() at startup")
+    return _pool
 
 
 def strip_driver(url: str) -> str:
@@ -106,4 +166,7 @@ async def _ensure_schema(pool: asyncpg.Pool) -> None:
         await conn.execute(_CREATE_THREADS_TABLE)
         await conn.execute(_CREATE_REMINDERS_TABLE)
         await conn.execute(_MIGRATE_REMINDERS_COLUMNS)
+        await conn.execute(_CREATE_SCHEDULED_TASKS_TABLE)
+        await conn.execute(_MIGRATE_SCHEDULED_TASKS_COLUMNS)
+        await conn.execute(_MIGRATE_REMINDERS_TO_TASKS)
     logger.debug("DB schema verified.")

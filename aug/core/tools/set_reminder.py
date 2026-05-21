@@ -1,15 +1,14 @@
 """Reminder tool — schedules a message to be delivered to the user at a future time."""
 
 import logging
+import uuid
 from datetime import UTC, datetime
 
-import asyncpg
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
-from aug.config import get_settings
-from aug.utils.db import strip_driver
-from aug.utils.reminders import create_reminder
+from aug.utils.db import get_pool
+from aug.utils.tasks import create_task
 
 logger = logging.getLogger(__name__)
 
@@ -39,28 +38,39 @@ async def set_reminder(when: str, message: str, config: RunnableConfig) -> str:
         return f"Reminder time {when!r} is in the past. Please provide a future datetime."
 
     configurable = config.get("configurable") or {}
-    notification_interface = configurable.get("interface", "")
-    notification_target = configurable.get("sender_id", "")
+    interface: str = configurable.get("interface", "telegram")
+    sender_id: str = configurable.get("sender_id", "")
 
-    dsn = strip_driver(get_settings().DATABASE_URL)
+    if interface == "telegram" and sender_id:
+        thread_id = f"default:{sender_id}"
+    else:
+        thread_id = "default"
+
+    name = f"reminder-{uuid.uuid4().hex[:8]}"
+    full_message = f"⏰ {message}"
+
     try:
-        conn = await asyncpg.connect(dsn)
-        try:
-            reminder_id = await create_reminder(
-                conn, message, trigger_at, notification_interface, notification_target
+        async with get_pool().acquire() as conn:
+            task_id = await create_task(
+                conn,
+                name=name,
+                interface=interface,
+                thread_id=thread_id,
+                message=full_message,
+                schedule_type="date",
+                schedule_params={"run_date": trigger_at.isoformat()},
+                push_type="forward",
             )
-        finally:
-            await conn.close()
     except Exception as e:
         logger.error("set_reminder DB error: %s", e)
         return f"Failed to save reminder: {e}"
 
     logger.info(
-        "set_reminder id=%s trigger_at=%s interface=%s target=%s",
-        reminder_id,
+        "set_reminder task_id=%s trigger_at=%s interface=%s thread_id=%s",
+        task_id,
         trigger_at.isoformat(),
-        notification_interface,
-        notification_target,
+        interface,
+        thread_id,
     )
     delta = trigger_at - now
     hours, remainder = divmod(int(delta.total_seconds()), 3600)

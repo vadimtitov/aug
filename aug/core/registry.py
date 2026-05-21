@@ -24,10 +24,11 @@ from aug.core.tools.portainer import (
 from aug.core.tools.respond_with_file import respond_with_file
 from aug.core.tools.run_bash import run_bash
 from aug.core.tools.run_ssh import download_ssh_file, list_ssh_targets, run_ssh, upload_ssh_file
-from aug.core.tools.set_reminder import set_reminder
 from aug.core.tools.skills import delete_skill, get_skill, save_skill, write_skill_file
+from aug.core.tools.tasks import create_task, delete_task, list_tasks, update_task
 
 _SKILLS_TOOLS = [get_skill, save_skill, write_skill_file, delete_skill]
+_TASK_TOOLS = [create_task, list_tasks, update_task, delete_task]
 
 _V7_TOOLS = [
     brave_search,
@@ -48,8 +49,9 @@ _V7_TOOLS = [
     portainer_list_stacks,
     portainer_deploy_stack,
     portainer_stack_action,
-    set_reminder,
+    # set_reminder disabled — use create_task with push_type="forward"/"inject" instead
     *_SKILLS_TOOLS,
+    *_TASK_TOOLS,
 ]
 
 _V9_TOOLS = [

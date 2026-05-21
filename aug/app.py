@@ -15,7 +15,6 @@ import logging
 import re
 import sys
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
@@ -24,12 +23,13 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from aug.api.interfaces.telegram import TelegramInterface
-from aug.api.routers import auth, chat, files, gmail_auth, settings, skills, threads
+from aug.api.routers import auth, chat, files, gmail_auth, hooks, settings, skills, threads
 from aug.config import get_settings
+from aug.core.dispatch import set_app as set_push_app
 from aug.core.memory import init_memory_files, start_consolidation_scheduler
-from aug.utils.db import create_pool
+from aug.utils.db import create_pool, set_pool
 from aug.utils.logging import configure_logging, set_correlation_id
-from aug.utils.reminders import start_reminder_loop
+from aug.utils.scheduler import start_scheduler, stop_scheduler
 from aug.utils.storage import LocalFileStorage
 
 logger = logging.getLogger(__name__)
@@ -74,6 +74,7 @@ async def lifespan(app: FastAPI):
     # Database pool
     pool = await create_pool(get_settings().DATABASE_URL)
     app.state.db_pool = pool
+    set_pool(pool)
 
     # LangGraph Postgres checkpointer
     # Strip the +asyncpg driver suffix — psycopg expects a plain postgres:// URI.
@@ -86,13 +87,13 @@ async def lifespan(app: FastAPI):
 
         # Interface registry — keyed by interface name, used for proactive notifications
         app.state.interfaces = {}
-        app.state.last_reminder_check = None
 
         telegram = TelegramInterface(checkpointer)
         await telegram.start_polling(app)
 
+        set_push_app(app)
         consolidation_task = await start_consolidation_scheduler()
-        reminder_task = start_reminder_loop(app)
+        scheduler_task = await start_scheduler(app)
 
         sys.stdout.flush()
         sys.stdout.write(_BANNER)
@@ -109,7 +110,8 @@ async def lifespan(app: FastAPI):
         yield
 
         consolidation_task.cancel()
-        reminder_task.cancel()
+        scheduler_task.cancel()
+        await stop_scheduler(app)
         await telegram.stop_polling(app)
 
     # Shutdown
@@ -151,17 +153,7 @@ def create_app() -> FastAPI:
         except Exception:
             checks["db"] = "error"
 
-        # Reminder loop watchdog
-        last_check: datetime | None = app.state.last_reminder_check
-        if last_check is None:
-            checks["reminder_loop"] = "not_started"
-        elif datetime.now(tz=UTC) - last_check > timedelta(minutes=5):
-            checks["reminder_loop"] = "stale"
-        else:
-            checks["reminder_loop"] = "ok"
-
-        ok = checks["db"] == "ok" and checks["reminder_loop"] in ("ok", "not_started")
-        checks["status"] = "ok" if ok else "degraded"
+        checks["status"] = "ok" if checks["db"] == "ok" else "degraded"
         return checks
 
     app.include_router(auth.router)
@@ -171,6 +163,7 @@ def create_app() -> FastAPI:
     app.include_router(gmail_auth.router)
     app.include_router(settings.router)
     app.include_router(skills.router)
+    app.include_router(hooks.router)
 
     return app
 

@@ -94,6 +94,21 @@ class BaseAgent(ABC):
             self._compiled_graph = self._build(checkpointer)
         return await self._compiled_graph.aget_state(config)
 
+    async def aupdate_state(
+        self,
+        config: RunnableConfig,
+        values: dict,
+        checkpointer: BaseCheckpointSaver,
+    ) -> None:
+        """Write values directly to the thread checkpoint without running the graph.
+
+        Uses LangGraph's update_state so reducers (e.g. add_messages) are applied
+        correctly.  No LLM call is made.
+        """
+        if self._compiled_graph is None:
+            self._compiled_graph = self._build(checkpointer)
+        await self._compiled_graph.aupdate_state(config, values)
+
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
         """Prepare state before the LLM is called."""
         return AgentStateUpdate()

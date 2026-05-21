@@ -29,6 +29,10 @@ def client():
         patch("aug.app._checkpointer_context", return_value=_async_ctx(mock_checkpointer)),
         patch("aug.app.init_memory_files"),
         patch("aug.app.start_consolidation_scheduler", new=AsyncMock(return_value=MagicMock())),
+        patch("aug.app.start_scheduler", new=AsyncMock(return_value=MagicMock())),
+        patch("aug.app.stop_scheduler", new=AsyncMock()),
+        patch("aug.app.set_push_app"),
+        patch("aug.app.set_pool"),
         patch.object(TelegramInterface, "start_polling", new=AsyncMock()),
         patch.object(TelegramInterface, "stop_polling", new=AsyncMock()),
     ):

@@ -15,7 +15,9 @@ def agent_with_vision_model():
     ):
         mock_settings.return_value.LLM_API_KEY = "test-key"
         mock_settings.return_value.LLM_BASE_URL = "http://localhost:4000"
-        yield AugAgent(model="accounts/fireworks/models/glm-5p1", vision_description_model="gemini-2.0-flash")
+        yield AugAgent(
+            model="accounts/fireworks/models/glm-5p1", vision_description_model="gemini-2.0-flash"
+        )
 
 
 @pytest.fixture
