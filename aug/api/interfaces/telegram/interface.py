@@ -105,6 +105,10 @@ _TOOL_NAMES = {
     "run_ssh": "SSH",
     "list_ssh_targets": "SSH targets",
     "set_reminder": "Set reminder",
+    "create_task": "Create task",
+    "list_tasks": "List tasks",
+    "update_task": "Update task",
+    "delete_task": "Delete task",
     "get_skill": "Get skill",
     "save_skill": "Save skill",
     "write_skill_file": "Write skill file",
@@ -492,6 +496,208 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         for chunk in _chunk(message):
             await _reply_text_with_retry(context.effective_message, chunk)  # type: ignore[arg-type]
 
+    async def resolve_thread(
+        self,
+        thread_id: str,
+        *,
+        topic_name: str | None = None,
+        chat_id: int | None = None,
+    ) -> str:
+        """Resolve a logical thread ID to a concrete Telegram thread ID.
+
+        ``"default"`` resolves to the current DM session for *chat_id* (if
+        provided) or for the first known positive chat_id in settings.
+        ``"new"`` creates a Telegram forum topic in *chat_id* and returns its
+        thread ID.  Any other value is returned unchanged.
+        """
+        if thread_id == "default" or thread_id.startswith("default:"):
+            if thread_id.startswith("default:"):
+                cid = int(thread_id.split(":", 1)[1])
+                return get_thread_id(cid, None)
+            if chat_id is not None:
+                return get_thread_id(chat_id, None)
+            # Legacy fallback: tasks stored before the "default:{chat_id}" encoding.
+            settings = load_settings()
+            for cid_str in settings.telegram.chats:
+                cid = int(cid_str)
+                if cid > 0:
+                    logger.warning(
+                        "resolve_thread: using first known chat_id %d as 'default' — "
+                        "tasks should store 'default:{chat_id}' for deterministic routing",
+                        cid,
+                    )
+                    return get_thread_id(cid, None)
+            raise ValueError("No default Telegram DM chat found in settings")
+
+        if thread_id == "new":
+            if chat_id is None:
+                raise ValueError("chat_id is required when thread_id='new'")
+            if not self._bot_app:
+                raise RuntimeError("Telegram bot is not running")
+            topic = await self._bot_app.bot.create_forum_topic(
+                chat_id=chat_id,
+                name=topic_name or "New Topic",
+            )
+            return get_thread_id(chat_id, topic_id=topic.message_thread_id)
+
+        return thread_id
+
+    async def send_proactive(self, thread_id: str, text: str) -> None:
+        """Send *text* to *thread_id* without an agent turn.
+
+        Used for ``type="forward"`` external pushes that relay a message
+        verbatim (e.g. a Home Assistant notification).
+        """
+        if not self._bot_app:
+            raise RuntimeError("Telegram bot is not running")
+        chat_id, topic_id = _parse_thread_id(thread_id)
+        for chunk in _chunk(text):
+            await self._bot_app.bot.send_message(
+                chat_id=chat_id,
+                text=chunk,
+                message_thread_id=topic_id,
+            )
+
+    async def send_proactive_stream(
+        self, thread_id: str, stream: AsyncIterator[AgentEvent]
+    ) -> None:
+        """Stream the agent response to *thread_id* using draft updates, then send final message.
+
+        Uses sendMessageDraft to show tokens as they arrive (same as interactive chat).
+        Falls back to send-then-edit if drafts are unsupported. Tool call messages are
+        suppressed; only the final text and attachments are delivered.
+        Used for ``type="agent"`` pushes and scheduled tasks.
+        """
+        if not self._bot_app:
+            raise RuntimeError("Telegram bot is not running")
+        chat_id, topic_id = _parse_thread_id(thread_id)
+        bot = self._bot_app.bot
+
+        accumulated_text = ""
+        attachments: list[Attachment] = []
+        use_draft = chat_id not in _no_draft_chats
+        last_draft_time = 0.0
+        stream_msg = None
+        last_stream_edit = 0.0
+
+        async for event in stream:
+            match event:
+                case ChatModelStreamEvent(delta=delta) if delta:
+                    accumulated_text += delta
+                    now = asyncio.get_running_loop().time()
+                    if use_draft:
+                        if now - last_draft_time >= 0.3:
+                            try:
+                                await bot.send_message_draft(
+                                    chat_id=chat_id,
+                                    draft_id=1,
+                                    text=accumulated_text,
+                                    message_thread_id=topic_id,
+                                )
+                                last_draft_time = now
+                            except Exception as e:
+                                if isinstance(e, BadRequest) and "peer_invalid" in str(e).lower():
+                                    _no_draft_chats.add(chat_id)
+                                else:
+                                    logger.warning(
+                                        "proactive sendMessageDraft failed chat_id=%d,"
+                                        " falling back to editMessageText",
+                                        chat_id,
+                                        exc_info=True,
+                                    )
+                                use_draft = False
+                                stream_msg = await bot.send_message(
+                                    chat_id=chat_id,
+                                    text=accumulated_text,
+                                    message_thread_id=topic_id,
+                                    disable_notification=True,
+                                    link_preview_options=_NO_PREVIEW,
+                                )
+                                last_stream_edit = asyncio.get_running_loop().time()
+                    else:
+                        if stream_msg is None:
+                            stream_msg = await bot.send_message(
+                                chat_id=chat_id,
+                                text=accumulated_text,
+                                message_thread_id=topic_id,
+                                disable_notification=True,
+                                link_preview_options=_NO_PREVIEW,
+                            )
+                            last_stream_edit = now
+                        elif now - last_stream_edit >= 1.0 and len(accumulated_text) <= _TG_MAX_LEN:
+                            try:
+                                await stream_msg.edit_text(
+                                    accumulated_text, link_preview_options=_NO_PREVIEW
+                                )
+                                last_stream_edit = now
+                            except RetryAfter as e:
+                                last_stream_edit = now + e.retry_after
+                            except Exception:
+                                logger.debug("proactive stream edit failed", exc_info=True)
+                case ToolEndEvent(output=output) if (
+                    isinstance(output, ToolOutput) and output.attachments
+                ):
+                    attachments.extend(output.attachments)
+
+        if accumulated_text:
+            for i, chunk in enumerate(_chunk(accumulated_text)):
+                html = _to_html(chunk)
+                if i == 0 and stream_msg is not None:
+                    try:
+                        await stream_msg.edit_text(
+                            html, parse_mode="HTML", link_preview_options=_NO_PREVIEW
+                        )
+                        stream_msg = None
+                        continue
+                    except Exception:
+                        logger.debug("proactive final edit failed, sending new", exc_info=True)
+                    stream_msg = None
+                try:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=html,
+                        parse_mode="HTML",
+                        message_thread_id=topic_id,
+                        link_preview_options=_NO_PREVIEW,
+                    )
+                except Exception:
+                    logger.warning(
+                        "send_proactive_stream HTML failed chat_id=%d, retrying plain",
+                        chat_id,
+                        exc_info=True,
+                    )
+                    try:
+                        await bot.send_message(
+                            chat_id=chat_id,
+                            text=chunk,
+                            message_thread_id=topic_id,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "send_proactive_stream plain fallback failed chat_id=%d, chunk skipped",
+                            chat_id,
+                        )
+
+        for attachment in attachments:
+            data = io.BytesIO(attachment.data)
+            caption = attachment.caption or None
+            if isinstance(attachment, ImageAttachment):
+                await self._bot_app.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=data,
+                    caption=caption,
+                    message_thread_id=topic_id,
+                )
+            elif isinstance(attachment, FileAttachment):
+                data.name = attachment.filename
+                await self._bot_app.bot.send_document(
+                    chat_id=chat_id,
+                    document=data,
+                    caption=caption,
+                    filename=attachment.filename,
+                    message_thread_id=topic_id,
+                )
+
     async def request_approval(self, request: ApprovalRequest, context: Update) -> None:
         """Send an approval prompt with inline buttons to the user."""
         msg = context.effective_message  # type: ignore[union-attr]
@@ -558,6 +764,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         )
         bot_app.add_handler(CommandHandler("clear", self._handle_clear))
         bot_app.add_handler(CommandHandler("stop", self._handle_stop))
+        bot_app.add_handler(CommandHandler("thread_id", self._handle_thread_id))
         bot_app.add_handler(
             ConversationHandler(
                 entry_points=[CommandHandler("secret", self._secret_start)],
@@ -603,11 +810,6 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         bot_app.add_handler(MessageHandler(filters.Sticker.ALL, self._handle_input))
         return bot_app
 
-    async def send_notification(self, target_id: str, text: str) -> None:
-        if not self._bot_app:
-            raise RuntimeError("Telegram bot is not running")
-        await self._bot_app.bot.send_message(chat_id=int(target_id), text=text)
-
     async def start_polling(self, app) -> None:
         """Start the bot and begin polling. Called from FastAPI lifespan."""
         if not get_settings().TELEGRAM_BOT_TOKEN:
@@ -629,6 +831,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                 ("consolidate_deep", "Run deep (weekly) memory consolidation now"),
                 ("approvals", "List and revoke saved SSH command approvals"),
                 ("ssh", "Manage SSH targets"),
+                ("thread_id", "Show the thread ID of this chat"),
             ]
         )
         await self._bot_app.start()
@@ -781,6 +984,16 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         file = io.BytesIO(prompt_text.encode())
         file.name = "system_prompt.txt"
         await update.message.reply_document(document=file, filename="system_prompt.txt")  # type: ignore[union-attr]
+
+    @restricted
+    async def _handle_thread_id(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat_id = update.effective_chat.id  # type: ignore[union-attr]
+        topic_id = update.message.message_thread_id  # type: ignore[union-attr]
+        thread_id = get_thread_id(chat_id, topic_id)
+        await update.message.reply_text(  # type: ignore[union-attr]
+            f"<code>{escape(thread_id)}</code>",
+            parse_mode="HTML",
+        )
 
     @restricted
     async def _handle_compact(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1193,6 +1406,23 @@ def _chunk(text: str) -> list[str]:
     if remaining:
         chunks.append(remaining)
     return [c for c in chunks if c]
+
+
+_TG_THREAD_RE = re.compile(r"^tg-(-?\d+)-(?:topic-(\d+)|\d+)$")
+
+
+def _parse_thread_id(thread_id: str) -> tuple[int, int | None]:
+    """Parse a Telegram thread ID into ``(chat_id, topic_id | None)``.
+
+    Accepts both DM format ``tg-{chat_id}-{session}`` and topic format
+    ``tg-{chat_id}-topic-{topic_id}``.  Raises ValueError for unrecognised formats.
+    """
+    m = _TG_THREAD_RE.match(thread_id)
+    if not m:
+        raise ValueError(f"Unparseable Telegram thread ID: {thread_id!r}")
+    chat_id = int(m.group(1))
+    topic_id = int(m.group(2)) if m.group(2) is not None else None
+    return chat_id, topic_id
 
 
 def _forward_sender(msg: Message) -> str | None:
