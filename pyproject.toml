@@ -39,7 +39,7 @@ dependencies = [
 # Installed in Docker via: uv sync --extra agent-tools
 agent-tools = [
     "pandas>=2.0",
-    "pillow>=10.0",
+    "pillow>=12.2.0",
     "matplotlib>=3.8",
     "pytesseract>=0.3",
 ]
