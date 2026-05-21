@@ -84,7 +84,10 @@ SELECT
     END                                    AS thread_id,
     chr(9200) || ' ' || message            AS message,
     'date'                                 AS schedule_type,
-    jsonb_build_object('run_date', trigger_at::text) AS schedule_params,
+    jsonb_build_object(
+        'run_date',
+        to_char(trigger_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"+00:00"')
+    )                                          AS schedule_params,
     'forward'                              AS push_type,
     created_at
 FROM reminders

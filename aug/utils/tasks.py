@@ -7,6 +7,7 @@ without a restart.
 """
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
@@ -147,6 +148,8 @@ def make_trigger(schedule_type: str, schedule_params: dict):
         case "interval":
             return IntervalTrigger(**params)
         case "date":
+            if "run_date" in params:
+                params["run_date"] = _normalize_run_date(params["run_date"])
             return DateTrigger(**params)
         case _:
             raise ValueError(f"Unknown schedule_type: {schedule_type!r}")
@@ -160,6 +163,21 @@ async def delete_task(conn: asyncpg.Connection, task_id: str) -> bool:
     """
     row = await conn.fetchval("DELETE FROM scheduled_tasks WHERE id = $1 RETURNING id", task_id)
     return row is not None
+
+
+def _normalize_run_date(run_date: str | datetime) -> datetime:
+    """Parse a run_date value into a datetime APScheduler can consume.
+
+    Handles PostgreSQL's ``::text`` timestamp format (e.g. ``"2026-05-21 23:38:00+00"``)
+    which uses a space separator and a truncated timezone offset lacking the ``:MM`` part
+    that APScheduler's own parser requires.
+    """
+    if isinstance(run_date, datetime):
+        return run_date
+    # Normalise: space separator → T, +HH (no minutes) → +HH:00
+    s = run_date.replace(" ", "T")
+    s = re.sub(r"([+-]\d{2})$", r"\1:00", s)
+    return datetime.fromisoformat(s)
 
 
 def _row_to_task(row) -> ScheduledTask:

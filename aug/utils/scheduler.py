@@ -86,15 +86,23 @@ async def _reconcile(app: FastAPI) -> None:
         wanted_ids.add(job_id)
         schedule_key = f"{task.schedule_type}:{json.dumps(task.schedule_params, sort_keys=True)}"
 
+        try:
+            trigger = make_trigger(task.schedule_type, task.schedule_params)
+        except Exception:
+            logger.exception(
+                "Skipping task %r — bad schedule params: %s", task.name, task.schedule_params
+            )
+            wanted_ids.discard(job_id)
+            continue
+
         if job_id in current_job_ids:
             if schedule_cache.get(job_id) != schedule_key:
-                trigger = make_trigger(task.schedule_type, task.schedule_params)
                 scheduler.reschedule_job(job_id, trigger=trigger)
                 schedule_cache[job_id] = schedule_key
         else:
             scheduler.add_job(
                 fire_task,
-                trigger=make_trigger(task.schedule_type, task.schedule_params),
+                trigger=trigger,
                 id=job_id,
                 args=[task.id],
                 replace_existing=True,
