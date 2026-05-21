@@ -214,12 +214,18 @@ async def _catch_up() -> None:
 
     if _iso_date(load_state().consolidation.last_light_run) != today:
         logger.info("Running missed light consolidation on startup.")
-        await run_light_consolidation()
+        try:
+            await run_light_consolidation()
+        except Exception:
+            logger.warning("Startup light consolidation failed — retry next cycle", exc_info=True)
 
     this_week = today.isocalendar()[1]
     if _iso_week(load_state().consolidation.last_deep_run) != this_week:
         logger.info("Running missed deep consolidation on startup.")
-        await run_deep_consolidation()
+        try:
+            await run_deep_consolidation()
+        except Exception:
+            logger.warning("Startup deep consolidation failed — retrying next cycle", exc_info=True)
 
 
 async def _scheduler_loop() -> None:
