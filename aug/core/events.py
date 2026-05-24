@@ -58,6 +58,12 @@ class ToolEndEvent:
 class ToolProgressEvent:
     step: str
     parent_ids: list[str] = field(default_factory=list)
+    tool_name: str | None = None
+    args: dict | None = None
+    # The run_id of the run that dispatched this event.  For subagent tool
+    # forwarding this equals the run_subagent tool's own run_id, which is how
+    # the Telegram interface nests sub-tool lines under the correct Agent() entry.
+    run_id: str | None = None
 
 
 @dataclass
@@ -73,6 +79,15 @@ class StatusEvent:
 
 async def send_tool_progress_update(step: str) -> None:
     await adispatch_custom_event(_TOOL_PROGRESS, {"step": step})
+
+
+async def send_subagent_tool_start(tool_name: str, args: dict) -> None:
+    """Notify the parent agent that a subagent tool started.
+
+    Dispatches a ToolProgressEvent carrying tool_name and args so the
+    Telegram interface can render nested tool lines inside the Agent() block.
+    """
+    await adispatch_custom_event(_TOOL_PROGRESS, {"step": "", "tool_name": tool_name, "args": args})
 
 
 async def dispatch_status(text: str) -> None:
@@ -114,9 +129,13 @@ def parse_event(event: StreamEvent) -> AgentEvent | None:
             error=getattr(raw, "status", None) == "error",
         )
     if kind == "on_custom_event" and event["name"] == _TOOL_PROGRESS:
+        data = event["data"]
         return ToolProgressEvent(
             parent_ids=list(event.get("parent_ids", [])),
-            step=event["data"].get("step", ""),
+            run_id=event.get("run_id"),
+            step=data.get("step", ""),
+            tool_name=data.get("tool_name"),
+            args=data.get("args"),
         )
     if kind == "on_custom_event" and event["name"] == _STATUS:
         return StatusEvent(text=event["data"].get("text", ""))
