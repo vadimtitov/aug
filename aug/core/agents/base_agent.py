@@ -1,12 +1,15 @@
 """Base class for all AUG agents."""
 
+import asyncio
+import contextvars
 import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Any
 
-from langchain_core.runnables.config import RunnableConfig
+from langchain_core.messages import HumanMessage
+from langchain_core.runnables.config import RunnableConfig, var_child_runnable_config
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
@@ -57,6 +60,7 @@ class BaseAgent(ABC):
 
     def __init__(self) -> None:
         self._compiled_graph = None
+        self._subagent_graph = None
 
     async def astream_events(
         self,
@@ -121,13 +125,89 @@ class BaseAgent(ABC):
         """Transform or log the final LLM response before returning to the user."""
         return AgentStateUpdate()
 
+    async def arun(
+        self,
+        prompt: str,
+        *,
+        interface: str,
+        sender_id: str,
+        thread_id: str,
+    ) -> AsyncIterator[AgentEvent]:
+        """Run the agent headlessly and yield events.
+
+        Compiles a non-interruptible graph (no checkpointer, no interrupt_after) on
+        first call and caches it.  Callers should accumulate ChatModelStreamEvent deltas
+        for the final response text.  GraphRecursionError propagates to the caller.
+
+        The subagent graph runs in an isolated asyncio context with
+        var_child_runnable_config cleared so its internal tool events do not leak
+        into the outer agent's callback chain (which would cause subagent tool calls
+        to appear as top-level items in the parent's event stream).
+        """
+        if self._subagent_graph is None:
+            self._subagent_graph = self._build_subagent()
+        config: RunnableConfig = {
+            "recursion_limit": self.recursion_limit,
+            "configurable": {
+                "thread_id": thread_id,
+                "interface": interface,
+                "sender_id": sender_id,
+                # Subagents run without a checkpointer, so approval interrupts cannot
+                # pause/resume here.  Tools see this and fail honestly instead of
+                # silently halting the whole subagent graph.
+                "can_approve": False,
+            },
+        }
+        state = AgentState(
+            messages=[HumanMessage(content=prompt)],
+            thread_id=thread_id,
+            interface=interface,
+        )
+
+        queue: asyncio.Queue = asyncio.Queue()
+        exc_holder: list[BaseException] = []
+
+        async def _collect() -> None:
+            try:
+                async for raw in self._subagent_graph.astream_events(
+                    state, config=config, version="v2"
+                ):
+                    event = parse_event(raw)
+                    if event is not None:
+                        await queue.put(event)
+            except BaseException as exc:
+                exc_holder.append(exc)
+            finally:
+                await queue.put(None)
+
+        ctx = contextvars.copy_context()
+        ctx.run(var_child_runnable_config.set, None)
+        task = asyncio.get_running_loop().create_task(_collect(), context=ctx)
+
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield item
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+        if exc_holder:
+            raise exc_holder[0]
+
     def _should_continue(self, state: AgentState) -> str:
         last_msg = state.messages[-1]
         if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
             return "call_tools"
         return "postprocess"
 
-    def _build(self, checkpointer: BaseCheckpointSaver):
+    def _build_graph(self) -> StateGraph:
         graph = StateGraph(AgentState)
         graph.add_node("preprocess", self.preprocess)
         graph.add_node("call_model", self.respond)
@@ -138,4 +218,12 @@ class BaseAgent(ABC):
         graph.add_conditional_edges("call_model", self._should_continue)
         graph.add_edge("call_tools", "call_model")
         graph.add_edge("postprocess", END)
-        return graph.compile(checkpointer=checkpointer, interrupt_after=["call_tools"])
+        return graph
+
+    def _build(self, checkpointer: BaseCheckpointSaver):
+        return self._build_graph().compile(
+            checkpointer=checkpointer, interrupt_after=["call_tools"]
+        )
+
+    def _build_subagent(self):
+        return self._build_graph().compile()

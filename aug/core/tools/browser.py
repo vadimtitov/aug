@@ -77,11 +77,11 @@ async def browser(
                     break
             agent_ref[0].add_new_task(_format_injected_messages(messages))
 
-        goal = output.next_goal or ""
+        # Lead with the goal (what the agent is about to do) — far more useful than
+        # the netloc, which is already shown in the Browser(task) header.
+        goal = (output.next_goal or "").strip().replace("\n", " ")
         netloc = urlparse(state.url).netloc or state.url
-        text = f"Step {step} · {netloc}"
-        if goal:
-            text += f"\n{goal}"
+        text = f"Step {step} · {goal}" if goal else f"Step {step} · {netloc}"
         await send_tool_progress_update(text)
 
     async def _should_stop() -> bool:

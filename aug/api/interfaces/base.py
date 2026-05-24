@@ -205,6 +205,7 @@ class BaseInterface[ContextT](ABC):
         # Preprocess before the lock — may be slow (Whisper, geocoding).
         content = await _preprocess(incoming.parts)
 
+        fire_inline = False
         async with run_registry.thread_lock(incoming.thread_id):
             existing = run_registry.get(incoming.thread_id)
             if existing and existing.active and not existing.user_requested_stop.is_set():
@@ -215,9 +216,15 @@ class BaseInterface[ContextT](ABC):
             self._debounce_buf.setdefault(incoming.thread_id, []).append((incoming, content))
             task = self._debounce_tasks.get(incoming.thread_id)
             if task is None or task.done():
-                self._debounce_tasks[incoming.thread_id] = asyncio.create_task(
-                    self._debounce_fire(incoming.thread_id, context)
-                )
+                if self._debounce_window == 0:
+                    fire_inline = True  # await _debounce_fire after releasing the lock
+                else:
+                    self._debounce_tasks[incoming.thread_id] = asyncio.create_task(
+                        self._debounce_fire(incoming.thread_id, context)
+                    )
+
+        if fire_inline:
+            await self._debounce_fire(incoming.thread_id, context)
 
     async def _debounce_fire(self, thread_id: str, context: ContextT) -> None:
         """Wait out the debounce window, then start a single merged run."""

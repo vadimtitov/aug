@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from aug.core.tools.approval import (
+    _SUBAGENT_APPROVAL_UNAVAILABLE,
     ApprovalDecision,
     ApprovalRequest,
     is_approved,
@@ -412,3 +413,93 @@ async def test_decorator_describe_tuple_sets_resource_and_operation():
     assert interrupt_values[0].resource == "homeserver"
     assert interrupt_values[0].operation == "upload /tmp/foo → /etc/foo"
     assert interrupt_values[0].description == "homeserver: upload /tmp/foo → /etc/foo"
+
+
+# ---------------------------------------------------------------------------
+# @requires_approval — no approval channel (subagent runs)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_decorator_denies_when_approval_unavailable():
+    """A subagent (can_approve=False) must not pause; it fails honestly instead."""
+    interrupt_called = []
+    executed = []
+
+    async def run_ssh(target: str, command: str) -> str:
+        executed.append(command)
+        return "executed"
+
+    decorated = requires_approval(describe=lambda target, command: (target, command))(run_ssh)
+
+    with (
+        patch("aug.core.tools.approval.load_settings", return_value=_settings_with_rules([])),
+        patch(
+            "aug.core.tools.approval.get_config",
+            return_value={"configurable": {"can_approve": False}},
+        ),
+        patch(
+            "aug.core.tools.approval.interrupt",
+            side_effect=lambda v: interrupt_called.append(v),
+        ),
+    ):
+        result = await decorated(target="homeserver", command="rm -rf /tmp/x")
+
+    assert result == _SUBAGENT_APPROVAL_UNAVAILABLE
+    assert not interrupt_called  # never paused
+    assert not executed  # tool body never ran
+
+
+@pytest.mark.asyncio
+async def test_decorator_interrupts_when_can_approve_true_in_config():
+    """When the run can approve (default), the interrupt path is preserved."""
+    interrupt_values: list = []
+
+    async def run_ssh(target: str, command: str) -> str:
+        return "executed"
+
+    decorated = requires_approval(describe=lambda target, command: (target, command))(run_ssh)
+
+    with (
+        patch("aug.core.tools.approval.load_settings", return_value=_settings_with_rules([])),
+        patch(
+            "aug.core.tools.approval.get_config",
+            return_value={"configurable": {"can_approve": True}},
+        ),
+        patch(
+            "aug.core.tools.approval.interrupt",
+            side_effect=lambda v: interrupt_values.append(v) or ApprovalDecision.APPROVED_ONCE,
+        ),
+    ):
+        result = await decorated(target="homeserver", command="df -h")
+
+    assert len(interrupt_values) == 1
+    assert result == "executed"
+
+
+@pytest.mark.asyncio
+async def test_decorator_executes_preapproved_even_without_approval_channel():
+    """A saved rule means no prompt is needed, so the tool runs even in a subagent."""
+    interrupt_called = []
+
+    async def run_ssh(target: str, command: str) -> str:
+        return "executed"
+
+    decorated = requires_approval(describe=lambda target, command: (target, command))(run_ssh)
+    rules = [ApprovalRule(tool="run_ssh", target="homeserver", pattern=r"df.*")]
+
+    with (
+        patch("aug.core.tools.approval.load_settings", return_value=_settings_with_rules(rules)),
+        patch(
+            "aug.core.tools.approval.get_config",
+            return_value={"configurable": {"can_approve": False}},
+        ),
+        patch(
+            "aug.core.tools.approval.interrupt",
+            side_effect=lambda v: interrupt_called.append(v),
+        ),
+    ):
+        result = await decorated(target="homeserver", command="df -h")
+
+    assert result == "executed"
+    assert not interrupt_called
