@@ -26,9 +26,18 @@ from dataclasses import dataclass
 from enum import Enum
 from functools import wraps
 
+from langgraph.config import get_config
 from langgraph.types import interrupt
 
 from aug.utils.file_settings import ApprovalRule, load_settings, save_settings
+
+# Returned (instead of pausing via interrupt) when a tool needs approval but the
+# current run has no way to prompt the user — i.e. inside a subagent, which has no
+# checkpointer and therefore cannot pause and resume on a human decision.
+_SUBAGENT_APPROVAL_UNAVAILABLE = (
+    "Operation requires user approval, which isn't available inside a subagent. "
+    "NOT executed — ask the main agent to run it directly."
+)
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -114,6 +123,8 @@ def requires_approval(fn=None, *, describe=None):
             request = ApprovalRequest(tool_name=tool_name, resource=resource, operation=operation)
 
             if not is_approved(tool_name, resource, operation):
+                if not _approval_available():
+                    return _SUBAGENT_APPROVAL_UNAVAILABLE
                 decision: ApprovalDecision = interrupt(request)
                 if decision == ApprovalDecision.DENIED:
                     return (
@@ -182,3 +193,18 @@ def revoke_approval(index: int) -> None:
         raise IndexError(f"Approval index {index} out of range (have {n} rules)")
     s.tools.approvals.pop(index)
     save_settings(s)
+
+
+def _approval_available() -> bool:
+    """Return True if the current run can prompt the user for approval.
+
+    Subagent runs set ``can_approve=False`` in their config because they run on a
+    graph without a checkpointer and so cannot pause on ``interrupt()`` and resume
+    on a human decision.  When there is no runnable context at all (e.g. a tool
+    invoked directly in a unit test) we preserve the default interrupt path.
+    """
+    try:
+        configurable = get_config().get("configurable") or {}
+    except RuntimeError:
+        return True
+    return configurable.get("can_approve", True)
