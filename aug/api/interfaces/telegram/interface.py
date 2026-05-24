@@ -15,9 +15,9 @@ import logging
 import re
 import subprocess
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlparse
 
 import markdown as md
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -74,6 +74,7 @@ from aug.core.tools.approval import (
     list_approvals,
     revoke_approval,
 )
+from aug.core.tools.display import format_tool
 from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
 from aug.utils.data import UPLOADS_DIR
 from aug.utils.file_settings import TelegramChatSettings, load_settings, save_settings
@@ -83,39 +84,27 @@ from aug.utils.state import TelegramChatState, load_state, save_state
 logger = logging.getLogger(__name__)
 
 _SPINNER = ["🌑", "🌘", "🌗", "🌖", "🌕", "🌔", "🌓", "🌒"]
-_TOOL_NAMES = {
-    "brave_search": "Search",
-    "fetch_page": "Fetch",
-    "run_bash": "Bash",
-    "browser": "Browser",
-    "note": "Note",
-    "gmail_search": "Gmail",
-    "gmail_read_thread": "Gmail",
-    "gmail_send": "Send email",
-    "gmail_draft": "Draft email",
-    "respond_with_file": "Send file",
-    "generate_image": "Generate image",
-    "edit_image": "Edit image",
-    "portainer_list_containers": "Portainer",
-    "portainer_container_logs": "Portainer logs",
-    "portainer_container_action": "Portainer action",
-    "portainer_list_stacks": "Portainer stacks",
-    "portainer_deploy_stack": "Portainer deploy",
-    "portainer_stack_action": "Portainer stack",
-    "run_ssh": "SSH",
-    "list_ssh_targets": "SSH targets",
-    "set_reminder": "Set reminder",
-    "create_task": "Create task",
-    "list_tasks": "List tasks",
-    "update_task": "Update task",
-    "delete_task": "Delete task",
-    "get_skill": "Get skill",
-    "save_skill": "Save skill",
-    "write_skill_file": "Write skill file",
-    "delete_skill": "Delete skill",
-}
-_ARG_TRUNCATE = 50
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
+_MAX_TOOL_ENTRIES = 6  # max top-level tool entries shown before "…" truncation
+_MAX_SUBLINES = 5  # max nested sub-tool lines shown per subagent block
+# In chats without draft support each update is a real editMessageText (rate-limited),
+# unlike the free sendMessageDraft previews used in DMs.  Tool status refreshes slightly
+# slower than the answer text since they may compete for the chat's edit budget.
+_TOOL_EDIT_THROTTLE = 3.0
+_ANSWER_EDIT_THROTTLE = 2.0
+
+
+@dataclass
+class _ToolEntry:
+    run_id: str
+    label: str
+    args_preview: str
+    is_subagent: bool = False
+    sub_lines: list[str] = field(default_factory=list)
+    done: bool = False
+    error: bool = False
+
+
 _TG_MAX_LEN = MessageLimit.MAX_TEXT_LENGTH
 _SECRET_NAME, _SECRET_VALUE = range(2)
 # Chats where sendMessageDraft is not supported — learned at runtime, reset on restart
@@ -244,36 +233,129 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         stop_typing = asyncio.Event()
         typing_task = asyncio.create_task(_typing_loop(context, stop_typing))
 
+        # Rolling tool-status draft state
+        tool_entries: list[_ToolEntry] = []
+        run_id_to_entry: dict[str, _ToolEntry] = {}
+        spin_tick = 0
+        tool_status_msg = None  # editMessageText fallback (chats without draft support)
+        last_tool_edit = 0.0
+
+        # Text streaming state
         accumulated_text = ""
         use_draft = chat_id not in _no_draft_chats
-        last_draft_time = 0.0
-        logger.debug("stream_mode=%s chat_id=%d", "draft" if use_draft else "edit", chat_id)
-        stream_msg = None  # only used when use_draft=False (editMessageText fallback)
-        last_stream_edit = 0.0  # only used when use_draft=False
-        # tool_run_id → (tool_name, args, tool_msg, task, step_holder)
-        # step_holder is a 1-element list so the spinner and progress
-        # handler share the same mutable ref
-        tool_msgs: dict[str, tuple[str, dict, object, asyncio.Task, list]] = {}
-        # parent_id → tool_run_id (for matching ToolProgressEvent to its tool_msg)
-        progress_index: dict[str, str] = {}
+        last_text_draft_time = 0.0
+        stream_msg = None  # non-None only in editMessageText fallback mode
+        last_stream_edit = 0.0
+
         stream_completed_normally = False
+        spinner_stop = asyncio.Event()
+
+        async def _push_tool_draft() -> None:
+            nonlocal spin_tick, use_draft, tool_status_msg, last_tool_edit
+            if not tool_entries:
+                return
+            spin_tick += 1
+            text = _render_tool_lines(tool_entries, spin_tick)
+            if use_draft:
+                try:
+                    await bot.send_message_draft(
+                        chat_id=chat_id,
+                        draft_id=1,
+                        text=text,
+                        message_thread_id=msg.message_thread_id,  # type: ignore[union-attr]
+                    )
+                    return
+                except Exception as e:
+                    if isinstance(e, BadRequest) and "peer_invalid" in str(e).lower():
+                        if chat_id not in _no_draft_chats:
+                            logger.info(
+                                "sendMessageDraft not supported in chat %d (peer_invalid)"
+                                " — using editMessageText for tool status",
+                                chat_id,
+                            )
+                        _no_draft_chats.add(chat_id)
+                        use_draft = False
+                        # fall through to the editMessageText fallback below
+                    else:
+                        logger.debug("tool draft push failed", exc_info=True)
+                        return
+            # No-draft fallback: maintain one tool-status message, edited in place.
+            now = asyncio.get_running_loop().time()
+            if tool_status_msg is not None and now - last_tool_edit < _TOOL_EDIT_THROTTLE:
+                return  # throttle edits to avoid flood limits
+            try:
+                if tool_status_msg is None:
+                    tool_status_msg = await _reply_text_with_retry(
+                        msg,  # type: ignore[arg-type]
+                        text,
+                        link_preview_options=_NO_PREVIEW,
+                        disable_notification=True,
+                    )
+                else:
+                    await tool_status_msg.edit_text(text, link_preview_options=_NO_PREVIEW)
+                last_tool_edit = now
+            except RetryAfter as e:
+                last_tool_edit = now + e.retry_after
+            except Exception:
+                logger.debug("tool status edit failed", exc_info=True)
+
+        async def _finalize_tool_draft() -> None:
+            nonlocal tool_entries, run_id_to_entry, tool_status_msg, last_tool_edit
+            if not tool_entries:
+                return
+            text = _render_tool_lines(tool_entries, spin_tick)
+            tool_entries = []
+            run_id_to_entry = {}
+            if tool_status_msg is not None:
+                # No-draft mode: freeze the live tool-status message at its final state.
+                try:
+                    await tool_status_msg.edit_text(text, link_preview_options=_NO_PREVIEW)
+                except Exception:
+                    logger.debug("tool status finalize edit failed", exc_info=True)
+                tool_status_msg = None
+                last_tool_edit = 0.0
+                return
+            try:
+                await _reply_text_with_retry(
+                    msg,  # type: ignore[arg-type]
+                    text,
+                    link_preview_options=_NO_PREVIEW,
+                    disable_notification=True,
+                )
+            except Exception:
+                logger.debug("tool draft finalize failed", exc_info=True)
+
+        async def _spinner_loop() -> None:
+            while not spinner_stop.is_set():
+                # Animate every second for free drafts; in no-draft chats each tick
+                # is a real editMessageText, so refresh slower to avoid flood limits.
+                await asyncio.sleep(1.0 if use_draft else _TOOL_EDIT_THROTTLE)
+                if spinner_stop.is_set():
+                    break
+                if any(not e.done for e in tool_entries):
+                    await _push_tool_draft()
+
+        spinner_task = asyncio.create_task(_spinner_loop())
 
         try:
             async for event in stream:
                 match event:
                     case ChatModelStreamEvent(delta=delta) if delta:
+                        if tool_entries:
+                            await _finalize_tool_draft()
+
                         accumulated_text += delta
                         now = asyncio.get_running_loop().time()
                         if use_draft:
-                            if now - last_draft_time >= 0.3:
+                            if now - last_text_draft_time >= 0.3:
                                 try:
                                     await bot.send_message_draft(
                                         chat_id=chat_id,
                                         draft_id=1,
-                                        text=accumulated_text,
+                                        text=_draft_preview(accumulated_text),
                                         message_thread_id=msg.message_thread_id,  # type: ignore[union-attr]
                                     )
-                                    last_draft_time = now
+                                    last_text_draft_time = now
                                 except Exception as e:
                                     if (
                                         isinstance(e, BadRequest)
@@ -294,39 +376,39 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                                     use_draft = False
                                     stream_msg = await _reply_text_with_retry(
                                         msg,  # type: ignore[arg-type]
-                                        accumulated_text,
+                                        _draft_preview(accumulated_text),
                                         link_preview_options=_NO_PREVIEW,
                                         disable_notification=True,
                                     )
                                     last_stream_edit = asyncio.get_running_loop().time()
                         else:
+                            # No-draft chats: stream the answer via editMessageText, but at
+                            # the same slow cadence as the tool status (group rate limit is
+                            # ~1 msg/3s).  On RetryAfter we back off, so a truly flooded chat
+                            # naturally falls back to showing the full answer at the end.
                             if stream_msg is None:
                                 stream_msg = await _reply_text_with_retry(
                                     msg,  # type: ignore[arg-type]
-                                    accumulated_text,
+                                    _draft_preview(accumulated_text),
                                     link_preview_options=_NO_PREVIEW,
                                     disable_notification=True,
                                 )
                                 last_stream_edit = now
-                            elif (
-                                now - last_stream_edit >= 1.0
-                                and len(accumulated_text) <= _TG_MAX_LEN
-                            ):
+                            elif now - last_stream_edit >= _ANSWER_EDIT_THROTTLE:
                                 try:
                                     await stream_msg.edit_text(
-                                        accumulated_text, link_preview_options=_NO_PREVIEW
+                                        _draft_preview(accumulated_text),
+                                        link_preview_options=_NO_PREVIEW,
                                     )
                                     last_stream_edit = now
                                 except RetryAfter as e:
                                     last_stream_edit = now + e.retry_after
                                 except Exception:
                                     logger.debug("stream edit failed", exc_info=True)
-                    case ToolStartEvent(
-                        run_id=run_id, tool_name=tool_name, args=args, parent_ids=parent_ids
-                    ):
+
+                    case ToolStartEvent(run_id=run_id, tool_name=tool_name, args=args):
                         if accumulated_text:
                             if stream_msg is not None:
-                                # Fallback mode: edit the silent message in-place to finalize it
                                 try:
                                     await stream_msg.edit_text(
                                         _to_html(accumulated_text),
@@ -338,7 +420,6 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                                         "stream msg edit on tool start failed", exc_info=True
                                     )
                             else:
-                                # Draft mode: commit as a silent real message
                                 try:
                                     await _reply_text_with_retry(
                                         msg,  # type: ignore[arg-type]
@@ -351,32 +432,48 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                                     logger.debug("pre-tool commit failed", exc_info=True)
                             accumulated_text = ""
                             stream_msg = None
-                        text = _format_tool_call(tool_name, args, done=False)
-                        try:
-                            tool_msg = await msg.reply_text(  # type: ignore[union-attr]
-                                text,
-                                parse_mode="HTML",
-                                link_preview_options=_NO_PREVIEW,
-                                disable_notification=True,
-                                do_quote=False,
-                            )
-                            step_holder: list[str] = [""]
-                            spin = asyncio.create_task(
-                                _spinner_task(tool_msg, tool_name, args, step_holder)
-                            )
-                            tool_msgs[run_id] = (tool_name, args, tool_msg, spin, step_holder)
-                            for pid in parent_ids:
-                                progress_index[pid] = run_id
-                        except (RetryAfter, TimedOut, NetworkError):
-                            logger.debug("tool status message skipped due to flood control")
-                    case ToolProgressEvent(parent_ids=parent_ids, step=step) if step:
-                        tool_run_id = next(
-                            (progress_index[pid] for pid in parent_ids if pid in progress_index),
-                            None,
+
+                        label, args_preview = format_tool(tool_name, args)
+                        entry = _ToolEntry(
+                            run_id=run_id,
+                            label=label,
+                            args_preview=args_preview,
+                            is_subagent=(tool_name == "run_subagent"),
                         )
-                        if tool_run_id and tool_run_id in tool_msgs:
-                            tool_name, args, tool_msg, _, step_holder = tool_msgs[tool_run_id]
-                            step_holder[0] = step
+                        tool_entries.append(entry)
+                        run_id_to_entry[run_id] = entry
+                        await _push_tool_draft()
+
+                    case ToolProgressEvent(
+                        run_id=sub_run_id, tool_name=sub_tool, step=step, args=sub_args
+                    ):
+                        # A progress event's run_id equals the dispatching tool's own
+                        # run_id, so it maps directly to that tool's entry — nesting both
+                        # subagent sub-tool calls (tool_name) and browser-style step text
+                        # under the right parent line.
+                        parent_entry = run_id_to_entry.get(sub_run_id) if sub_run_id else None
+                        if parent_entry and sub_tool:
+                            sub_label, sub_preview = format_tool(sub_tool, sub_args or {})
+                            inner = f"({sub_preview})" if sub_preview else "()"
+                            parent_entry.sub_lines.append(f"{sub_label}{inner}")
+                            await _push_tool_draft()
+                        elif parent_entry and step:
+                            line = step.split("\n", 1)[0].strip()
+                            if len(line) > 60:
+                                line = line[:60] + "…"
+                            parent_entry.sub_lines.append(line)
+                            await _push_tool_draft()
+
+                    case ToolEndEvent(run_id=run_id, output=output, error=error):
+                        entry = run_id_to_entry.get(run_id)
+                        if entry:
+                            entry.done = True
+                            entry.error = error
+                            await _push_tool_draft()
+                        if isinstance(output, ToolOutput) and output.attachments:
+                            for attachment in output.attachments:
+                                await _send_attachment(msg, attachment)  # type: ignore[arg-type]
+
                     case StatusEvent(text=text) if text:
                         try:
                             await msg.reply_text(  # type: ignore[union-attr]
@@ -386,27 +483,9 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                             )
                         except Exception:
                             logger.debug("status event send failed", exc_info=True)
-                    case ToolEndEvent(
-                        run_id=run_id, tool_name=tool_name, output=output, error=error
-                    ):
-                        entry = tool_msgs.pop(run_id, None)
-                        progress_index = {
-                            pid: rid for pid, rid in progress_index.items() if rid != run_id
-                        }
-                        if entry:
-                            tool_name, args, tool_msg, task, _ = entry
-                            task.cancel()
-                            try:
-                                await tool_msg.edit_text(  # type: ignore[union-attr]
-                                    _format_tool_call(tool_name, args, done=True, error=error),
-                                    parse_mode="HTML",
-                                    link_preview_options=_NO_PREVIEW,
-                                )
-                            except Exception:
-                                logger.debug("tool end edit failed", exc_info=True)
-                            if isinstance(output, ToolOutput) and output.attachments:
-                                for attachment in output.attachments:
-                                    await _send_attachment(msg, attachment)  # type: ignore[arg-type]
+
+            if tool_entries:
+                await _finalize_tool_draft()
 
             if accumulated_text:
                 chunks = _chunk(accumulated_text)
@@ -414,9 +493,6 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                     html = _to_html(chunk)
                     is_last = i == len(chunks) - 1
                     if i == 0 and stream_msg is not None:
-                        # Fallback mode: edit the silent intermediate message to the final HTML
-                        # in-place — avoids the jarring delete+resend flash at the cost of no
-                        # notification sound (acceptable tradeoff vs. visible message flicker).
                         try:
                             await stream_msg.edit_text(  # type: ignore[union-attr]
                                 html,
@@ -476,21 +552,17 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         finally:
             stop_typing.set()
             typing_task.cancel()
-            for tool_name, args, tool_msg, task, _ in tool_msgs.values():
-                task.cancel()
+            spinner_stop.set()
+            spinner_task.cancel()
+            if not stream_completed_normally and tool_entries:
+                for entry in tool_entries:
+                    if not entry.done:
+                        entry.error = True
+                        entry.done = True
                 try:
-                    if stream_completed_normally:
-                        # Stream ended cleanly (e.g. approval interrupt) — delete the
-                        # pending tool message rather than showing it as errored.
-                        await tool_msg.delete()  # type: ignore[union-attr]
-                    else:
-                        await tool_msg.edit_text(
-                            _format_tool_call(tool_name, args, done=True, error=True),
-                            parse_mode="HTML",
-                            link_preview_options=_NO_PREVIEW,
-                        )
+                    await _finalize_tool_draft()
                 except Exception:
-                    logger.debug("tool cleanup failed", exc_info=True)
+                    logger.debug("error tool draft finalize failed", exc_info=True)
 
     async def send_message(self, message: str, context: Update) -> None:
         for chunk in _chunk(message):
@@ -591,7 +663,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                                 await bot.send_message_draft(
                                     chat_id=chat_id,
                                     draft_id=1,
-                                    text=accumulated_text,
+                                    text=_draft_preview(accumulated_text),
                                     message_thread_id=topic_id,
                                 )
                                 last_draft_time = now
@@ -608,7 +680,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                                 use_draft = False
                                 stream_msg = await bot.send_message(
                                     chat_id=chat_id,
-                                    text=accumulated_text,
+                                    text=_draft_preview(accumulated_text),
                                     message_thread_id=topic_id,
                                     disable_notification=True,
                                     link_preview_options=_NO_PREVIEW,
@@ -618,16 +690,17 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                         if stream_msg is None:
                             stream_msg = await bot.send_message(
                                 chat_id=chat_id,
-                                text=accumulated_text,
+                                text=_draft_preview(accumulated_text),
                                 message_thread_id=topic_id,
                                 disable_notification=True,
                                 link_preview_options=_NO_PREVIEW,
                             )
                             last_stream_edit = now
-                        elif now - last_stream_edit >= 1.0 and len(accumulated_text) <= _TG_MAX_LEN:
+                        elif now - last_stream_edit >= _ANSWER_EDIT_THROTTLE:
                             try:
                                 await stream_msg.edit_text(
-                                    accumulated_text, link_preview_options=_NO_PREVIEW
+                                    _draft_preview(accumulated_text),
+                                    link_preview_options=_NO_PREVIEW,
                                 )
                                 last_stream_edit = now
                             except RetryAfter as e:
@@ -1204,44 +1277,35 @@ def _safe_filename(filename: str) -> str:
     return safe[:200] if safe else "file"
 
 
-def _format_tool_call(
-    tool_name: str, args: dict, done: bool, spin: int = 0, error: bool = False
-) -> str:
-    icon = ("❌" if error else "🟢") if done else _SPINNER[spin % len(_SPINNER)]
-    display = _TOOL_NAMES.get(tool_name, tool_name)
-    if tool_name == "fetch_page":
-        urls = args.get("urls", [])
-        if isinstance(urls, str):
-            urls = [urls]
-        links = ", ".join(
-            f'<a href="{escape(url)}">{escape(urlparse(url).netloc or url)}</a>' for url in urls
-        )
-        return f"{icon} <code>{escape(display)}(</code>{links}<code>)</code>"
-    if tool_name == "respond_with_file":
-        filename = escape(args.get("filename", "file"))
-        return f"{icon} <code>{escape(display)}({filename})</code>"
-    if tool_name in ("run_ssh", "download_ssh_file", "upload_ssh_file"):
-        target = escape(str(args.get("target", "?")))
-        cmd = str(args.get("command") or args.get("remote_path") or args.get("local_path") or "")
-        if len(cmd) > _ARG_TRUNCATE:
-            cmd = cmd[:_ARG_TRUNCATE] + "…"
-        inner_text = f"{target}: {escape(cmd)}" if cmd else target
-        return f"{icon} <code>{escape(display)}({inner_text})</code>"
-    inner = _format_args(args)
-    call = f"{display}({inner})" if inner else f"{display}()"
-    return f"{icon} <code>{escape(call)}</code>"
+def _render_tool_lines(entries: list[_ToolEntry], spin_tick: int) -> str:
+    """Render the rolling tool list as plain text.
 
+    Truncates oldest *entries* (keeping each subagent header attached to its
+    children) and caps the nested sub-lines per subagent block so a busy
+    subagent can never push its own ``Agent()`` header out of view.
+    """
+    spinner = _SPINNER[spin_tick % len(_SPINNER)]
+    visible = entries
+    hidden = 0
+    if len(entries) > _MAX_TOOL_ENTRIES:
+        hidden = len(entries) - _MAX_TOOL_ENTRIES
+        visible = entries[-_MAX_TOOL_ENTRIES:]
 
-def _format_args(args: dict) -> str:
-    if not args:
-        return ""
-    value = next(iter(args.values()))
-    if isinstance(value, list):
-        value = ", ".join(str(v) for v in value)
-    text = str(value)
-    if len(text) > _ARG_TRUNCATE:
-        text = text[:_ARG_TRUNCATE] + "…"
-    return text
+    lines: list[str] = [f"…+{hidden} more"] if hidden else []
+    for entry in visible:
+        args_part = f"({entry.args_preview})" if entry.args_preview else "()"
+        if entry.done:
+            icon = "🔴" if entry.error else "🟢"
+        else:
+            icon = spinner
+        lines.append(f"{icon} {entry.label}{args_part}")
+        if entry.sub_lines:
+            subs = entry.sub_lines
+            if len(subs) > _MAX_SUBLINES:
+                lines.append(f"   ↳ …+{len(subs) - _MAX_SUBLINES} more")
+                subs = subs[-_MAX_SUBLINES:]
+            lines.extend(f"   ↳ {s}" for s in subs)
+    return "\n".join(lines)
 
 
 def _flood_wait(retry_state: RetryCallState) -> float:
@@ -1258,24 +1322,6 @@ def _flood_wait(retry_state: RetryCallState) -> float:
 async def _reply_text_with_retry(msg: Message, text: str, **kwargs) -> Message:
     """Send a reply with automatic retry on transient Telegram errors."""
     return await msg.reply_text(text, do_quote=False, **kwargs)
-
-
-async def _spinner_task(msg, tool_name: str, args: dict, step_holder: list[str]) -> None:
-    i = 0
-    delay = 1.0
-    while True:
-        await asyncio.sleep(delay)
-        i += 1
-        try:
-            header = _format_tool_call(tool_name, args, done=False, spin=i)
-            step = step_holder[0]
-            text = f"{header}\n<code>{escape(step)}</code>" if step else header
-            await msg.edit_text(text, parse_mode="HTML", link_preview_options=_NO_PREVIEW)
-            delay = 1.0
-        except RetryAfter as e:
-            delay = e.retry_after + 1.0
-        except Exception:
-            return
 
 
 @retry(
@@ -1383,6 +1429,18 @@ def _to_html(text: str) -> str:
     sanitizer = _TelegramSanitizer()
     sanitizer.feed(html)
     return sanitizer.result()
+
+
+def _draft_preview(text: str) -> str:
+    """Return *text* trimmed to fit a single Telegram message, keeping the tail.
+
+    Streaming previews (sendMessageDraft and live editMessageText) must never
+    exceed the message length limit.  The final response is chunked separately
+    via ``_chunk``, so showing only the most recent characters here is fine.
+    """
+    if len(text) <= _TG_MAX_LEN:
+        return text
+    return "…" + text[-(_TG_MAX_LEN - 1) :]
 
 
 def _chunk(text: str) -> list[str]:
