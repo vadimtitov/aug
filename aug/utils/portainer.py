@@ -118,10 +118,10 @@ class PortainerClient:
                 r = await client.post(
                     url,
                     headers=self._headers,
+                    params={"endpointId": endpoint_id},
                     json={
                         "name": name,
                         "stackFileContent": compose,
-                        "endpointId": endpoint_id,
                     },
                 )
                 action = "deployed"
