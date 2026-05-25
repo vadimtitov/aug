@@ -283,6 +283,59 @@ async def test_deploy_stack_environment_required():
 
 
 @pytest.mark.asyncio
+async def test_deploy_stack_create_sends_endpoint_id_as_query_param():
+    """Create (POST) must pass endpointId as a query param, not in the JSON body.
+
+    Portainer's stack-create endpoint reads endpointId from the query string;
+    putting it in the body silently deploys to the wrong/no environment.
+    """
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(return_value=_make_ok_response({"Id": 7}))
+
+    with patch("aug.utils.portainer.get_settings", return_value=_make_settings()):
+        from aug.utils.portainer import PortainerClient
+
+        client = PortainerClient()
+        with (
+            patch.object(client, "find_stack", AsyncMock(return_value=None)),
+            patch("aug.utils.portainer.httpx.AsyncClient", return_value=mock_client),
+        ):
+            _, action = await client.deploy_stack("myapp", "version: '3'", endpoint_id=2)
+
+    assert action == "deployed"
+    _, kwargs = mock_client.post.call_args
+    assert kwargs["params"] == {"endpointId": 2}
+    assert "endpointId" not in kwargs["json"]
+    assert kwargs["json"] == {"name": "myapp", "stackFileContent": "version: '3'"}
+
+
+@pytest.mark.asyncio
+async def test_deploy_stack_update_sends_endpoint_id_as_query_param():
+    """Update (PUT) targets an existing stack and also passes endpointId in the query."""
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.put = AsyncMock(return_value=_make_ok_response({"Id": 9}))
+
+    with patch("aug.utils.portainer.get_settings", return_value=_make_settings()):
+        from aug.utils.portainer import PortainerClient
+
+        client = PortainerClient()
+        with (
+            patch.object(client, "find_stack", AsyncMock(return_value={"Id": 9})),
+            patch("aug.utils.portainer.httpx.AsyncClient", return_value=mock_client),
+        ):
+            _, action = await client.deploy_stack("myapp", "version: '3'", endpoint_id=2)
+
+    assert action == "updated"
+    _, kwargs = mock_client.put.call_args
+    assert kwargs["params"] == {"endpointId": 2}
+    assert "endpointId" not in kwargs["json"]
+
+
+@pytest.mark.asyncio
 async def test_deploy_stack_unknown_environment():
     client = _mock_client_multi()
     with (
