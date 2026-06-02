@@ -342,7 +342,55 @@ BROWSER_TASK_CONSTRAINTS = (
     "Any file you download or screenshot you save will be sent directly to the user immediately. "
     "When the result of your task contains something visual the user should see — a QR code, "
     "barcode, confirmation graphic, document, or PDF — save or download it before completing. "
-    "Do not download or screenshot anything irrelevant to the task result."
+    "Do not download or screenshot anything irrelevant to the task result. "
+    "When you encounter an image-based CAPTCHA — distorted characters in a picture that must be "
+    "read and typed into a field — do NOT try to read it yourself, guess it, download it, or "
+    "isolate it with JavaScript. Make sure the CAPTCHA image is visible on screen, then call "
+    "ask_human_to_solve_captcha with no arguments — the human looks at the whole screen and finds "
+    "the CAPTCHA. Then type the exact text the human returns into the CAPTCHA field. If the human "
+    "reports it is unreadable, refresh the CAPTCHA for a new image and ask again — never type a "
+    "guessed value."
+)
+
+# Description shown to the browser agent for the captcha action. Framed as a
+# human assistant so the agent confidently hands off image-text captchas instead
+# of stalling or giving up. The transcription is actually done by a vision model.
+# Takes no arguments: the agent cannot reliably identify the CAPTCHA element (often
+# in shadow DOM), so the human reads it from a full-screen view instead.
+ASK_HUMAN_CAPTCHA_DESCRIPTION = (
+    "Ask a human assistant to look at the screen and read a CAPTCHA for you. "
+    "Use this whenever a page shows an image-based CAPTCHA with distorted text or "
+    "characters you must read and type in. Make sure the CAPTCHA is visible on screen, then "
+    "call this with no arguments — the human looks at the whole page, finds the CAPTCHA, and "
+    "replies with the exact characters, which you then type into the CAPTCHA field. This does "
+    "NOT work for click-based challenges (reCAPTCHA 'select all traffic lights', hCaptcha, "
+    "Cloudflare Turnstile) — only readable distorted text."
+)
+
+# System prompt for the vision model that transcribes the captcha. The image may be
+# either the isolated CAPTCHA picture (preferred, native resolution) or a full-page
+# screenshot, so it must locate the CAPTCHA and ignore surrounding UI text (labels,
+# instructions, buttons). Kept narrow: characters only, no commentary.
+CAPTCHA_TRANSCRIPTION_PROMPT = (
+    "The image contains a CAPTCHA — distorted, warped, or obscured characters that a user must "
+    "read and type into a field. The image may be the CAPTCHA on its own, or a full web page that "
+    "includes it. Find the CAPTCHA and respond with ONLY those distorted characters, preserving "
+    "case, digits, and symbols. Everything else is NOT the answer: field labels, instructions, "
+    "placeholder text, button captions, headings, and normal crisp UI text must be ignored — the "
+    "CAPTCHA is the visually distorted or warped text. Do not add quotes, spaces between "
+    "characters, explanations, or any other words. If there is no CAPTCHA or its characters "
+    "genuinely cannot be made out, respond with exactly: UNREADABLE"
+)
+
+# Wraps the vision model's answer in the voice of a human assistant before it goes
+# back into the browser agent's context, so nothing reveals a model produced it.
+CAPTCHA_HUMAN_RESPONSE_TEMPLATE = "The human looked at the CAPTCHA and says it reads: {solution}"
+
+# Returned (in human voice) when the captcha cannot be read, so the agent treats it
+# as a genuine failure rather than typing a hallucinated value.
+CAPTCHA_HUMAN_UNREADABLE = (
+    "The human looked but could not read the CAPTCHA clearly. Do NOT guess a value — "
+    "try refreshing the CAPTCHA for a new image, or report that it could not be solved."
 )
 
 

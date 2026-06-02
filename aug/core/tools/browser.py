@@ -10,17 +10,26 @@ from pathlib import Path
 from typing import Annotated
 from urllib.parse import urlparse, urlunparse
 
-from browser_use import Agent, Browser
+from browser_use import ActionResult, Agent, Browser, Tools
 from browser_use.agent.views import AgentOutput
+from browser_use.browser.session import BrowserSession
 from browser_use.browser.views import BrowserStateSummary
 from browser_use.llm import ChatOpenAI as BrowserLLM
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langchain_core.tools.base import InjectedToolArg
 
 from aug.config import get_settings
 from aug.core.events import send_tool_progress_update
-from aug.core.prompts import BROWSER_TASK_CONSTRAINTS
+from aug.core.llm import build_chat_model
+from aug.core.prompts import (
+    ASK_HUMAN_CAPTCHA_DESCRIPTION,
+    BROWSER_TASK_CONSTRAINTS,
+    CAPTCHA_HUMAN_RESPONSE_TEMPLATE,
+    CAPTCHA_HUMAN_UNREADABLE,
+    CAPTCHA_TRANSCRIPTION_PROMPT,
+)
 from aug.core.run import AGENT_RUN_CONFIG_KEY, MessageContent
 from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
 from aug.utils.file_settings import load_settings
@@ -28,6 +37,46 @@ from aug.utils.file_settings import load_settings
 logger = logging.getLogger(__name__)
 
 _DOWNLOADS_DIR = "/app/browser-downloads"
+
+# Vision model that actually reads the captcha. Hardcoded (not a setting) per the
+# project's config philosophy — this is the established vision model and there is
+# no immediate reason for it to vary independently. The browser agent is told a
+# human does this; nothing in its context reveals a model is involved.
+_CAPTCHA_VISION_MODEL = "gemini-2.5-pro"
+
+# Runs in the page to extract the captcha at native resolution. It reads the
+# ALREADY-LOADED <img> (painting it to a canvas) rather than re-fetching the URL —
+# captcha endpoints typically regenerate a new challenge on each GET, so a re-fetch
+# would return a different image than the one the session expects. Pierces open
+# shadow roots and matches the image by src/alt/id/class. Returns a PNG data URL, or
+# null if no captcha <img> is found (caller falls back to a full-page screenshot).
+_CAPTCHA_EXTRACT_JS = """
+(() => {
+  const imgs = [];
+  const walk = (root) => {
+    root.querySelectorAll('*').forEach((el) => {
+      if (el.tagName === 'IMG') imgs.push(el);
+      if (el.shadowRoot) walk(el.shadowRoot);
+    });
+  };
+  walk(document);
+  const looksLikeCaptcha = (i) =>
+    /captcha|\\u043a\\u0430\\u043f\\u0447|\\u0441\\u0438\\u043c\\u0432\\u043e\\u043b/i.test(
+      [i.src, i.alt, i.id, i.className].join(' ')
+    );
+  const img = imgs.find(looksLikeCaptcha);
+  if (!img || !img.complete || !img.naturalWidth) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  canvas.getContext('2d').drawImage(img, 0, 0);
+  try {
+    return canvas.toDataURL('image/png');
+  } catch (e) {
+    return null;
+  }
+})()
+"""
 
 
 @tool(response_format="content_and_artifact")
@@ -50,6 +99,14 @@ async def browser(
     Example:
         task="Log into github.com with username {username} and password {password}"
         secrets={"username": "GITHUB_USER", "password": "GITHUB_PASSWORD"}
+
+    Give the browser the COMPLETE goal in one task and let it work autonomously —
+    do not decompose a job into low-level browser calls. In particular, the browser
+    solves CAPTCHAs on its own: never use this tool just to "find", "extract",
+    "download", or "screenshot" a CAPTCHA image, and never try to read or solve a
+    CAPTCHA yourself. If a page has a CAPTCHA, simply include the surrounding goal
+    (e.g. "log in with these credentials") in the task; the browser will read and
+    fill the CAPTCHA internally as part of completing it.
 
     Args:
         task: Plain-language description. Use {placeholder} for any sensitive values.
@@ -95,6 +152,7 @@ async def browser(
             task=task,
             llm=_llm(),
             browser=b,
+            tools=_build_tools(),
             sensitive_data=sensitive_data or None,
             register_new_step_callback=_step_callback,
             register_should_stop_callback=_should_stop,
@@ -142,6 +200,23 @@ def _llm() -> BrowserLLM:
         base_url=settings.LLM_BASE_URL,
         frequency_penalty=None,
     )
+
+
+def _build_tools() -> Tools:
+    """Browser-use's default action set plus a captcha-reading action.
+
+    The action is framed to the browser agent as asking a human assistant, so it
+    confidently hands off image-text captchas instead of stalling. A vision model
+    does the transcription; the agent never sees that.
+    """
+    tools = Tools()
+    vision_llm = build_chat_model(_CAPTCHA_VISION_MODEL)
+
+    @tools.action(ASK_HUMAN_CAPTCHA_DESCRIPTION)
+    async def ask_human_to_solve_captcha(browser_session: BrowserSession) -> ActionResult:
+        return await _solve_captcha(vision_llm, browser_session)
+
+    return tools
 
 
 def _resolve_secrets(secrets: dict[str, str] | None) -> dict[str, str]:
@@ -228,6 +303,65 @@ def _stopped_summary(agent: Agent) -> str:
         parts.append("\nContent extracted before stopping:\n" + "\n".join(extracted))
 
     return "\n".join(parts)
+
+
+async def _solve_captcha(vision_llm, browser_session: BrowserSession) -> ActionResult:
+    """Read the captcha with the vision model and reply in the voice of a human.
+
+    Prefers the raw captcha image extracted from the page at native resolution (far
+    clearer than a downscaled page render); falls back to a full-viewport screenshot
+    when no captcha <img> can be isolated. Any failure returns an explicit "could not
+    read" message so the agent never types a guess.
+    """
+    try:
+        png = await _grab_captcha_image(browser_session)
+        source = "image"
+        if png is None:
+            png = await browser_session.take_screenshot()
+            source = "screenshot"
+        solution = await _transcribe_captcha(vision_llm, png)
+    except Exception as e:
+        logger.exception("captcha action failed")
+        return ActionResult(
+            extracted_content=(
+                f"The human could not check the CAPTCHA (error: {e}). Do NOT guess a value."
+            ),
+            include_in_memory=True,
+        )
+    logger.info("captcha: source=%s, %d bytes, vision read=%r", source, len(png), solution)
+    if not solution or solution.upper() == "UNREADABLE":
+        return ActionResult(extracted_content=CAPTCHA_HUMAN_UNREADABLE, include_in_memory=True)
+    return ActionResult(
+        extracted_content=CAPTCHA_HUMAN_RESPONSE_TEMPLATE.format(solution=solution),
+        include_in_memory=True,
+    )
+
+
+async def _grab_captcha_image(browser_session: BrowserSession) -> bytes | None:
+    """Extract the loaded captcha <img> from the page as PNG bytes, or None.
+
+    Reads the already-displayed image via canvas (no new network request), so it can't
+    trigger captcha regeneration and needs no separate auth/cookies.
+    """
+    cdp = await browser_session.get_or_create_cdp_session()
+    result = await cdp.cdp_client.send.Runtime.evaluate(
+        params={"expression": _CAPTCHA_EXTRACT_JS, "returnByValue": True, "awaitPromise": True},
+        session_id=cdp.session_id,
+    )
+    value = (result.get("result") or {}).get("value")
+    if not isinstance(value, str) or not value.startswith("data:image"):
+        return None
+    return base64.b64decode(value.split(",", 1)[1])
+
+
+async def _transcribe_captcha(vision_llm, png: bytes) -> str:
+    image_url = f"data:image/png;base64,{base64.b64encode(png).decode()}"
+    messages = [
+        SystemMessage(content=CAPTCHA_TRANSCRIPTION_PROMPT),
+        HumanMessage(content=[{"type": "image_url", "image_url": {"url": image_url}}]),
+    ]
+    response = await vision_llm.ainvoke(messages, config={"callbacks": []})
+    return str(response.content).strip()
 
 
 def _is_ip_or_localhost(host: str) -> bool:
