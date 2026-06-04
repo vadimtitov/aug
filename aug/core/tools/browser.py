@@ -5,10 +5,9 @@ import base64
 import logging
 import mimetypes
 import os
-import socket
 from pathlib import Path
 from typing import Annotated
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 from browser_use import ActionResult, Agent, Browser, Tools
 from browser_use.agent.views import AgentOutput
@@ -32,6 +31,7 @@ from aug.core.prompts import (
 )
 from aug.core.run import AGENT_RUN_CONFIG_KEY, MessageContent
 from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
+from aug.utils.cdp import resolve_cdp_url
 from aug.utils.file_settings import load_settings
 
 logger = logging.getLogger(__name__)
@@ -146,7 +146,7 @@ async def browser(
 
     downloads_dir = Path(_DOWNLOADS_DIR)
     before = set(downloads_dir.iterdir()) if downloads_dir.exists() else set()
-    b = Browser(cdp_url=_resolve_cdp_url(cdp_url), downloads_path=_DOWNLOADS_DIR)
+    b = Browser(cdp_url=resolve_cdp_url(cdp_url), downloads_path=_DOWNLOADS_DIR)
     try:
         agent = Agent(
             task=task,
@@ -234,21 +234,6 @@ def _resolve_secrets(secrets: dict[str, str] | None) -> dict[str, str]:
         else:
             logger.warning("browser secrets: env var %r not found", env_var)
     return resolved
-
-
-def _resolve_cdp_url(cdp_url: str) -> str:
-    """Replace the hostname in a CDP URL with its resolved IP address.
-
-    Chrome's CDP HTTP endpoint rejects requests whose Host header is not an IP
-    or 'localhost'. Inside Docker, service names resolve to container IPs, so we
-    pre-resolve the hostname here to satisfy that check.
-    """
-    parsed = urlparse(cdp_url)
-    if parsed.hostname and not _is_ip_or_localhost(parsed.hostname):
-        ip = socket.gethostbyname(parsed.hostname)
-        resolved = parsed._replace(netloc=f"{ip}:{parsed.port}" if parsed.port else ip)
-        return urlunparse(resolved)
-    return cdp_url
 
 
 def _path_to_attachment(path: str) -> Attachment:
@@ -362,13 +347,3 @@ async def _transcribe_captcha(vision_llm, png: bytes) -> str:
     ]
     response = await vision_llm.ainvoke(messages, config={"callbacks": []})
     return str(response.content).strip()
-
-
-def _is_ip_or_localhost(host: str) -> bool:
-    if host == "localhost":
-        return True
-    try:
-        socket.inet_aton(host)
-        return True
-    except OSError:
-        return False

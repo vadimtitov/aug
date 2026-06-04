@@ -51,7 +51,7 @@ def mock_browser_deps():
         ) as mock_browser_cls,
         patch("aug.core.tools.browser._llm", return_value=MagicMock()),
         patch("aug.core.tools.browser._build_tools", return_value=MagicMock()),
-        patch("aug.core.tools.browser.socket.gethostbyname", return_value="1.2.3.4"),
+        patch("aug.utils.cdp.socket.gethostbyname", return_value="1.2.3.4"),
         patch("aug.core.tools.browser.Path.iterdir", return_value=iter([])),
         patch("aug.core.tools.browser.Path.exists", return_value=True),
     ):

@@ -10,7 +10,7 @@ interface Tile {
 }
 
 interface HomePageProps {
-  onNavigate: (page: "settings" | "skills") => void;
+  onNavigate: (page: "settings" | "skills" | "browser") => void;
 }
 
 export function HomePage({ onNavigate }: HomePageProps) {
@@ -34,9 +34,10 @@ export function HomePage({ onNavigate }: HomePageProps) {
     {
       id: "browser",
       name: "Browser",
-      desc: "Coming soon",
+      desc: "Watch the agent browse",
       icon: <Globe size={24} color="#f59e0b" strokeWidth={2} />,
-      enabled: false,
+      enabled: true,
+      onClick: () => onNavigate("browser"),
     },
     {
       id: "agent",

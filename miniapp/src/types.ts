@@ -70,6 +70,7 @@ export type PageState =
   | { page: "home" }
   | { page: "settings" }
   | { page: "skills" }
+  | { page: "browser" }
   | { page: "skill-detail"; skillName: string; source: "local" }
   | { page: "skill-detail"; skillName: string; source: "clawhub"; slug: string }
   | { page: "file-viewer"; skillName: string; filePath: string; source: "local" }

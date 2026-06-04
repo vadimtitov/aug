@@ -70,6 +70,36 @@ export function getModels(): Promise<string[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Live browser view
+// ---------------------------------------------------------------------------
+
+export function getBrowserStatus(): Promise<{ available: boolean }> {
+  return request<{ available: boolean }>("/browser/status");
+}
+
+// Fixed subprotocol marker, paired with the JWT (see browserStreamProtocols).
+export const BROWSER_WS_SUBPROTOCOL = "aug.browser-view.v1";
+
+/**
+ * Same-origin WebSocket URL for the live browser screencast (no credential in
+ * the URL). It inherits the page's ws/wss scheme, so there's no mixed content.
+ */
+export function browserStreamUrl(): string {
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}/browser/stream`;
+}
+
+/**
+ * WebSocket subprotocols: a fixed marker plus the JWT. The JWT rides in the
+ * Sec-WebSocket-Protocol header — the only header a browser WebSocket can set —
+ * keeping it out of the URL, access logs, and browser history.
+ */
+export function browserStreamProtocols(): string[] {
+  if (!_token) throw new Error("Not authenticated");
+  return [BROWSER_WS_SUBPROTOCOL, _token];
+}
+
+// ---------------------------------------------------------------------------
 // Skills (local — authenticated)
 // ---------------------------------------------------------------------------
 

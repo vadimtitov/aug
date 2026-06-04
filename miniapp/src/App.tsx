@@ -10,6 +10,7 @@ import { BackHandlerContext } from "./lib/backHandler.ts";
 
 const SkillDetailPage = lazy(() => import("./pages/SkillDetailPage.tsx").then((m) => ({ default: m.SkillDetailPage })));
 const FileViewerPage = lazy(() => import("./pages/FileViewerPage.tsx").then((m) => ({ default: m.FileViewerPage })));
+const BrowserPage = lazy(() => import("./pages/BrowserPage.tsx").then((m) => ({ default: m.BrowserPage })));
 
 type AuthState = "pending" | "ready" | "error";
 
@@ -119,6 +120,7 @@ export default function App() {
         onNavigate={(dest) => {
           if (dest === "settings") navigate({ page: "settings" });
           if (dest === "skills") navigate({ page: "skills" });
+          if (dest === "browser") navigate({ page: "browser" });
         }}
       />
     );
@@ -130,6 +132,14 @@ export default function App() {
 
   if (current.page === "skills") {
     return <SkillsPage onBack={goBack} onNavigate={navigate} />;
+  }
+
+  if (current.page === "browser") {
+    return (
+      <Suspense fallback={<LazyFallback />}>
+        <BrowserPage onBack={goBack} />
+      </Suspense>
+    );
   }
 
   return (
