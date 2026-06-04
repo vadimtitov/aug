@@ -14,6 +14,8 @@ export default defineConfig({
       '/models': 'http://aug:8000',
       '/health': 'http://aug:8000',
       '/skills': 'http://aug:8000',
+      // ws:true proxies the screencast WebSocket upgrade as well as /browser/status.
+      '/browser': { target: 'http://aug:8000', ws: true },
     },
   },
 })

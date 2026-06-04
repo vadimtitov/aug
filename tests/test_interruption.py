@@ -127,7 +127,7 @@ def browser_deps():
         patch("aug.core.tools.browser.Browser", return_value=mock_browser_instance),
         patch("aug.core.tools.browser._llm", return_value=MagicMock()),
         patch("aug.core.tools.browser.send_tool_progress_update", new=AsyncMock()),
-        patch("aug.core.tools.browser.socket.gethostbyname", return_value="1.2.3.4"),
+        patch("aug.utils.cdp.socket.gethostbyname", return_value="1.2.3.4"),
         patch("aug.core.tools.browser.Path.iterdir", return_value=iter([])),
         patch("aug.core.tools.browser.Path.exists", return_value=True),
     ):

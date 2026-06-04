@@ -62,3 +62,28 @@ async def require_api_key(request: Request) -> None:
         detail="Authentication required.",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+
+def verify_ws_credential(token: str) -> bool:
+    """Validate a Mini App JWT presented over a WebSocket subprotocol.
+
+    Browser WebSocket clients cannot set the Authorization header, so the Mini App
+    offers its JWT as a ``Sec-WebSocket-Protocol`` value. That keeps the credential
+    out of the URL — and therefore out of access logs, proxy logs, and browser
+    history — unlike a ``?token=`` query param.
+
+    Only the short-lived Mini App JWT is accepted here, never the permanent shared
+    API key: a credential that can be captured from a screencast surface should be
+    one that expires on its own. Returns ``True`` if valid (never raises).
+    """
+    if not token:
+        return False
+    bot_token = get_settings().TELEGRAM_BOT_TOKEN
+    if not bot_token:
+        return False
+    try:
+        verify_jwt(token, bot_token)
+        return True
+    except jwt.PyJWTError as exc:
+        logger.warning("ws_auth_failed reason=%s", exc)
+        return False

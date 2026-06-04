@@ -23,8 +23,19 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from aug.api.interfaces.telegram import TelegramInterface
-from aug.api.routers import auth, chat, files, gmail_auth, hooks, settings, skills, threads
+from aug.api.routers import (
+    auth,
+    browser,
+    chat,
+    files,
+    gmail_auth,
+    hooks,
+    settings,
+    skills,
+    threads,
+)
 from aug.config import get_settings
+from aug.core.browser_view import BrowserViewHub
 from aug.core.dispatch import set_app as set_push_app
 from aug.core.memory import init_memory_files, start_consolidation_scheduler
 from aug.utils.db import create_pool, set_pool
@@ -88,6 +99,9 @@ async def lifespan(app: FastAPI):
         # Interface registry — keyed by interface name, used for proactive notifications
         app.state.interfaces = {}
 
+        # Live browser view — lazy; the screencast only runs while someone watches.
+        app.state.browser_view_hub = BrowserViewHub(get_settings().BROWSER_CDP_URL)
+
         telegram = TelegramInterface(checkpointer)
         await telegram.start_polling(app)
 
@@ -113,6 +127,7 @@ async def lifespan(app: FastAPI):
         scheduler_task.cancel()
         await stop_scheduler(app)
         await telegram.stop_polling(app)
+        await app.state.browser_view_hub.aclose()
 
     # Shutdown
     await pool.close()
@@ -164,6 +179,7 @@ def create_app() -> FastAPI:
     app.include_router(settings.router)
     app.include_router(skills.router)
     app.include_router(hooks.router)
+    app.include_router(browser.router)
 
     return app
 
