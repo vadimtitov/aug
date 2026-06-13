@@ -116,6 +116,41 @@ def write_skill_md(
     (skill_dir / "SKILL.md").write_text(content)
 
 
+def set_skill_name(skill_dir: Path, name: str) -> None:
+    """Force the top-level ``name`` in a skill's SKILL.md frontmatter to equal ``name``.
+
+    ClawHub assigns its own slug (used here as the install directory name), which can
+    differ from the author's frontmatter ``name`` — e.g. slug ``git2`` ships
+    ``name: git``, and collision-suffixed slugs like ``skill-git-scm`` are common. The
+    loader requires the frontmatter name to match the directory name, so a mismatched
+    skill would silently fail to load after a "successful" install. Normalising the
+    name here keeps the directory name (the slug, used everywhere as the identifier)
+    authoritative. Only the ``name`` line is rewritten; all other frontmatter and the
+    body are left untouched.
+    """
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.exists():
+        return
+    raw = skill_md.read_text()
+
+    split = _split_frontmatter(raw)
+    if split is None:
+        # No parseable frontmatter — prepend a minimal one.
+        skill_md.write_text(f"---\nname: {name}\n---\n\n{raw.lstrip()}\n")
+        return
+
+    frontmatter, remainder = split
+    name_line = re.compile(r"^name:.*(?:\n|$)", re.MULTILINE)
+    if name_line.search(frontmatter):
+        frontmatter = name_line.sub(f"name: {name}\n", frontmatter, count=1)
+    else:
+        # frontmatter already opens with the newline after '---', so it doubles as the
+        # separator before the inserted name line.
+        frontmatter = f"\nname: {name}{frontmatter}"
+
+    skill_md.write_text(f"---{frontmatter}{remainder}")
+
+
 def list_skill_files(skill_dir: Path) -> list[str]:
     """List supporting files relative to skill_dir, excluding SKILL.md."""
     result = []
@@ -188,21 +223,32 @@ def _load_skill(skill_dir: Path) -> Skill | None:
     return Skill(name=name, description=description, body=body.strip(), always_on=always_on)
 
 
-def _parse_skill_md(raw: str) -> tuple[dict, str]:
-    """Parse YAML frontmatter + body from SKILL.md content.
+def _split_frontmatter(raw: str) -> tuple[str, str] | None:
+    """Split SKILL.md at its YAML '---' fences.
 
-    Frontmatter is delimited by '---' on its own line. Handles '---' appearing
-    inside frontmatter values by looking for the closing delimiter on a line boundary.
+    Returns ``(frontmatter_text, remainder)`` where ``frontmatter_text`` is the raw
+    text between the opening and closing '---' lines and ``remainder`` is the closing
+    '---' line plus everything after it — so ``"---" + frontmatter_text + remainder``
+    reproduces the input exactly. Returns None when there is no closing fence.
+
+    The closing fence must sit at the start of a line, so '---' appearing inside a
+    frontmatter value does not split the block prematurely.
     """
     if not raw.startswith("---"):
-        return {}, raw
-
-    # Find closing '---' at the start of a line (not just anywhere in the string)
+        return None
     m = re.search(r"^---\s*$", raw[3:], re.MULTILINE)
-    if not m:
+    if m is None:
+        return None
+    return raw[3 : m.start() + 3], raw[m.start() + 3 :]
+
+
+def _parse_skill_md(raw: str) -> tuple[dict, str]:
+    """Parse YAML frontmatter + body from SKILL.md content."""
+    split = _split_frontmatter(raw)
+    if split is None:
         return {}, raw
 
-    frontmatter_text = raw[3 : m.start() + 3].strip()
-    body = raw[m.end() + 3 :].strip()
-    frontmatter = yaml.safe_load(frontmatter_text) or {}
-    return frontmatter, body
+    frontmatter_text, remainder = split
+    _, _, body = remainder.partition("\n")  # drop the closing '---' line
+    frontmatter = yaml.safe_load(frontmatter_text.strip()) or {}
+    return frontmatter, body.strip()

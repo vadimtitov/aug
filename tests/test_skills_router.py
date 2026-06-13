@@ -427,6 +427,70 @@ def test_install_skill_extracts_supporting_files(client: TestClient, tmp_path: P
     assert (tmp_path / "remote-skill" / "scripts" / "run.sh").exists()
 
 
+def test_install_skill_normalizes_mismatched_name(client: TestClient, tmp_path: Path) -> None:
+    # ClawHub slug "git2" ships a SKILL.md whose frontmatter says name: git. Without
+    # normalisation the loader rejects it and the skill silently fails to install.
+    skill_md = "---\nname: git\ndescription: Git helper\n---\n\nDo git things.\n"
+    zip_bytes = _make_zip(skill_md)
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.content = zip_bytes
+    mock_response.raise_for_status = MagicMock()
+
+    with (
+        patch("aug.api.routers.skills.SKILLS_DIR", tmp_path),
+        patch("aug.api.routers.skills.httpx.AsyncClient") as mock_cls,
+    ):
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_cls.return_value = mock_client
+
+        install = client.post("/skills/git2/install", json={"slug": "git2"}, headers=_HEADERS)
+        # The skill must now be loadable under the slug it was installed as.
+        listed = client.get("/skills", headers=_HEADERS)
+        detail = client.get("/skills/git2", headers=_HEADERS)
+
+    assert install.status_code == 200
+    assert "name: git2" in (tmp_path / "git2" / "SKILL.md").read_text()
+    assert any(s["name"] == "git2" for s in listed.json())
+    assert detail.status_code == 200
+    assert detail.json()["description"] == "Git helper"
+
+
+def test_install_skill_rejects_package_without_skill_md(client: TestClient, tmp_path: Path) -> None:
+    # A download with no SKILL.md is not a valid skill — must fail, not pretend success.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("README.md", "no skill here")
+    zip_bytes = buf.getvalue()
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.content = zip_bytes
+    mock_response.raise_for_status = MagicMock()
+
+    with (
+        patch("aug.api.routers.skills.SKILLS_DIR", tmp_path),
+        patch("aug.api.routers.skills.httpx.AsyncClient") as mock_cls,
+    ):
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_cls.return_value = mock_client
+
+        response = client.post(
+            "/skills/no-skill/install", json={"slug": "no-skill"}, headers=_HEADERS
+        )
+
+    assert response.status_code == 502
+    # The half-installed directory must be cleaned up, not left behind.
+    assert not (tmp_path / "no-skill").exists()
+
+
 def test_install_skill_handles_clawhub_error(client: TestClient, tmp_path: Path) -> None:
     import httpx as _httpx
 

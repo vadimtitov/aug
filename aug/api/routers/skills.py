@@ -17,6 +17,7 @@ from aug.utils.skills import (
     list_skill_files,
     load_skill,
     load_skills,
+    set_skill_name,
     validate_name,
     write_skill_md,
 )
@@ -265,6 +266,29 @@ async def install_skill(name: str, req: InstallRequest) -> dict:
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(zf.read(member.filename))
+
+    if not (skill_dir / "SKILL.md").exists():
+        shutil.rmtree(skill_dir, ignore_errors=True)
+        logger.warning("install_skill no SKILL.md in download slug=%s", req.slug)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Downloaded package has no SKILL.md — not a valid skill.",
+        )
+
+    # ClawHub slugs (the directory name) can differ from the author's frontmatter
+    # name; the loader requires they match, so force the name to the slug. Without
+    # this the install "succeeds" but the skill never loads.
+    set_skill_name(skill_dir, name)
+
+    # Pass this module's SKILLS_DIR explicitly so the check reads the same directory
+    # the files were written to (and stays patchable in tests).
+    if load_skill(name, SKILLS_DIR) is None:
+        shutil.rmtree(skill_dir, ignore_errors=True)
+        logger.warning("install_skill not loadable after extract slug=%s", req.slug)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Installed skill could not be parsed.",
+        )
 
     logger.info("install_skill installed slug=%s to %s", req.slug, skill_dir)
     return {"ok": True, "name": name}
