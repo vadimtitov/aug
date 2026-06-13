@@ -7,11 +7,12 @@ import zipfile
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from aug.api.security import require_api_key
+from aug.core.skill_deps import warm_skill_dir
 from aug.utils.skills import (
     SKILLS_DIR,
     list_skill_files,
@@ -214,7 +215,7 @@ async def delete_skill_file(name: str, path: str = Query(...)) -> dict:
 
 
 @router.post("/skills/{name}/install")
-async def install_skill(name: str, req: InstallRequest) -> dict:
+async def install_skill(name: str, req: InstallRequest, background_tasks: BackgroundTasks) -> dict:
     """Download a skill from ClawHub and extract it to the local skills directory."""
     _require_valid_name(name)
     params: dict[str, str] = {"slug": req.slug}
@@ -289,6 +290,10 @@ async def install_skill(name: str, req: InstallRequest) -> dict:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Installed skill could not be parsed.",
         )
+
+    # Warm any PEP 723 script dependencies after responding, so the skill is ready to run
+    # without waiting for a restart or stalling the agent's first use on downloads.
+    background_tasks.add_task(warm_skill_dir, skill_dir)
 
     logger.info("install_skill installed slug=%s to %s", req.slug, skill_dir)
     return {"ok": True, "name": name}

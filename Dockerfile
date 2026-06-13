@@ -50,8 +50,9 @@ RUN uv sync --no-dev --no-install-project --extra agent-tools
 COPY aug/ ./aug/
 
 # Install the project itself, then hand ownership to appuser
+# Pre-create the persistent uv cache dir so its named volume inherits appuser ownership.
 RUN uv sync --no-dev --extra agent-tools && \
-    mkdir -p /app/browser-downloads && \
+    mkdir -p /app/browser-downloads /app/.uv-cache && \
     chown -R appuser:appuser /app
 
 USER appuser

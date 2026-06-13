@@ -1,7 +1,7 @@
 """Unit tests for the skills loader and skills tools."""
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from aug.utils.skills import (
     ALWAYS_ON_MAX_CHARS,
@@ -420,6 +420,85 @@ def test_write_skill_file_skill_not_found(tmp_path):
     assert "not found" in text
 
 
+def test_write_skill_file_with_dependencies_injects_and_installs(tmp_path):
+    from aug.core.tools.skills import save_skill, write_skill_file
+
+    with (
+        patch("aug.core.tools.skills.SKILLS_DIR", tmp_path),
+        patch("aug.core.skill_deps.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        save_skill.func(name="dep-skill", description="test", body="body")
+        text, _ = write_skill_file.func(
+            skill_name="dep-skill",
+            path="scripts/x.py",
+            content="import httpx\n",
+            dependencies=["httpx>=0.27"],
+        )
+
+    written = (tmp_path / "dep-skill" / "scripts" / "x.py").read_text()
+    assert "# /// script" in written  # PEP 723 block was written for the agent
+    assert "httpx>=0.27" in written
+    assert "import httpx" in written
+    assert "installed and cached: httpx>=0.27" in text
+    assert "uv run scripts/x.py" in text
+    mock_run.assert_called_once()
+
+
+def test_write_skill_file_reports_dependency_install_failure(tmp_path):
+    from aug.core.tools.skills import save_skill, write_skill_file
+
+    with (
+        patch("aug.core.tools.skills.SKILLS_DIR", tmp_path),
+        patch("aug.core.skill_deps.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="no match for 'nope'")
+        save_skill.func(name="dep-skill", description="test", body="body")
+        text, _ = write_skill_file.func(
+            skill_name="dep-skill",
+            path="scripts/x.py",
+            content="import nope\n",
+            dependencies=["nope"],
+        )
+
+    # The file is still written, but the agent is told the install failed.
+    assert (tmp_path / "dep-skill" / "scripts" / "x.py").exists()
+    assert "FAILED" in text
+    assert "no match for 'nope'" in text
+
+
+def test_write_skill_file_rejects_handwritten_pep723_block(tmp_path):
+    # Hand-writing the PEP 723 block instead of using `dependencies` is rejected, steering
+    # the agent to the one supported path.
+    from aug.core.tools.skills import save_skill, write_skill_file
+
+    content = '# /// script\n# dependencies = ["httpx"]\n# ///\nimport httpx\n'
+    with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
+        save_skill.func(name="dep-skill", description="test", body="body")
+        text, _ = write_skill_file.func(
+            skill_name="dep-skill", path="scripts/x.py", content=content
+        )
+
+    assert "dependencies" in text and "parameter" in text
+    assert not (tmp_path / "dep-skill" / "scripts" / "x.py").exists()
+
+
+def test_write_skill_file_rejects_dependencies_for_non_python(tmp_path):
+    from aug.core.tools.skills import save_skill, write_skill_file
+
+    with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
+        save_skill.func(name="dep-skill", description="test", body="body")
+        text, _ = write_skill_file.func(
+            skill_name="dep-skill",
+            path="scripts/run.sh",
+            content="echo hi",
+            dependencies=["httpx"],
+        )
+
+    assert "only supported for Python" in text
+    assert not (tmp_path / "dep-skill" / "scripts" / "run.sh").exists()
+
+
 # ---------------------------------------------------------------------------
 # get_skill tool
 # ---------------------------------------------------------------------------
@@ -433,6 +512,28 @@ def test_get_skill_returns_content(tmp_path):
         result = get_skill.invoke({"name": "my-skill"})
 
     assert "Follow this." in result
+
+
+def test_get_skill_surfaces_bundled_script_dependencies(tmp_path):
+    from aug.core.tools.skills import get_skill, save_skill, write_skill_file
+
+    with (
+        patch("aug.core.tools.skills.SKILLS_DIR", tmp_path),
+        patch("aug.core.skill_deps.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        save_skill.func(name="my-skill", description="test", body="Follow this.")
+        write_skill_file.func(
+            skill_name="my-skill",
+            path="scripts/x.py",
+            content="import httpx\n",
+            dependencies=["httpx>=0.27"],
+        )
+        result = get_skill.invoke({"name": "my-skill"})
+
+    assert "Bundled scripts" in result
+    assert "scripts/x.py" in result
+    assert "httpx>=0.27" in result
 
 
 def test_get_skill_not_found(tmp_path):

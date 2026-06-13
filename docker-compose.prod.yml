@@ -35,11 +35,14 @@ services:
       BASE_URL: ${BASE_URL:-http://YOUR_HOST:8012}
       DEBUG: ${DEBUG:-false}
       DEV_AUTH_BYPASS: "false"
+      # Persist the uv cache (skill PEP 723 dependencies) across rebuilds.
+      UV_CACHE_DIR: /app/.uv-cache
     ports:
       - "8012:8000"
     volumes:
       - /opt/aug/data:/app/data
       - /opt/aug/browser-downloads:/app/browser-downloads
+      - uv_cache:/app/.uv-cache
     # Store secrets in hushed, then run the app via "hushed run --".
     # hushed redacts secret values from all process output, preventing them
     # from appearing in any text the LLM could see (tool output, shell responses, etc.).
@@ -81,3 +84,6 @@ services:
       - /opt/aug/browser-downloads:/app/browser-downloads
     shm_size: 1g
     restart: unless-stopped
+
+volumes:
+  uv_cache:

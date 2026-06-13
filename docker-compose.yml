@@ -9,12 +9,18 @@ services:
       BROWSER_CDP_URL: http://chromium:9222
       BASE_URL: ${BASE_URL:-http://YOUR_HOST:8012}
       DEV_AUTH_BYPASS: "true"
+      # Persist the uv cache (skill PEP 723 dependencies) across rebuilds.
+      UV_CACHE_DIR: /app/.uv-cache
     env_file: .env
     volumes:
       - ./aug:/app/aug
       - ./data:/app/data
       - browser_downloads:/app/browser-downloads
-    command: ["uvicorn", "aug.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+      - uv_cache:/app/.uv-cache
+    # Watch only the source dir — without this, --reload also watches /app/.uv-cache and
+    # /app/data, so skill dependency warm-up (which writes the uv cache) would trigger
+    # reload loops.
+    command: ["uvicorn", "aug.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/aug"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,3 +78,4 @@ volumes:
   postgres_data:
   chrome_profile:
   browser_downloads:
+  uv_cache:
