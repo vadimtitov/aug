@@ -460,6 +460,35 @@ def test_install_skill_normalizes_mismatched_name(client: TestClient, tmp_path: 
     assert detail.json()["description"] == "Git helper"
 
 
+def test_install_skill_warms_dependencies(client: TestClient, tmp_path: Path) -> None:
+    # After a successful install the skill's PEP 723 deps are warmed in the background.
+    skill_md = "---\nname: remote-skill\ndescription: From clawhub\n---\n\nbody\n"
+    zip_bytes = _make_zip(skill_md)
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.content = zip_bytes
+    mock_response.raise_for_status = MagicMock()
+
+    with (
+        patch("aug.api.routers.skills.SKILLS_DIR", tmp_path),
+        patch("aug.api.routers.skills.warm_skill_dir") as mock_warm,
+        patch("aug.api.routers.skills.httpx.AsyncClient") as mock_cls,
+    ):
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_cls.return_value = mock_client
+
+        response = client.post(
+            "/skills/remote-skill/install", json={"slug": "remote-skill"}, headers=_HEADERS
+        )
+
+    assert response.status_code == 200
+    mock_warm.assert_called_once_with(tmp_path / "remote-skill")
+
+
 def test_install_skill_rejects_package_without_skill_md(client: TestClient, tmp_path: Path) -> None:
     # A download with no SKILL.md is not a valid skill — must fail, not pretend success.
     buf = io.BytesIO()

@@ -11,6 +11,7 @@ All shared resources are stored on ``app.state`` so routers can access them
 via ``request.app.state.<resource>``.
 """
 
+import asyncio
 import logging
 import re
 import sys
@@ -38,6 +39,7 @@ from aug.config import get_settings
 from aug.core.browser_view import BrowserViewHub
 from aug.core.dispatch import set_app as set_push_app
 from aug.core.memory import init_memory_files, start_consolidation_scheduler
+from aug.core.skill_deps import warm_all_skills
 from aug.utils.db import create_pool, set_pool
 from aug.utils.logging import configure_logging, set_correlation_id
 from aug.utils.scheduler import start_scheduler, stop_scheduler
@@ -109,6 +111,11 @@ async def lifespan(app: FastAPI):
         consolidation_task = await start_consolidation_scheduler()
         scheduler_task = await start_scheduler(app)
 
+        # Pre-resolve installed skills' PEP 723 dependencies so the first agent run after
+        # a rebuild doesn't stall on downloads. Background + best-effort: never blocks
+        # startup, runs off the event loop (uv shells out, which is blocking).
+        warmup_task = asyncio.create_task(asyncio.to_thread(warm_all_skills))
+
         sys.stdout.flush()
         sys.stdout.write(_BANNER)
         sys.stdout.flush()
@@ -125,6 +132,7 @@ async def lifespan(app: FastAPI):
 
         consolidation_task.cancel()
         scheduler_task.cancel()
+        warmup_task.cancel()
         await stop_scheduler(app)
         await telegram.stop_polling(app)
         await app.state.browser_view_hub.aclose()
