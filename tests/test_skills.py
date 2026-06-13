@@ -8,7 +8,9 @@ from aug.utils.skills import (
     Skill,
     SkillsIndex,
     build_skills_prompt,
+    load_skill,
     load_skills,
+    set_skill_name,
     validate_name,
 )
 
@@ -143,6 +145,92 @@ def test_load_skills_skips_malformed_yaml(tmp_path):
     with patch("aug.utils.skills.SKILLS_DIR", skills_dir):
         index = load_skills()
     assert index.on_demand == []
+
+
+# ---------------------------------------------------------------------------
+# set_skill_name
+# ---------------------------------------------------------------------------
+
+
+def test_set_skill_name_rewrites_mismatched_name(tmp_path):
+    # ClawHub slug "git2" ships a SKILL.md with name: git — the loader would reject it.
+    skill_dir = tmp_path / "git2"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: git\ndescription: Git helper\n---\n\nDo git things.\n"
+    )
+    set_skill_name(skill_dir, "git2")
+    detail = load_skill("git2", tmp_path)
+    assert detail is not None
+    assert detail.name == "git2"
+    assert detail.description == "Git helper"
+    assert detail.body == "Do git things."
+
+
+def test_set_skill_name_preserves_other_frontmatter_and_body(tmp_path):
+    skill_dir = tmp_path / "renamed"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: original\n"
+        "description: Keeps everything\n"
+        "metadata:\n"
+        "  openclaw:\n"
+        "    emoji: bee\n"
+        "    homepage: https://example.com\n"
+        "---\n\n"
+        "Body line one.\n\nBody line two.\n"
+    )
+    set_skill_name(skill_dir, "renamed")
+    content = (skill_dir / "SKILL.md").read_text()
+    assert "name: renamed" in content
+    assert "name: original" not in content
+    assert "emoji: bee" in content
+    assert "homepage: https://example.com" in content
+    assert "Body line one." in content
+    assert "Body line two." in content
+
+
+def test_set_skill_name_idempotent_when_already_matching(tmp_path):
+    skill_dir = tmp_path / "match"
+    skill_dir.mkdir()
+    original = "---\nname: match\ndescription: Same\n---\n\nbody\n"
+    (skill_dir / "SKILL.md").write_text(original)
+    set_skill_name(skill_dir, "match")
+    detail = load_skill("match", tmp_path)
+    assert detail is not None
+    assert detail.name == "match"
+
+
+def test_set_skill_name_inserts_name_when_absent(tmp_path):
+    skill_dir = tmp_path / "noname"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("---\ndescription: Missing name\n---\n\nbody\n")
+    set_skill_name(skill_dir, "noname")
+    detail = load_skill("noname", tmp_path)
+    assert detail is not None
+    assert detail.name == "noname"
+    assert detail.description == "Missing name"
+
+
+def test_set_skill_name_handles_no_frontmatter(tmp_path):
+    # A file lacking frontmatter gets a minimal one prepended (still not loadable
+    # without a description, but the name must be present and the body preserved).
+    skill_dir = tmp_path / "raw"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text("Just a body, no frontmatter.\n")
+    set_skill_name(skill_dir, "raw")
+    content = (skill_dir / "SKILL.md").read_text()
+    assert content.startswith("---\nname: raw\n---")
+    assert "Just a body, no frontmatter." in content
+
+
+def test_set_skill_name_noop_when_no_skill_md(tmp_path):
+    skill_dir = tmp_path / "empty"
+    skill_dir.mkdir()
+    # Should not raise when SKILL.md is absent.
+    set_skill_name(skill_dir, "empty")
+    assert not (skill_dir / "SKILL.md").exists()
 
 
 # ---------------------------------------------------------------------------
