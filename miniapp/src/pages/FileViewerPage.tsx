@@ -11,6 +11,7 @@ import json from "react-syntax-highlighter/dist/esm/languages/hljs/json";
 import { atomOneDark } from "react-syntax-highlighter/dist/esm/styles/hljs";
 import { clawhubGetFile, deleteSkillFile, getSkillFile, updateSkillFile } from "../api.ts";
 import { errorMessage, tg } from "../lib/tg.ts";
+import { alertDialog, confirmDialog } from "../lib/dialog.ts";
 import { BackHandlerContext } from "../lib/backHandler.ts";
 
 SyntaxHighlighter.registerLanguage("python", python);
@@ -49,7 +50,7 @@ export function FileViewerPage({ skillName, filePath, source, slug, onBack, onDe
 
   const safeBack = useCallback(() => {
     if (!editing) { onBack(); return; }
-    tg()?.showConfirm("Discard unsaved changes?", (ok: boolean) => {
+    confirmDialog("Discard unsaved changes?").then((ok) => {
       if (ok) onBack();
     });
   }, [editing, onBack]);
@@ -97,7 +98,7 @@ export function FileViewerPage({ skillName, filePath, source, slug, onBack, onDe
       setEditing(false);
     } catch (e) {
       tg()?.HapticFeedback?.notificationOccurred("error");
-      tg()?.showAlert(errorMessage(e));
+      alertDialog(errorMessage(e));
     } finally {
       setSaving(false);
     }
@@ -111,14 +112,14 @@ export function FileViewerPage({ skillName, filePath, source, slug, onBack, onDe
       onDeleted();
     } catch (e) {
       tg()?.HapticFeedback?.notificationOccurred("error");
-      tg()?.showAlert(errorMessage(e));
+      alertDialog(errorMessage(e));
       setDeleting(false);
     }
   }
 
   function confirmDelete() {
     tg()?.HapticFeedback?.impactOccurred("light");
-    tg()?.showConfirm(`Delete "${fileName}"?`, (ok: boolean) => {
+    confirmDialog(`Delete "${fileName}"?`, { confirmText: "Delete", destructive: true }).then((ok) => {
       if (ok) handleDelete();
     });
   }

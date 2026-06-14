@@ -16,6 +16,7 @@ import {
 } from "../api.ts";
 import type { ClawHubSkillDetail as ClawHubDetail, PageState, SkillDetail } from "../types.ts";
 import { errorMessage, tg } from "../lib/tg.ts";
+import { alertDialog, confirmDialog } from "../lib/dialog.ts";
 import { bumpInstalledVersion } from "../lib/installedVersion.ts";
 import { BackHandlerContext } from "../lib/backHandler.ts";
 
@@ -85,7 +86,7 @@ function LocalSkillDetail({
 
   const safeBack = useCallback(() => {
     if (!editing) { onBack(); return; }
-    tg()?.showConfirm("Discard unsaved changes?", (ok: boolean) => {
+    confirmDialog("Discard unsaved changes?").then((ok) => {
       if (ok) onBack();
     });
   }, [editing, onBack]);
@@ -140,7 +141,7 @@ function LocalSkillDetail({
       setEditing(false);
     } catch (e) {
       tg()?.HapticFeedback?.notificationOccurred("error");
-      tg()?.showAlert(errorMessage(e));
+      alertDialog(errorMessage(e));
     } finally {
       setSaving(false);
     }
@@ -186,14 +187,14 @@ function LocalSkillDetail({
       onDeleted();
     } catch (e) {
       tg()?.HapticFeedback?.notificationOccurred("error");
-      tg()?.showAlert(errorMessage(e));
+      alertDialog(errorMessage(e));
       setDeleting(false);
     }
   }
 
   function confirmDelete() {
     tg()?.HapticFeedback?.impactOccurred("light");
-    tg()?.showConfirm(`Delete "${skill?.name}"?`, (ok: boolean) => {
+    confirmDialog(`Delete "${skill?.name}"?`, { confirmText: "Delete", destructive: true }).then((ok) => {
       if (ok) handleDelete();
     });
   }
@@ -374,7 +375,7 @@ function ClawHubSkillDetailPage({
       bumpInstalledVersion();
     } catch (e) {
       tg()?.HapticFeedback?.notificationOccurred("error");
-      tg()?.showAlert(errorMessage(e));
+      alertDialog(errorMessage(e));
     } finally {
       setInstalling(false);
     }
@@ -382,10 +383,9 @@ function ClawHubSkillDetailPage({
 
   function handleInstallClick() {
     if (installed) {
-      tg()?.showConfirm(
+      confirmDialog(
         `Update "${slug}"? Your local edits will be overwritten.`,
-        (ok: boolean) => { if (ok) doInstall(); }
-      );
+      ).then((ok) => { if (ok) doInstall(); });
     } else {
       doInstall();
     }
