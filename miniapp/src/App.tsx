@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { retrieveRawInitData } from "@telegram-apps/sdk-react";
 import { initAuth } from "./api.ts";
 import { HomePage } from "./pages/HomePage.tsx";
@@ -6,7 +7,9 @@ import { SettingsPage } from "./pages/SettingsPage.tsx";
 import { SkillsPage } from "./pages/SkillsPage.tsx";
 import type { PageState } from "./types.ts";
 import { isInTelegram, tg } from "./lib/tg.ts";
+import { DialogHost } from "./lib/dialog-host.tsx";
 import { BackHandlerContext } from "./lib/backHandler.ts";
+import { ErrorBoundary } from "./lib/ErrorBoundary.tsx";
 
 const SkillDetailPage = lazy(() => import("./pages/SkillDetailPage.tsx").then((m) => ({ default: m.SkillDetailPage })));
 const FileViewerPage = lazy(() => import("./pages/FileViewerPage.tsx").then((m) => ({ default: m.FileViewerPage })));
@@ -114,8 +117,9 @@ export default function App() {
     );
   }
 
+  let content: ReactNode;
   if (current.page === "home") {
-    return (
+    content = (
       <HomePage
         onNavigate={(dest) => {
           if (dest === "settings") navigate({ page: "settings" });
@@ -124,48 +128,50 @@ export default function App() {
         }}
       />
     );
-  }
-
-  if (current.page === "settings") {
-    return <SettingsPage onBack={goBack} />;
-  }
-
-  if (current.page === "skills") {
-    return <SkillsPage onBack={goBack} onNavigate={navigate} />;
-  }
-
-  if (current.page === "browser") {
-    return (
+  } else if (current.page === "settings") {
+    content = <SettingsPage onBack={goBack} />;
+  } else if (current.page === "skills") {
+    content = <SkillsPage onBack={goBack} onNavigate={navigate} />;
+  } else if (current.page === "browser") {
+    content = (
       <Suspense fallback={<LazyFallback />}>
         <BrowserPage onBack={goBack} />
       </Suspense>
     );
+  } else {
+    content = (
+      <BackHandlerContext.Provider value={backHandlerRef}>
+        <Suspense fallback={<LazyFallback />}>
+          {current.page === "skill-detail" && (
+            <SkillDetailPage
+              skillName={current.skillName}
+              source={current.source}
+              slug={current.source === "clawhub" ? current.slug : undefined}
+              onBack={goBack}
+              onNavigate={navigate}
+              onDeleted={goBack}
+            />
+          )}
+          {current.page === "file-viewer" && (
+            <FileViewerPage
+              skillName={current.skillName}
+              filePath={current.filePath}
+              source={current.source}
+              slug={current.source === "clawhub" ? current.slug : undefined}
+              onBack={goBack}
+              onDeleted={goBack}
+            />
+          )}
+        </Suspense>
+      </BackHandlerContext.Provider>
+    );
   }
 
   return (
-    <BackHandlerContext.Provider value={backHandlerRef}>
-      <Suspense fallback={<LazyFallback />}>
-        {current.page === "skill-detail" && (
-          <SkillDetailPage
-            skillName={current.skillName}
-            source={current.source}
-            slug={current.source === "clawhub" ? current.slug : undefined}
-            onBack={goBack}
-            onNavigate={navigate}
-            onDeleted={goBack}
-          />
-        )}
-        {current.page === "file-viewer" && (
-          <FileViewerPage
-            skillName={current.skillName}
-            filePath={current.filePath}
-            source={current.source}
-            slug={current.source === "clawhub" ? current.slug : undefined}
-            onBack={goBack}
-            onDeleted={goBack}
-          />
-        )}
-      </Suspense>
-    </BackHandlerContext.Provider>
+    <>
+      {/* Key on the current page so navigating away from a crashed page clears the error. */}
+      <ErrorBoundary key={current.page}>{content}</ErrorBoundary>
+      <DialogHost />
+    </>
   );
 }

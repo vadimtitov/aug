@@ -361,7 +361,7 @@ function ClawHubCard({
             <Zap size={11} /> code
           </span>
         )}
-        {skill.capabilityTags.length > 0 && (
+        {skill.capabilityTags && skill.capabilityTags.length > 0 && (
           <span className="skill-stat skill-stat-warn" title={skill.capabilityTags.join(", ")}>
             <Shield size={11} /> {skill.capabilityTags.length}
           </span>

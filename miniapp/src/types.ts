@@ -20,8 +20,10 @@ export interface ClawHubSkillCard {
   summary: string;
   ownerHandle: string;
   latestVersion: string; // semver string directly
-  capabilityTags: string[];
-  executesCode: boolean;
+  // Optional: the ClawHub list endpoint may omit these (it dropped them at one
+  // point). Access defensively — an undefined .length crashes the whole render.
+  capabilityTags?: string[];
+  executesCode?: boolean;
   isOfficial: boolean;
   updatedAt?: number;
 }
