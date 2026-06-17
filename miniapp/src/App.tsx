@@ -9,6 +9,7 @@ import type { PageState } from "./types.ts";
 import { isInTelegram, tg } from "./lib/tg.ts";
 import { DialogHost } from "./lib/dialog-host.tsx";
 import { BackHandlerContext } from "./lib/backHandler.ts";
+import { ErrorBoundary } from "./lib/ErrorBoundary.tsx";
 
 const SkillDetailPage = lazy(() => import("./pages/SkillDetailPage.tsx").then((m) => ({ default: m.SkillDetailPage })));
 const FileViewerPage = lazy(() => import("./pages/FileViewerPage.tsx").then((m) => ({ default: m.FileViewerPage })));
@@ -168,7 +169,8 @@ export default function App() {
 
   return (
     <>
-      {content}
+      {/* Key on the current page so navigating away from a crashed page clears the error. */}
+      <ErrorBoundary key={current.page}>{content}</ErrorBoundary>
       <DialogHost />
     </>
   );
