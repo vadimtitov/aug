@@ -12,18 +12,21 @@ and for graceful shutdown.
 import asyncio
 import json
 import logging
-from datetime import UTC
+import re
+from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 
 from aug.core.dispatch import TASK_RETRY_JOB_PREFIX, fire_task
 from aug.utils.job_control import set_fire_task_fn, set_scheduler
-from aug.utils.tasks import list_tasks, make_trigger
+from aug.utils.tasks import ScheduledTask, list_tasks, make_trigger
 
 logger = logging.getLogger(__name__)
 
 _RECONCILE_INTERVAL = 30  # seconds
+# Missed jobs older than this are silently dropped instead of "caught up".
+_MISFIRE_GRACE_SECONDS = 3600
 
 
 async def start_scheduler(app: FastAPI) -> asyncio.Task:
@@ -35,7 +38,10 @@ async def start_scheduler(app: FastAPI) -> asyncio.Task:
 
     The task should be cancelled during application shutdown.
     """
-    scheduler = AsyncIOScheduler(timezone=UTC)
+    scheduler = AsyncIOScheduler(
+        timezone=UTC,
+        job_defaults={"misfire_grace_time": _MISFIRE_GRACE_SECONDS},
+    )
     scheduler.start()
     app.state.scheduler = scheduler
     set_scheduler(scheduler)
@@ -86,6 +92,15 @@ async def _reconcile(app: FastAPI) -> None:
         wanted_ids.add(job_id)
         schedule_key = f"{task.schedule_type}:{json.dumps(task.schedule_params, sort_keys=True)}"
 
+        # Skip one-shot date tasks that have already fired.
+        if _is_date_task_past(task):
+            if job_id in current_job_ids:
+                scheduler.remove_job(job_id)
+                schedule_cache.pop(job_id, None)
+            wanted_ids.discard(job_id)
+            logger.debug("Skipping past date task %r", task.name)
+            continue
+
         try:
             trigger = make_trigger(task.schedule_type, task.schedule_params)
         except Exception:
@@ -117,3 +132,29 @@ async def _reconcile(app: FastAPI) -> None:
 
     app.state._scheduler_cache = schedule_cache
     logger.debug("scheduler_reconcile total=%d enabled=%d", len(tasks), len(wanted_ids))
+
+
+def _is_date_task_past(task: ScheduledTask) -> bool:
+    """Return True if a one-shot date task has already passed."""
+    if task.schedule_type != "date":
+        return False
+    run_date_raw = task.schedule_params.get("run_date")
+    if not run_date_raw:
+        return False
+    try:
+        if isinstance(run_date_raw, datetime):
+            run_date = run_date_raw
+        elif isinstance(run_date_raw, str):
+            # Normalise PostgreSQL text format: space → T, +HH → +HH:00
+            s = run_date_raw.replace(" ", "T")
+            s = re.sub(r"([+-]\d{2})$", r"\1:00", s)
+            run_date = datetime.fromisoformat(s)
+        else:
+            return False
+        # Compare against now in the task's timezone (or UTC if naive)
+        if run_date.tzinfo is None:
+            run_date = run_date.replace(tzinfo=UTC)
+        return run_date < datetime.now(UTC)
+    except Exception:
+        logger.warning("Could not parse run_date %r for task %r", run_date_raw, task.name)
+        return False
