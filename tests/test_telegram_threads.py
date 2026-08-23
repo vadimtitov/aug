@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from aug.api.interfaces.telegram.utils import get_conversation_id, get_thread_id
-from aug.utils.file_settings import AppSettings
+from aug.utils.file_settings import AppSettings, ConversationSettings
 
 
 def _make_update(chat_id: int, topic_id: int | None) -> MagicMock:
@@ -230,26 +230,81 @@ async def test_version_end_to_end_through_settings_file(telegram_interface, tmp_
 
 
 @pytest.mark.asyncio
-async def test_version_callback_survives_inaccessible_message(telegram_interface):
-    """A button pressed on a message older than ~48h has effective_message=None.
+async def test_version_callback_refuses_inaccessible_message(telegram_interface):
+    """A button pressed on a message the bot can no longer access (~48h old).
 
-    python-telegram-bot returns None rather than an InaccessibleMessage, so reading
-    .message_thread_id off it would crash the handler and swallow the press.
+    Built from real python-telegram-bot objects, not MagicMocks: an InaccessibleMessage
+    carries no message_thread_id, so the topic is genuinely unknown. The handler must
+    refuse rather than guess — guessing writes the selection to the wrong conversation,
+    which is the exact leak this feature exists to prevent. edit_message_text is left
+    unpatched on purpose: it raises TypeError on an inaccessible message, so if the
+    handler still tries to edit, this test fails.
     """
+    from telegram import CallbackQuery, Chat, InaccessibleMessage, Update, User
+
     from aug.core.registry import list_agents
 
     agent = next(a for a in list_agents() if a != "fake")
-    update = _make_callback_update(chat_id=123, topic_id=None, agent=agent)
-    update.effective_message = None
+    chat = Chat(id=-100, type=Chat.SUPERGROUP)
+    query = CallbackQuery(
+        id="q1",
+        from_user=User(id=1, first_name="V", is_bot=False),
+        chat_instance="ci",
+        data=f"version:{agent}",
+        message=InaccessibleMessage(chat=chat, message_id=5),
+    )
+    update = Update(update_id=1, callback_query=query)
     settings = AppSettings()
 
     with (
         patch("aug.api.interfaces.base.load_settings", return_value=settings),
-        patch("aug.api.interfaces.base.save_settings"),
-        patch("aug.api.interfaces.telegram.utils.load_state") as mock_state,
+        patch("aug.api.interfaces.base.save_settings") as mock_save,
+        patch.object(CallbackQuery, "answer", new_callable=AsyncMock) as mock_answer,
     ):
-        mock_state.return_value.telegram.chats = {}
         await telegram_interface._handle_version_callback(update, MagicMock())
 
-    update.callback_query.edit_message_text.assert_awaited_once()
-    assert settings.conversations["tg-123"].agent == agent
+    assert mock_answer.await_count >= 1
+    assert settings.conversations == {}  # nothing guessed, nothing written
+    mock_save.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Topic inherits its group's version until one is picked in the topic
+# ---------------------------------------------------------------------------
+
+
+def test_topic_inherits_group_version(telegram_interface):
+    """A topic with no selection of its own uses the group's."""
+    settings = AppSettings(conversations={"tg--100": ConversationSettings(agent="v9_claude")})
+    with patch("aug.api.interfaces.base.load_settings", return_value=settings):
+        assert telegram_interface.get_agent_version("tg--100-topic-7") == "v9_claude"
+
+
+def test_topic_own_version_wins_over_group(telegram_interface):
+    settings = AppSettings(
+        conversations={
+            "tg--100": ConversationSettings(agent="v9_claude"),
+            "tg--100-topic-7": ConversationSettings(agent="v11_glm5"),
+        }
+    )
+    with patch("aug.api.interfaces.base.load_settings", return_value=settings):
+        assert telegram_interface.get_agent_version("tg--100-topic-7") == "v11_glm5"
+        assert telegram_interface.get_agent_version("tg--100-topic-8") == "v9_claude"
+
+
+def test_setting_a_topic_version_does_not_touch_the_group(telegram_interface):
+    settings = AppSettings(conversations={"tg--100": ConversationSettings(agent="v9_claude")})
+    with (
+        patch("aug.api.interfaces.base.load_settings", return_value=settings),
+        patch("aug.api.interfaces.base.save_settings"),
+    ):
+        telegram_interface.set_agent_version("tg--100-topic-7", "v11_glm5")
+    assert settings.conversations["tg--100"].agent == "v9_claude"
+    assert settings.conversations["tg--100-topic-7"].agent == "v11_glm5"
+
+
+def test_chat_conversation_has_no_parent(telegram_interface):
+    """Only topics inherit — a plain chat must not fall back to anything."""
+    assert telegram_interface.parent_conversation_id("tg--100") is None
+    assert telegram_interface.parent_conversation_id("tg-123") is None
+    assert telegram_interface.parent_conversation_id("tg--100-topic-7") == "tg--100"

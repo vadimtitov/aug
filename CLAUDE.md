@@ -203,8 +203,12 @@ Rules:
 - Each Telegram forum topic is its own conversation — settings must never leak between
   topics in the same group.
 - Read/write agent selection through `BaseInterface.get_agent_version(thread_id)` /
-  `set_agent_version(thread_id, agent)`, never by touching `settings.conversations`
-  from an interface.
+  `set_agent_version(thread_id, agent)` — never reach into `settings.conversations[...].agent`
+  directly, so the inheritance fallback below applies everywhere.
+- A conversation with no selection of its own inherits from
+  `BaseInterface.parent_conversation_id()` (Telegram: a topic falls back to its group).
+  Without it, a conversation nobody has visited resolves to no agent — survivable in a
+  chat, silent breakage for a scheduled push, where nobody is there to be told.
 
 ---
 

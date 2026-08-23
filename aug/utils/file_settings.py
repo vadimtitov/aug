@@ -137,13 +137,21 @@ def _migrate(data: dict) -> dict:
     ``conversations.<conversation_id>``, where a Telegram DM maps to
     ``tg-<chat_id>``.  Existing entries are moved on first load; the legacy key
     is dropped on the next save.  Safe to delete once no deployment holds it.
+
+    Hand-edited settings files reach this on every inbound message, so malformed shapes
+    are passed through to Pydantic for a field-level error rather than raising here.
     """
-    chats = data.get("telegram", {}).get("chats", {})
-    if not chats:
+    if not isinstance(data, dict):
+        return data
+    telegram = data.get("telegram")
+    chats = telegram.get("chats") if isinstance(telegram, dict) else None
+    if not isinstance(chats, dict) or not chats:
         return data
     conversations = data.setdefault("conversations", {})
+    if not isinstance(conversations, dict):
+        return data
     for chat_id, chat in chats.items():
-        agent = chat.get("agent")
+        agent = chat.get("agent") if isinstance(chat, dict) else None
         if agent:
             conversations.setdefault(f"tg-{chat_id}", {"agent": agent})
     return data

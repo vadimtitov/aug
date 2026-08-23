@@ -57,8 +57,10 @@ from aug.api.interfaces.telegram.ssh import _SshMixin
 from aug.api.interfaces.telegram.utils import (
     escape,
     get_conversation_id,
+    get_parent_conversation_id,
     get_thread_id,
     is_allowed,
+    parse_chat_conversation,
     restricted,
 )
 from aug.config import get_settings
@@ -594,8 +596,8 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                 return get_thread_id(chat_id, None)
             # Legacy fallback: tasks stored before the "default:{chat_id}" encoding.
             for conversation in load_settings().conversations:
-                m = _TG_DM_CONVERSATION_RE.match(conversation)
-                if m and (cid := int(m.group(1))) > 0:
+                cid = parse_chat_conversation(conversation)
+                if cid is not None and cid > 0:
                     logger.warning(
                         "resolve_thread: using first known chat_id %d as 'default' — "
                         "tasks should store 'default:{chat_id}' for deterministic routing",
@@ -619,6 +621,9 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
 
     def conversation_id(self, thread_id: str) -> str:
         return get_conversation_id(thread_id)
+
+    def parent_conversation_id(self, conversation_id: str) -> str | None:
+        return get_parent_conversation_id(conversation_id)
 
     async def send_proactive(self, thread_id: str, text: str) -> None:
         """Send *text* to *thread_id* without an agent turn.
@@ -969,6 +974,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
         current = self.get_agent_version(get_thread_id(chat_id, topic_id))
+        current_label = current if current in list_agents() else "none selected"
         agents = [a for a in list_agents() if a != "fake"]
         buttons = [
             [
@@ -979,7 +985,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             for a in agents
         ]
         await update.message.reply_text(  # type: ignore[union-attr]
-            f"Current version: <code>{escape(current)}</code>\nChoose a version:",
+            f"Current version: <code>{escape(current_label)}</code>\nChoose a version:",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(buttons),
         )
@@ -992,16 +998,20 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         if query is None:
             return
         await query.answer()
-        chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        # effective_message is None when the button is pressed on a message the bot can
-        # no longer access (older than ~48h); fall back to the chat-level conversation.
+        # An inaccessible message (older than ~48h) carries no message_thread_id, so we
+        # cannot tell which topic the button belongs to.  Guessing would write the
+        # selection to the wrong conversation — exactly the leak this feature prevents —
+        # and edit_message_text would raise on it anyway.
         msg = update.effective_message
-        topic_id = msg.message_thread_id if msg else None
+        if msg is None or update.effective_chat is None:
+            await query.answer("That menu is too old — run /version again.", show_alert=True)
+            return
+        chat_id = update.effective_chat.id
         agent_name = query.data.split(":", 1)[1]  # type: ignore[union-attr]
         if agent_name not in list_agents():
             await query.edit_message_text("Unknown version.")
             return
-        self.set_agent_version(get_thread_id(chat_id, topic_id), agent_name)
+        self.set_agent_version(get_thread_id(chat_id, msg.message_thread_id), agent_name)
         await query.edit_message_text(
             f"Switched to <code>{escape(agent_name)}</code>.", parse_mode="HTML"
         )
@@ -1080,7 +1090,13 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         thread_id = get_thread_id(chat_id, topic_id)
         await update.message.reply_text("🗜 Compacting conversation…")  # type: ignore[union-attr]
         try:
-            ran = await self._execute_compact(thread_id, self.get_agent_version(thread_id))
+            agent_version = self.get_agent_version(thread_id)
+            if agent_version not in list_agents():
+                await update.message.reply_text(  # type: ignore[union-attr]
+                    "No agent selected. Use /version to pick one first."
+                )
+                return
+            ran = await self._execute_compact(thread_id, agent_version)
             await update.message.reply_text("✅ Done." if ran else "Nothing to compact.")  # type: ignore[union-attr]
         except ValueError as e:
             await update.message.reply_text(str(e))  # type: ignore[union-attr]
@@ -1470,8 +1486,6 @@ def _chunk(text: str) -> list[str]:
 
 
 _TG_THREAD_RE = re.compile(r"^tg-(-?\d+)-(?:topic-(\d+)|\d+)$")
-# Conversation key for a plain chat (no forum topic): tg-{chat_id}.
-_TG_DM_CONVERSATION_RE = re.compile(r"^tg-(-?\d+)$")
 
 
 def _parse_thread_id(thread_id: str) -> tuple[int, int | None]:

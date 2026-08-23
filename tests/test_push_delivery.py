@@ -251,3 +251,72 @@ async def test_tg_send_proactive_stream_empty_does_not_send(tg_iface):
     await tg_iface.send_proactive_stream("tg-12345-0", mock_stream())
 
     tg_iface._bot_app.bot.send_message.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# fire_push agent resolution — a push into a forum topic must not dead-letter
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fire_push_into_topic_inherits_group_version(tg_iface):
+    """Tasks created from a forum topic store the raw tg-{chat}-topic-{n} thread ID.
+
+    If such a topic has no version of its own, resolution must fall back to the group's
+    rather than yielding the unregistered "default" sentinel — get_agent would raise,
+    fire_task would swallow it into 10 backoff retries and then dead-letter, and the
+    user would never be told their scheduled task stopped running.
+    """
+    from aug.core.dispatch import fire_push
+    from aug.utils.file_settings import AppSettings, ConversationSettings
+
+    settings = AppSettings(conversations={"tg--100": ConversationSettings(agent="v9_claude")})
+    tg_iface.send_proactive_stream = AsyncMock()
+
+    app = MagicMock()
+    app.state.interfaces = {"telegram": tg_iface}
+
+    with (
+        patch("aug.api.interfaces.base.load_settings", return_value=settings),
+        patch("aug.core.dispatch.get_agent") as mock_get_agent,
+    ):
+        await fire_push(
+            app,
+            interface="telegram",
+            thread_id="tg--100-topic-7",
+            message="daily standup",
+            push_type="agent",
+        )
+
+    mock_get_agent.assert_called_once_with("v9_claude")
+    tg_iface.send_proactive_stream.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_tg_resolve_thread_default_skips_topic_and_rest_keys(tg_iface):
+    """The legacy fallback scans every conversation key, not just Telegram chat ones.
+
+    A topic key or a REST key must be skipped, not parsed as a chat_id — int() on
+    "tg--100-topic-7" would raise and take down every thread_id="default" task.
+    """
+    from aug.utils.file_settings import AppSettings, ConversationSettings
+
+    settings = AppSettings(
+        conversations={
+            "tg--100-topic-7": ConversationSettings(),
+            "rest-some-thread": ConversationSettings(),
+            "tg-99999": ConversationSettings(),
+        }
+    )
+    with (
+        patch("aug.api.interfaces.telegram.interface.load_settings", return_value=settings),
+        patch("aug.api.interfaces.telegram.utils.load_state") as mock_state,
+    ):
+        mock_state.return_value.telegram.chats = {}
+        assert await tg_iface.resolve_thread("default") == "tg-99999-0"
+
+
+def test_rest_conversation_id_is_namespaced(rest_iface):
+    """REST keys must not collide with Telegram keys for the same string."""
+    assert rest_iface.conversation_id("tg-123-0") == "rest-tg-123-0"
+    assert rest_iface.parent_conversation_id("rest-anything") is None

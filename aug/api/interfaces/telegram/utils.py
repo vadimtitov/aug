@@ -12,6 +12,10 @@ from aug.utils.state import TelegramChatState, load_state
 
 # Matches a non-topic thread ID: tg-{chat_id}-{session}.
 _CHAT_THREAD_RE = re.compile(r"^tg-(-?\d+)-(\d+)$")
+# Matches a forum-topic conversation key: tg-{chat_id}-topic-{topic_id}.
+_TOPIC_CONVERSATION_RE = re.compile(r"^tg-(-?\d+)-topic-\d+$")
+# Matches a plain-chat conversation key: tg-{chat_id}.
+_CHAT_CONVERSATION_RE = re.compile(r"^tg-(-?\d+)$")
 
 
 def is_allowed(user_id: int) -> bool:
@@ -54,3 +58,24 @@ def get_conversation_id(thread_id: str) -> str:
     """
     m = _CHAT_THREAD_RE.match(thread_id)
     return f"tg-{m.group(1)}" if m else thread_id
+
+
+def get_parent_conversation_id(conversation_id: str) -> str | None:
+    """Return the group conversation a forum-topic conversation inherits from.
+
+    A topic nobody has run /version in yet uses its group's selection, so topics that
+    predate per-topic settings keep working — including scheduled pushes, which have no
+    user present to be told to pick one.  Returns None for keys that have no parent.
+    """
+    m = _TOPIC_CONVERSATION_RE.match(conversation_id)
+    return f"tg-{m.group(1)}" if m else None
+
+
+def parse_chat_conversation(conversation_id: str) -> int | None:
+    """Return the chat_id of a plain-chat conversation key, or None if it isn't one.
+
+    Inverse of get_conversation_id for the non-topic case; keep the two together so the
+    key format is defined in exactly one place.
+    """
+    m = _CHAT_CONVERSATION_RE.match(conversation_id)
+    return int(m.group(1)) if m else None

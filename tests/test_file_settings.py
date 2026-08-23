@@ -283,3 +283,28 @@ def test_save_writes_to_settings_file():
         save_settings(s)
 
     assert filename_used == ["settings.json"]
+
+
+def test_migration_is_idempotent_without_an_intervening_save():
+    """load_settings() runs on every inbound message; repeated loads must not drift."""
+    raw = json.dumps({"telegram": {"chats": {"123": {"agent": "v2_claude"}}}})
+    with patch("aug.utils.file_settings.read_data_file", return_value=raw):
+        first = load_settings()
+        second = load_settings()
+    assert first.model_dump() == second.model_dump()
+    assert second.conversations["tg-123"].agent == "v2_claude"
+
+
+def test_migration_tolerates_malformed_legacy_shapes():
+    """A hand-edited file must surface as a validation error, not an AttributeError."""
+    for raw in (
+        json.dumps({"telegram": None}),
+        json.dumps({"telegram": {"chats": None}}),
+        json.dumps({"telegram": {"chats": {"1": None}}}),
+        json.dumps({"telegram": {"chats": {"1": {"agent": "v1"}}}, "conversations": None}),
+    ):
+        with patch("aug.utils.file_settings.read_data_file", return_value=raw):
+            try:
+                load_settings()
+            except Exception as e:
+                assert not isinstance(e, AttributeError), raw

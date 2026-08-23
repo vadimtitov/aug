@@ -207,10 +207,30 @@ class BaseInterface[ContextT](ABC):
         """
         raise NotImplementedError
 
+    def parent_conversation_id(self, conversation_id: str) -> str | None:
+        """Return the broader conversation *conversation_id* inherits settings from.
+
+        Default: none — every conversation stands alone.  Telegram overrides this so a
+        forum topic falls back to its group's selection until one is picked in the topic
+        itself.  Without a fallback, a conversation nobody has visited yet resolves to no
+        agent at all, which is fine for a chat (the user is told to run /version) but not
+        for a scheduled push, where there is nobody to tell.
+        """
+        return None
+
     def get_agent_version(self, thread_id: str) -> str:
-        """Return the agent version selected for *thread_id*'s conversation."""
+        """Return the agent version selected for *thread_id*'s conversation.
+
+        Falls back to the parent conversation when this one has no selection of its own.
+        """
+        conversations = load_settings().conversations
         conversation = self.conversation_id(thread_id)
-        return load_settings().conversations.get(conversation, ConversationSettings()).agent
+        if conversation in conversations:
+            return conversations[conversation].agent
+        parent = self.parent_conversation_id(conversation)
+        if parent is not None and parent in conversations:
+            return conversations[parent].agent
+        return ConversationSettings().agent
 
     def set_agent_version(self, thread_id: str, agent: str) -> None:
         """Select *agent* for *thread_id*'s conversation, leaving other conversations alone."""
