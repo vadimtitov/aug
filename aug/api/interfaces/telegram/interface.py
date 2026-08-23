@@ -993,7 +993,10 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             return
         await query.answer()
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
+        # effective_message is None when the button is pressed on a message the bot can
+        # no longer access (older than ~48h); fall back to the chat-level conversation.
+        msg = update.effective_message
+        topic_id = msg.message_thread_id if msg else None
         agent_name = query.data.split(":", 1)[1]  # type: ignore[union-attr]
         if agent_name not in list_agents():
             await query.edit_message_text("Unknown version.")

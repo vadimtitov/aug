@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from aug.api.interfaces.telegram.utils import get_conversation_id, get_thread_id
+from aug.utils.file_settings import AppSettings
 
 
 def _make_update(chat_id: int, topic_id: int | None) -> MagicMock:
@@ -226,3 +227,29 @@ async def test_version_end_to_end_through_settings_file(telegram_interface, tmp_
         written = json.loads((tmp_path / "settings.json").read_text())
         assert written["conversations"]["tg--100-topic-7"]["agent"] == agent_a
         assert written["conversations"]["tg--100-topic-8"]["agent"] == agent_b
+
+
+@pytest.mark.asyncio
+async def test_version_callback_survives_inaccessible_message(telegram_interface):
+    """A button pressed on a message older than ~48h has effective_message=None.
+
+    python-telegram-bot returns None rather than an InaccessibleMessage, so reading
+    .message_thread_id off it would crash the handler and swallow the press.
+    """
+    from aug.core.registry import list_agents
+
+    agent = next(a for a in list_agents() if a != "fake")
+    update = _make_callback_update(chat_id=123, topic_id=None, agent=agent)
+    update.effective_message = None
+    settings = AppSettings()
+
+    with (
+        patch("aug.api.interfaces.base.load_settings", return_value=settings),
+        patch("aug.api.interfaces.base.save_settings"),
+        patch("aug.api.interfaces.telegram.utils.load_state") as mock_state,
+    ):
+        mock_state.return_value.telegram.chats = {}
+        await telegram_interface._handle_version_callback(update, MagicMock())
+
+    update.callback_query.edit_message_text.assert_awaited_once()
+    assert settings.conversations["tg-123"].agent == agent
