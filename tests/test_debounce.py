@@ -88,6 +88,9 @@ def interface(isolated_registry):
         async def resolve_thread(self, thread_id, *, topic_name=None, chat_id=None) -> str:
             return thread_id
 
+        def conversation_id(self, thread_id: str) -> str:
+            return thread_id
+
         async def send_proactive(self, thread_id: str, text: str) -> None:
             pass
 

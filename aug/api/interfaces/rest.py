@@ -63,7 +63,7 @@ class RestApiInterface(BaseInterface[_RestContext]):
             interface="rest_api",
             sender_id=req.thread_id,
             thread_id=req.thread_id,
-            agent_version=req.agent,
+            agent_version=req.agent or self.get_agent_version(req.thread_id),
         )
 
     async def send_stream(self, stream: AsyncIterator[AgentEvent], context: _RestContext) -> None:
@@ -95,6 +95,10 @@ class RestApiInterface(BaseInterface[_RestContext]):
                 "push delivery requires a Telegram interface."
             )
         return thread_id
+
+    def conversation_id(self, thread_id: str) -> str:
+        """REST thread IDs are stable and client-chosen, so each is its own conversation."""
+        return f"rest-{thread_id}"
 
     async def send_proactive(self, thread_id: str, text: str) -> None:
         """No-op: REST has no push channel for forward-type pushes."""

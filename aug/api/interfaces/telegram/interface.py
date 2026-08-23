@@ -54,7 +54,13 @@ from aug.api.interfaces.base import (
     TextContent,
 )
 from aug.api.interfaces.telegram.ssh import _SshMixin
-from aug.api.interfaces.telegram.utils import escape, get_thread_id, is_allowed, restricted
+from aug.api.interfaces.telegram.utils import (
+    escape,
+    get_conversation_id,
+    get_thread_id,
+    is_allowed,
+    restricted,
+)
 from aug.config import get_settings
 from aug.core.events import (
     AgentEvent,
@@ -77,7 +83,7 @@ from aug.core.tools.approval import (
 from aug.core.tools.display import format_tool
 from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
 from aug.utils.data import UPLOADS_DIR
-from aug.utils.file_settings import TelegramChatSettings, load_settings, save_settings
+from aug.utils.file_settings import load_settings
 from aug.utils.skills import SKILLS_DIR, load_skills
 from aug.utils.state import TelegramChatState, load_state, save_state
 
@@ -220,9 +226,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             interface="telegram",
             sender_id=str(chat_id),
             thread_id=thread_id,
-            agent_version=load_settings()
-            .telegram.chats.get(str(chat_id), TelegramChatSettings())
-            .agent,
+            agent_version=self.get_agent_version(thread_id),
         )
 
     async def send_stream(self, stream: AsyncIterator[AgentEvent], context: Update) -> None:
@@ -589,10 +593,9 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             if chat_id is not None:
                 return get_thread_id(chat_id, None)
             # Legacy fallback: tasks stored before the "default:{chat_id}" encoding.
-            settings = load_settings()
-            for cid_str in settings.telegram.chats:
-                cid = int(cid_str)
-                if cid > 0:
+            for conversation in load_settings().conversations:
+                m = _TG_DM_CONVERSATION_RE.match(conversation)
+                if m and (cid := int(m.group(1))) > 0:
                     logger.warning(
                         "resolve_thread: using first known chat_id %d as 'default' — "
                         "tasks should store 'default:{chat_id}' for deterministic routing",
@@ -613,6 +616,9 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             return get_thread_id(chat_id, topic_id=topic.message_thread_id)
 
         return thread_id
+
+    def conversation_id(self, thread_id: str) -> str:
+        return get_conversation_id(thread_id)
 
     async def send_proactive(self, thread_id: str, text: str) -> None:
         """Send *text* to *thread_id* without an agent turn.
@@ -776,9 +782,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         msg = context.effective_message  # type: ignore[union-attr]
         chat_id = context.effective_chat.id  # type: ignore[union-attr]
         thread_id = get_thread_id(chat_id, topic_id=msg.message_thread_id)  # type: ignore[union-attr]
-        agent_version = (
-            load_settings().telegram.chats.get(str(chat_id), TelegramChatSettings()).agent
-        )
+        agent_version = self.get_agent_version(thread_id)
         buttons = [
             [
                 InlineKeyboardButton(
@@ -963,7 +967,8 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     @restricted
     async def _handle_version(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        current = load_settings().telegram.chats.get(str(chat_id), TelegramChatSettings()).agent
+        topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
+        current = self.get_agent_version(get_thread_id(chat_id, topic_id))
         agents = [a for a in list_agents() if a != "fake"]
         buttons = [
             [
@@ -988,15 +993,12 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             return
         await query.answer()
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
+        topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
         agent_name = query.data.split(":", 1)[1]  # type: ignore[union-attr]
         if agent_name not in list_agents():
             await query.edit_message_text("Unknown version.")
             return
-        s = load_settings()
-        if str(chat_id) not in s.telegram.chats:
-            s.telegram.chats[str(chat_id)] = TelegramChatSettings()
-        s.telegram.chats[str(chat_id)].agent = agent_name
-        save_settings(s)
+        self.set_agent_version(get_thread_id(chat_id, topic_id), agent_name)
         await query.edit_message_text(
             f"Switched to <code>{escape(agent_name)}</code>.", parse_mode="HTML"
         )
@@ -1071,13 +1073,11 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     @restricted
     async def _handle_compact(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        agent_version = (
-            load_settings().telegram.chats.get(str(chat_id), TelegramChatSettings()).agent
-        )
+        topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
+        thread_id = get_thread_id(chat_id, topic_id)
         await update.message.reply_text("🗜 Compacting conversation…")  # type: ignore[union-attr]
         try:
-            topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
-            ran = await self._execute_compact(get_thread_id(chat_id, topic_id), agent_version)
+            ran = await self._execute_compact(thread_id, self.get_agent_version(thread_id))
             await update.message.reply_text("✅ Done." if ran else "Nothing to compact.")  # type: ignore[union-attr]
         except ValueError as e:
             await update.message.reply_text(str(e))  # type: ignore[union-attr]
@@ -1467,6 +1467,8 @@ def _chunk(text: str) -> list[str]:
 
 
 _TG_THREAD_RE = re.compile(r"^tg-(-?\d+)-(?:topic-(\d+)|\d+)$")
+# Conversation key for a plain chat (no forum topic): tg-{chat_id}.
+_TG_DM_CONVERSATION_RE = re.compile(r"^tg-(-?\d+)$")
 
 
 def _parse_thread_id(thread_id: str) -> tuple[int, int | None]:

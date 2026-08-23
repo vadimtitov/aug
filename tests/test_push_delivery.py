@@ -151,9 +151,9 @@ async def test_tg_resolve_thread_embedded_chat_id(tg_iface):
 @pytest.mark.asyncio
 async def test_tg_resolve_thread_default_finds_chat_from_settings(tg_iface):
     """'default' without chat_id falls back to the first positive chat_id from settings."""
-    from aug.utils.file_settings import AppSettings, TelegramChatSettings, TelegramSettings
+    from aug.utils.file_settings import AppSettings, ConversationSettings
 
-    settings = AppSettings(telegram=TelegramSettings(chats={"99999": TelegramChatSettings()}))
+    settings = AppSettings(conversations={"tg-99999": ConversationSettings()})
     with (
         patch("aug.api.interfaces.telegram.interface.load_settings", return_value=settings),
         patch("aug.api.interfaces.telegram.utils.load_state") as mock_state,
@@ -166,9 +166,9 @@ async def test_tg_resolve_thread_default_finds_chat_from_settings(tg_iface):
 @pytest.mark.asyncio
 async def test_tg_resolve_thread_default_no_chats_raises(tg_iface):
     """'default' with no chats configured raises ValueError."""
-    from aug.utils.file_settings import AppSettings, TelegramSettings
+    from aug.utils.file_settings import AppSettings
 
-    settings = AppSettings(telegram=TelegramSettings(chats={}))
+    settings = AppSettings(conversations={})
     with patch("aug.api.interfaces.telegram.interface.load_settings", return_value=settings):
         with pytest.raises(ValueError, match="No default"):
             await tg_iface.resolve_thread("default")

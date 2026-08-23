@@ -75,5 +75,5 @@ Nested path access via variadic string tuples is fragile and untyped.
   existing `settings.json` on disk predates them (default injection on load?).
 - Whether settings should be hot-reloadable without a restart, or restart-to-reload
   is acceptable.
-- Whether per-user / per-chat settings (currently nested under `"telegram.chats.<id>"`)
+- Whether per-conversation settings (nested under `"conversations.<conversation_id>"`)
   fit naturally into a typed model or need a separate dynamic store.

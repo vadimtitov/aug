@@ -34,8 +34,9 @@ def _validate_agent(agent: str) -> None:
 async def invoke(body: ChatRequest, request: Request) -> ChatResponse:
     """Run the agent and return the full response as JSON."""
     set_thread_id(body.thread_id)
-    _validate_agent(body.agent)
     interface = _get_interface(request)
+    body.agent = body.agent or interface.get_agent_version(body.thread_id)
+    _validate_agent(body.agent)
     logger.info("invoke thread=%s agent=%s", body.thread_id, body.agent)
     text = await interface.invoke(body)
     return ChatResponse(
@@ -50,8 +51,9 @@ async def invoke(body: ChatRequest, request: Request) -> ChatResponse:
 async def stream(body: ChatRequest, request: Request) -> StreamingResponse:
     """Run the agent and stream the response as Server-Sent Events."""
     set_thread_id(body.thread_id)
-    _validate_agent(body.agent)
     interface = _get_interface(request)
+    body.agent = body.agent or interface.get_agent_version(body.thread_id)
+    _validate_agent(body.agent)
     return StreamingResponse(
         interface.stream_sse(body),
         media_type="text/event-stream",
@@ -77,10 +79,11 @@ async def approve_command(thread_id: str, body: ApprovalRequest, request: Reques
     next response.
     """
     set_thread_id(thread_id)
+    interface = _get_interface(request)
+    body.agent = body.agent or interface.get_agent_version(thread_id)
     _validate_agent(body.agent)
     decision = ApprovalDecision(body.decision)
     sender_id = body.sender_id or thread_id
-    interface = _get_interface(request)
     if await interface.get_pending_approval(thread_id, body.agent) is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
