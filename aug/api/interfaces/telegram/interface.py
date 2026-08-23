@@ -997,15 +997,16 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         query = update.callback_query
         if query is None:
             return
-        await query.answer()
         # An inaccessible message (older than ~48h) carries no message_thread_id, so we
         # cannot tell which topic the button belongs to.  Guessing would write the
         # selection to the wrong conversation — exactly the leak this feature prevents —
-        # and edit_message_text would raise on it anyway.
+        # and edit_message_text would raise on it anyway.  Answer exactly once on every
+        # path: Telegram rejects a second answer for the same callback query.
         msg = update.effective_message
         if msg is None or update.effective_chat is None:
             await query.answer("That menu is too old — run /version again.", show_alert=True)
             return
+        await query.answer()
         chat_id = update.effective_chat.id
         agent_name = query.data.split(":", 1)[1]  # type: ignore[union-attr]
         if agent_name not in list_agents():

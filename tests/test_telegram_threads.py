@@ -263,7 +263,10 @@ async def test_version_callback_refuses_inaccessible_message(telegram_interface)
     ):
         await telegram_interface._handle_version_callback(update, MagicMock())
 
-    assert mock_answer.await_count >= 1
+    # Exactly once: Telegram rejects a second answer for the same callback query, so a
+    # double-answer would raise in production and swallow the alert.
+    mock_answer.assert_awaited_once()
+    assert mock_answer.await_args.kwargs.get("show_alert") is True
     assert settings.conversations == {}  # nothing guessed, nothing written
     mock_save.assert_not_called()
 
