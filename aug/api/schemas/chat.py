@@ -13,7 +13,11 @@ class ChatRequest(BaseModel):
         ..., max_length=128, pattern=r"^[\w\-]+$", description="Conversation thread ID."
     )
     message: str = Field(..., max_length=32_000, description="User message text.")
-    agent: str = Field(default="default", max_length=64, description="Agent version string.")
+    agent: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Agent version string. Omit to use the version selected for this thread.",
+    )
     attachments: list[Attachment] = Field(default_factory=list)
 
 
@@ -36,10 +40,13 @@ class ApprovalRequest(BaseModel):
         pattern=r"^(approved_once|approved_always|denied)$",
         description="Approval decision: approved_once | approved_always | denied",
     )
-    agent: str = Field(
-        default="default",
+    agent: str | None = Field(
+        default=None,
         max_length=64,
-        description="Agent version — must match the paused thread's agent.",
+        description=(
+            "Agent version — must match the paused thread's agent. "
+            "Omit to use the version selected for this thread."
+        ),
     )
     sender_id: str = Field(
         default="",

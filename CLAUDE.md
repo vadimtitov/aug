@@ -166,30 +166,49 @@ The user does not have time to manually test every tool. **You are expected to t
 
 ## User settings
 
-Per-user settings are stored in `/app/data/settings.json` via `aug/utils/user_settings.py`.
+User-facing settings live in `/app/data/settings.json` and are a Pydantic model in
+`aug/utils/file_settings.py`. Read with `load_settings()`, write with `save_settings()`.
+(Runtime state written by the app itself — counters, timestamps — lives separately in
+`aug/utils/state.py` / `data/state.json`.)
 
-Schema: top-level key is the **interface namespace**, then sub-keys, then entity ID, then the setting:
+```python
+from aug.utils.file_settings import ConversationSettings, load_settings, save_settings
+
+s = load_settings()
+agent = s.conversations.get(conversation_id, ConversationSettings()).agent
+```
+
+### Per-conversation settings
+
+Anything a user picks *for the place they are talking in* goes under `conversations`,
+keyed by a conversation ID:
 
 ```json
 {
-  "telegram": {
-    "chats": {
-      "<chat_id>": { "agent": "default" }
-    }
+  "conversations": {
+    "tg-82810876":            { "agent": "v11_kimi" },
+    "tg--1003820312204-topic-7": { "agent": "v9_claude" },
+    "rest-my-thread":         { "agent": "v9_claude" }
   }
 }
 ```
 
-API:
-```python
-get_setting("telegram", "chats", str(chat_id), "agent", default="default")
-set_setting("telegram", "chats", str(chat_id), "agent", value="v1_claude")
-```
-
 Rules:
-- Always namespace by interface (`"telegram"`, `"api"`, etc.) — entity IDs differ per interface and must not be mixed.
-- Sub-keys within an interface group related features (e.g. `"chats"` for per-chat config).
-- Do not add a flat `"agent"` directly under `"telegram"` — that level is reserved for interface-wide settings.
+- The conversation ID comes from `BaseInterface.conversation_id(thread_id)` — every
+  interface implements it and must prefix its own namespace (`tg-`, `rest-`) so keys
+  from different frontends never collide.
+- A conversation ID must be **stable across context resets**. Telegram thread IDs carry
+  a session counter that /clear bumps; `conversation_id` strips it so the selection
+  survives.
+- Each Telegram forum topic is its own conversation — settings must never leak between
+  topics in the same group.
+- Read/write agent selection through `BaseInterface.get_agent_version(thread_id)` /
+  `set_agent_version(thread_id, agent)` — never reach into `settings.conversations[...].agent`
+  directly, so the inheritance fallback below applies everywhere.
+- A conversation with no selection of its own inherits from
+  `BaseInterface.parent_conversation_id()` (Telegram: a topic falls back to its group).
+  Without it, a conversation nobody has visited resolves to no agent — survivable in a
+  chat, silent breakage for a scheduled push, where nobody is there to be told.
 
 ---
 

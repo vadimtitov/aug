@@ -35,7 +35,6 @@ from aug.core.events import AgentEvent
 from aug.core.registry import get_agent
 from aug.core.state import AgentState
 from aug.utils.db import get_pool
-from aug.utils.file_settings import TelegramChatSettings, load_settings
 from aug.utils.tasks import get_task
 
 InterfaceName = Literal["telegram", "rest_api"]
@@ -147,8 +146,7 @@ async def fire_push(
         return
 
     if push_type == "inject":
-        agent_version = _resolve_agent_version(interface, actual_thread_id)
-        agent = get_agent(agent_version)
+        agent = get_agent(iface.get_agent_version(actual_thread_id))
         inject_config: RunnableConfig = {
             "configurable": {
                 "thread_id": actual_thread_id,
@@ -165,8 +163,7 @@ async def fire_push(
         return
 
     # push_type == "agent" or "agent_isolated"
-    agent_version = _resolve_agent_version(interface, actual_thread_id)
-    agent = get_agent(agent_version)
+    agent = get_agent(iface.get_agent_version(actual_thread_id))
 
     # agent_isolated uses a throw-away thread so it doesn't share history with
     # the target thread.  The orphaned checkpoints accumulate in Postgres; a
@@ -252,15 +249,6 @@ async def _push_agent_stream(
         if graph_state.interrupts:
             return  # approval interrupt — skip silently in push context
         graph_input = None  # resume from where the graph paused
-
-
-def _resolve_agent_version(interface: InterfaceName, thread_id: str) -> str:
-    """Look up the agent version configured for the given thread."""
-    if interface == "telegram":
-        chat_id = _extract_chat_id(thread_id)
-        if chat_id:
-            return load_settings().telegram.chats.get(chat_id, TelegramChatSettings()).agent
-    return "v10_claude"
 
 
 def _extract_chat_id(thread_id: str) -> str | None:

@@ -22,6 +22,7 @@ class _RestContext:
     """Holds the incoming request and a queue that receives response chunks."""
 
     request: ChatRequest
+    agent_version: str
     _queue: asyncio.Queue[str | None] = field(default_factory=asyncio.Queue, init=False)
 
     def close(self) -> None:
@@ -63,7 +64,7 @@ class RestApiInterface(BaseInterface[_RestContext]):
             interface="rest_api",
             sender_id=req.thread_id,
             thread_id=req.thread_id,
-            agent_version=req.agent,
+            agent_version=context.agent_version,
         )
 
     async def send_stream(self, stream: AsyncIterator[AgentEvent], context: _RestContext) -> None:
@@ -96,6 +97,10 @@ class RestApiInterface(BaseInterface[_RestContext]):
             )
         return thread_id
 
+    def conversation_id(self, thread_id: str) -> str:
+        """REST thread IDs are stable and client-chosen, so each is its own conversation."""
+        return f"rest-{thread_id}"
+
     async def send_proactive(self, thread_id: str, text: str) -> None:
         """No-op: REST has no push channel for forward-type pushes."""
 
@@ -113,17 +118,17 @@ class RestApiInterface(BaseInterface[_RestContext]):
             f'{{"decision": "approved_once" | "approved_always" | "denied"}}.'
         )
 
-    async def invoke(self, request: ChatRequest) -> str:
+    async def invoke(self, request: ChatRequest, agent_version: str) -> str:
         """Run the full pipeline and return the complete response text."""
-        ctx = _RestContext(request=request)
+        ctx = _RestContext(request=request, agent_version=agent_version)
         task = asyncio.create_task(self._run_and_close(ctx))
         text = await ctx.collect()
         await task
         return text
 
-    async def stream_sse(self, request: ChatRequest) -> AsyncIterator[str]:
+    async def stream_sse(self, request: ChatRequest, agent_version: str) -> AsyncIterator[str]:
         """Run the full pipeline, yielding Server-Sent Events."""
-        ctx = _RestContext(request=request)
+        ctx = _RestContext(request=request, agent_version=agent_version)
         task = asyncio.create_task(self._run_and_close(ctx))
         try:
             async for chunk in ctx:
@@ -133,7 +138,7 @@ class RestApiInterface(BaseInterface[_RestContext]):
                 task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-        done_payload = json.dumps({"thread_id": request.thread_id, "agent": request.agent})
+        done_payload = json.dumps({"thread_id": request.thread_id, "agent": agent_version})
         yield f"event: done\ndata: {done_payload}\n\n"
 
     async def invoke_resume(
@@ -145,7 +150,8 @@ class RestApiInterface(BaseInterface[_RestContext]):
     ) -> str:
         """Resume a paused approval and return the complete response text."""
         ctx = _RestContext(
-            request=ChatRequest(thread_id=thread_id, message="", agent=agent_version)
+            request=ChatRequest(thread_id=thread_id, message="", agent=agent_version),
+            agent_version=agent_version,
         )
         task = asyncio.create_task(
             self._resume_and_close(ctx, thread_id, agent_version, sender_id, decision)

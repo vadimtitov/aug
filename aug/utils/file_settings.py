@@ -5,11 +5,14 @@ All user-facing configuration lives here. Access via:
     from aug.utils.file_settings import load_settings, save_settings
 
     s = load_settings()
-    agent = s.telegram.chats.get(chat_id, TelegramChatSettings()).agent
+    agent = s.conversations.get(conversation_id, ConversationSettings()).agent
 
     s = load_settings()
-    s.telegram.chats[chat_id] = TelegramChatSettings(agent="v2")
+    s.conversations[conversation_id] = ConversationSettings(agent="v2")
     save_settings(s)
+
+Conversation IDs are interface-scoped and stable across context resets — see
+``BaseInterface.conversation_id``.
 """
 
 from __future__ import annotations
@@ -23,16 +26,12 @@ from aug.utils.data import read_data_file, write_data_file
 _SETTINGS_FILE = "settings.json"
 
 
-class TelegramChatSettings(BaseModel):
+class ConversationSettings(BaseModel):
+    """Per-conversation settings, keyed by ``BaseInterface.conversation_id``."""
+
     model_config = ConfigDict(extra="ignore")
 
     agent: str = "default"
-
-
-class TelegramSettings(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    chats: dict[str, TelegramChatSettings] = {}
 
 
 class ConsolidationSettings(BaseModel):
@@ -111,7 +110,7 @@ class ReflexSettings(BaseModel):
 class AppSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    telegram: TelegramSettings = TelegramSettings()
+    conversations: dict[str, ConversationSettings] = {}
     consolidation: ConsolidationSettings = ConsolidationSettings()
     tools: ToolSettings = ToolSettings()
     reflexes: ReflexSettings = ReflexSettings()
@@ -122,9 +121,37 @@ def load_settings() -> AppSettings:
     raw = read_data_file(_SETTINGS_FILE)
     if not raw:
         return AppSettings()
-    return AppSettings.model_validate_json(raw)
+    return AppSettings.model_validate(_migrate(json.loads(raw)))
 
 
 def save_settings(settings: AppSettings) -> None:
     """Persist settings to data/settings.json."""
     write_data_file(_SETTINGS_FILE, json.dumps(settings.model_dump(), indent=2))
+
+
+def _migrate(data: dict) -> dict:
+    """Carry the legacy per-chat agent setting into ``conversations``.
+
+    Agent versions used to live under ``telegram.chats.<chat_id>.agent``, which
+    made every forum topic in a group share one version.  They now live under
+    ``conversations.<conversation_id>``, where a Telegram DM maps to
+    ``tg-<chat_id>``.  Existing entries are moved on first load; the legacy key
+    is dropped on the next save.  Safe to delete once no deployment holds it.
+
+    Hand-edited settings files reach this on every inbound message, so malformed shapes
+    are passed through to Pydantic for a field-level error rather than raising here.
+    """
+    if not isinstance(data, dict):
+        return data
+    telegram = data.get("telegram")
+    chats = telegram.get("chats") if isinstance(telegram, dict) else None
+    if not isinstance(chats, dict) or not chats:
+        return data
+    conversations = data.setdefault("conversations", {})
+    if not isinstance(conversations, dict):
+        return data
+    for chat_id, chat in chats.items():
+        agent = chat.get("agent") if isinstance(chat, dict) else None
+        if agent:
+            conversations.setdefault(f"tg-{chat_id}", {"agent": agent})
+    return data

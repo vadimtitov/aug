@@ -6,8 +6,8 @@ from unittest.mock import patch
 from aug.utils.file_settings import (
     ApprovalRule,
     AppSettings,
+    ConversationSettings,
     SshTarget,
-    TelegramChatSettings,
     load_settings,
     save_settings,
 )
@@ -20,7 +20,7 @@ from aug.utils.file_settings import (
 def test_load_returns_defaults_when_file_empty():
     with patch("aug.utils.file_settings.read_data_file", return_value=""):
         s = load_settings()
-    assert s.telegram.chats == {}
+    assert s.conversations == {}
     assert s.consolidation.model == "gpt-5.1"
     assert s.tools.approvals == []
     assert s.tools.ssh.targets == []
@@ -39,29 +39,60 @@ def test_load_ignores_unknown_top_level_keys():
 
 
 # ---------------------------------------------------------------------------
-# load_settings — telegram
+# load_settings — conversations
 # ---------------------------------------------------------------------------
 
 
-def test_load_telegram_chat_agent():
+def test_load_conversation_agent():
+    raw = json.dumps({"conversations": {"tg-123": {"agent": "v2_claude"}}})
+    with patch("aug.utils.file_settings.read_data_file", return_value=raw):
+        s = load_settings()
+    assert s.conversations["tg-123"].agent == "v2_claude"
+
+
+def test_load_missing_conversation_defaults_to_default_agent():
+    raw = json.dumps({"conversations": {}})
+    with patch("aug.utils.file_settings.read_data_file", return_value=raw):
+        s = load_settings()
+    assert s.conversations.get("tg-999", ConversationSettings()).agent == "default"
+
+
+def test_load_conversation_ignores_unknown_fields():
+    raw = json.dumps({"conversations": {"tg-1": {"agent": "v1", "unknown": "x"}}})
+    with patch("aug.utils.file_settings.read_data_file", return_value=raw):
+        s = load_settings()
+    assert s.conversations["tg-1"].agent == "v1"
+
+
+def test_load_migrates_legacy_telegram_chat_agent():
     raw = json.dumps({"telegram": {"chats": {"123": {"agent": "v2_claude"}}}})
     with patch("aug.utils.file_settings.read_data_file", return_value=raw):
         s = load_settings()
-    assert s.telegram.chats["123"].agent == "v2_claude"
+    assert s.conversations["tg-123"].agent == "v2_claude"
 
 
-def test_load_telegram_missing_chat_defaults_to_default_agent():
-    raw = json.dumps({"telegram": {"chats": {}}})
+def test_load_migration_does_not_override_existing_conversation():
+    raw = json.dumps(
+        {
+            "telegram": {"chats": {"123": {"agent": "v2_claude"}}},
+            "conversations": {"tg-123": {"agent": "v9_claude"}},
+        }
+    )
     with patch("aug.utils.file_settings.read_data_file", return_value=raw):
         s = load_settings()
-    assert s.telegram.chats.get("999", TelegramChatSettings()).agent == "default"
+    assert s.conversations["tg-123"].agent == "v9_claude"
 
 
-def test_load_telegram_chat_ignores_unknown_fields():
-    raw = json.dumps({"telegram": {"chats": {"1": {"agent": "v1", "unknown": "x"}}}})
+def test_save_drops_legacy_telegram_section():
+    raw = json.dumps({"telegram": {"chats": {"123": {"agent": "v2_claude"}}}})
+    written: list[str] = []
     with patch("aug.utils.file_settings.read_data_file", return_value=raw):
         s = load_settings()
-    assert s.telegram.chats["1"].agent == "v1"
+    with patch(
+        "aug.utils.file_settings.write_data_file", side_effect=lambda _f, d: written.append(d)
+    ):
+        save_settings(s)
+    assert "telegram" not in json.loads(written[0])
 
 
 # ---------------------------------------------------------------------------
@@ -195,10 +226,10 @@ def test_load_reflexes_ha_entity_label():
 # ---------------------------------------------------------------------------
 
 
-def test_save_settings_round_trips_telegram():
+def test_save_settings_round_trips_conversations():
     written: list[str] = []
     s = AppSettings()
-    s.telegram.chats["42"] = TelegramChatSettings(agent="v3")
+    s.conversations["tg-42"] = ConversationSettings(agent="v3")
 
     with patch(
         "aug.utils.file_settings.write_data_file", side_effect=lambda _f, d: written.append(d)
@@ -206,7 +237,7 @@ def test_save_settings_round_trips_telegram():
         save_settings(s)
 
     loaded = AppSettings.model_validate_json(written[0])
-    assert loaded.telegram.chats["42"].agent == "v3"
+    assert loaded.conversations["tg-42"].agent == "v3"
 
 
 def test_save_settings_round_trips_approvals():
@@ -252,3 +283,28 @@ def test_save_writes_to_settings_file():
         save_settings(s)
 
     assert filename_used == ["settings.json"]
+
+
+def test_migration_is_idempotent_without_an_intervening_save():
+    """load_settings() runs on every inbound message; repeated loads must not drift."""
+    raw = json.dumps({"telegram": {"chats": {"123": {"agent": "v2_claude"}}}})
+    with patch("aug.utils.file_settings.read_data_file", return_value=raw):
+        first = load_settings()
+        second = load_settings()
+    assert first.model_dump() == second.model_dump()
+    assert second.conversations["tg-123"].agent == "v2_claude"
+
+
+def test_migration_tolerates_malformed_legacy_shapes():
+    """A hand-edited file must surface as a validation error, not an AttributeError."""
+    for raw in (
+        json.dumps({"telegram": None}),
+        json.dumps({"telegram": {"chats": None}}),
+        json.dumps({"telegram": {"chats": {"1": None}}}),
+        json.dumps({"telegram": {"chats": {"1": {"agent": "v1"}}}, "conversations": None}),
+    ):
+        with patch("aug.utils.file_settings.read_data_file", return_value=raw):
+            try:
+                load_settings()
+            except Exception as e:
+                assert not isinstance(e, AttributeError), raw

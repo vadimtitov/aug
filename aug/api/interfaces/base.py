@@ -40,6 +40,7 @@ from aug.core.registry import get_agent
 from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, MessageContent, run_registry
 from aug.core.state import AgentState
 from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
+from aug.utils.file_settings import ConversationSettings, load_settings, save_settings
 from aug.utils.logging import set_correlation_id, set_thread_id
 
 logger = logging.getLogger(__name__)
@@ -162,6 +163,17 @@ class BaseInterface[ContextT](ABC):
         """
 
     @abstractmethod
+    def conversation_id(self, thread_id: str) -> str:
+        """Return the stable conversation key that *thread_id* belongs to.
+
+        Thread IDs may rotate — Telegram's /clear starts a new session and thus a
+        new thread ID — but per-conversation settings must survive that.  The
+        conversation key is the identity of the place the user is talking in
+        (a DM, a forum topic, a REST thread), and must be unique across
+        interfaces so keys from different frontends never collide.
+        """
+
+    @abstractmethod
     async def send_proactive(self, thread_id: str, text: str) -> None:
         """Send a plain-text message to *thread_id* without an agent turn.
 
@@ -194,6 +206,38 @@ class BaseInterface[ContextT](ABC):
         Must be implemented if send_stream is not overridden.
         """
         raise NotImplementedError
+
+    def parent_conversation_id(self, conversation_id: str) -> str | None:
+        """Return the broader conversation *conversation_id* inherits settings from.
+
+        Default: none — every conversation stands alone.  Telegram overrides this so a
+        forum topic falls back to its group's selection until one is picked in the topic
+        itself.  Without a fallback, a conversation nobody has visited yet resolves to no
+        agent at all, which is fine for a chat (the user is told to run /version) but not
+        for a scheduled push, where there is nobody to tell.
+        """
+        return None
+
+    def get_agent_version(self, thread_id: str) -> str:
+        """Return the agent version selected for *thread_id*'s conversation.
+
+        Falls back to the parent conversation when this one has no selection of its own.
+        """
+        conversations = load_settings().conversations
+        conversation = self.conversation_id(thread_id)
+        if conversation in conversations:
+            return conversations[conversation].agent
+        parent = self.parent_conversation_id(conversation)
+        if parent is not None and parent in conversations:
+            return conversations[parent].agent
+        return ConversationSettings().agent
+
+    def set_agent_version(self, thread_id: str, agent: str) -> None:
+        """Select *agent* for *thread_id*'s conversation, leaving other conversations alone."""
+        conversation = self.conversation_id(thread_id)
+        settings = load_settings()
+        settings.conversations.setdefault(conversation, ConversationSettings()).agent = agent
+        save_settings(settings)
 
     async def run(self, context: ContextT) -> None:
         """Route: inject into active run or start a new one."""

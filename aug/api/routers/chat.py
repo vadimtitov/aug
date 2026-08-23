@@ -34,13 +34,14 @@ def _validate_agent(agent: str) -> None:
 async def invoke(body: ChatRequest, request: Request) -> ChatResponse:
     """Run the agent and return the full response as JSON."""
     set_thread_id(body.thread_id)
-    _validate_agent(body.agent)
     interface = _get_interface(request)
-    logger.info("invoke thread=%s agent=%s", body.thread_id, body.agent)
-    text = await interface.invoke(body)
+    agent = body.agent or interface.get_agent_version(body.thread_id)
+    _validate_agent(agent)
+    logger.info("invoke thread=%s agent=%s", body.thread_id, agent)
+    text = await interface.invoke(body, agent)
     return ChatResponse(
         thread_id=body.thread_id,
-        agent=body.agent,
+        agent=agent,
         response=text,
         tool_calls=[],
     )
@@ -50,10 +51,11 @@ async def invoke(body: ChatRequest, request: Request) -> ChatResponse:
 async def stream(body: ChatRequest, request: Request) -> StreamingResponse:
     """Run the agent and stream the response as Server-Sent Events."""
     set_thread_id(body.thread_id)
-    _validate_agent(body.agent)
     interface = _get_interface(request)
+    agent = body.agent or interface.get_agent_version(body.thread_id)
+    _validate_agent(agent)
     return StreamingResponse(
-        interface.stream_sse(body),
+        interface.stream_sse(body, agent),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -77,18 +79,19 @@ async def approve_command(thread_id: str, body: ApprovalRequest, request: Reques
     next response.
     """
     set_thread_id(thread_id)
-    _validate_agent(body.agent)
+    interface = _get_interface(request)
+    agent = body.agent or interface.get_agent_version(thread_id)
+    _validate_agent(agent)
     decision = ApprovalDecision(body.decision)
     sender_id = body.sender_id or thread_id
-    interface = _get_interface(request)
-    if await interface.get_pending_approval(thread_id, body.agent) is None:
+    if await interface.get_pending_approval(thread_id, agent) is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Thread '{thread_id}' has no pending approval interrupt.",
         )
-    logger.info("approve_command thread=%s agent=%s decision=%s", thread_id, body.agent, decision)
-    text = await interface.invoke_resume(thread_id, body.agent, sender_id, decision)
-    return ChatResponse(thread_id=thread_id, agent=body.agent, response=text, tool_calls=[])
+    logger.info("approve_command thread=%s agent=%s decision=%s", thread_id, agent, decision)
+    text = await interface.invoke_resume(thread_id, agent, sender_id, decision)
+    return ChatResponse(thread_id=thread_id, agent=agent, response=text, tool_calls=[])
 
 
 def _get_interface(request: Request) -> RestApiInterface:
