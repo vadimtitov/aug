@@ -1,9 +1,6 @@
 """Tests for scheduler reconciliation and date-task cleanup."""
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock
-
-import pytest
 
 from aug.utils.scheduler import _is_date_task_past
 from aug.utils.tasks import ScheduledTask
