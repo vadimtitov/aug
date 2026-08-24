@@ -641,6 +641,21 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                 message_thread_id=topic_id,
             )
 
+    async def announcement_threads(self) -> list[str]:
+        """Return the current DM thread of every user allowed to use the bot.
+
+        Service announcements go to people rather than to rooms: the allow-list is
+        the set of owners, and a Telegram user ID is also their DM chat ID.  When
+        no allow-list is configured (any chat may talk to the bot) there is no
+        owner to address, so the DM chats already seen in settings are used.
+        Group and forum chats — negative IDs — are never announced to.
+        """
+        chat_ids = {cid for cid in get_settings().allowed_chat_ids if cid > 0}
+        if not chat_ids:
+            known = (parse_chat_conversation(c) for c in load_settings().conversations)
+            chat_ids = {cid for cid in known if cid is not None and cid > 0}
+        return [get_thread_id(cid, None) for cid in sorted(chat_ids)]
+
     async def send_proactive_stream(
         self, thread_id: str, stream: AsyncIterator[AgentEvent]
     ) -> None:

@@ -1,6 +1,6 @@
 """Proactive delivery engine for scheduled tasks and external pushes.
 
-Two public entry points:
+Three public entry points:
 
 fire_task(task_id)
     Called by APScheduler when a scheduled task fires.  Loads the task from
@@ -11,6 +11,10 @@ fire_push(app, *, interface, thread_id, message, push_type, isolated, ...)
       - delivers the message directly (push_type="forward"), or
       - runs a constrained agent turn and delivers the final response
         (push_type="agent").
+
+broadcast(app, message)
+    Delivers a service-level announcement to every registered interface, with
+    no target thread and no agent run.
 
 External agent runs are capped at _PUSH_RECURSION_LIMIT iterations.
 Tool restriction (e.g. excluding run_bash) is a TODO: it requires either a
@@ -197,6 +201,43 @@ async def fire_push(
             actual_thread_id,
             "⚠️ Reached the step limit without completing — the task may be too complex.",
         )
+
+
+async def broadcast(app: FastAPI, message: str) -> int:
+    """Deliver *message* to every announcement thread of every registered interface.
+
+    The caller says what happened; each interface decides who hears it (see
+    ``BaseInterface.announcement_threads``), so nothing here knows that Telegram
+    exists.  An interface with no push channel simply reports no threads.
+
+    Best-effort: a failing interface or thread is logged and skipped, never
+    raised, so one unreachable chat cannot take down whatever triggered the
+    broadcast.
+
+    Returns the number of threads the message reached.
+    """
+    delivered = 0
+    for name, iface in getattr(app.state, "interfaces", {}).items():
+        try:
+            threads = await iface.announcement_threads()
+        except Exception:
+            logger.warning("broadcast: target lookup failed interface=%s", name, exc_info=True)
+            continue
+        for thread_id in threads:
+            try:
+                await iface.send_proactive(thread_id, message)
+                delivered += 1
+            except Exception as e:
+                # No traceback: a failure here is an API-level answer that says all
+                # there is to say ("Chat not found" for an owner who never DM'd the
+                # bot), and it happens on every boot until they do.
+                logger.warning(
+                    "broadcast: delivery failed interface=%s thread_id=%s error=%s",
+                    name,
+                    thread_id,
+                    e,
+                )
+    return delivered
 
 
 def _schedule_task_retry(task_id: str, retry_count: int) -> None:

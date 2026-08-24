@@ -181,6 +181,16 @@ class BaseInterface[ContextT](ABC):
         """
 
     @abstractmethod
+    async def announcement_threads(self) -> list[str]:
+        """Return the threads that should receive service-level announcements.
+
+        An announcement belongs to the service rather than to a conversation — a
+        startup notice, for example — so the core broadcasts it without naming a
+        frontend.  Each interface answers for itself: none (no push channel at
+        all), one, or one per owner.
+        """
+
+    @abstractmethod
     async def send_proactive_stream(
         self, thread_id: str, stream: AsyncIterator[AgentEvent]
     ) -> None:

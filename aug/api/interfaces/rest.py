@@ -104,6 +104,10 @@ class RestApiInterface(BaseInterface[_RestContext]):
     async def send_proactive(self, thread_id: str, text: str) -> None:
         """No-op: REST has no push channel for forward-type pushes."""
 
+    async def announcement_threads(self) -> list[str]:
+        """No targets: REST has no push channel, so announcements have nowhere to land."""
+        return []
+
     async def send_proactive_stream(
         self, thread_id: str, stream: AsyncIterator[AgentEvent]
     ) -> None:

@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     # Must be False in production — any other value is a critical security risk.
     DEV_AUTH_BYPASS: bool = False
 
+    # Announce each boot to every interface that has a push channel.  Disabled in
+    # local dev, where uvicorn --reload restarts the app on every file change.
+    STARTUP_ANNOUNCEMENT: bool = True
+
     # Auth
     API_KEY: str
 
