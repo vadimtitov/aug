@@ -143,7 +143,12 @@ async def list_tasks(config: RunnableConfig) -> str:
 
     lines = ["Scheduled tasks:\n"]
     for t in tasks:
-        status = "enabled" if t.enabled else "disabled"
+        if not t.enabled:
+            status = "disabled"
+        elif t.fired_at:
+            status = "already fired"  # a one-shot that is over — not waiting to run
+        else:
+            status = "enabled"
         schedule = _describe_schedule(t.schedule_type, t.schedule_params)
         lines.append(
             f"• {t.name} (id: {t.id[:8]}…)  [{status}]\n"

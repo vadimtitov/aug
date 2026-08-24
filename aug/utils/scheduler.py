@@ -12,18 +12,30 @@ and for graceful shutdown.
 import asyncio
 import json
 import logging
-from datetime import UTC
+from datetime import UTC, datetime, timedelta
 
+import asyncpg
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 
 from aug.core.dispatch import TASK_RETRY_JOB_PREFIX, fire_task
 from aug.utils.job_control import set_fire_task_fn, set_scheduler
-from aug.utils.tasks import list_tasks, make_trigger
+from aug.utils.tasks import (
+    ScheduledTask,
+    list_tasks,
+    make_trigger,
+    mark_fired,
+    normalize_run_date,
+)
 
 logger = logging.getLogger(__name__)
 
 _RECONCILE_INTERVAL = 30  # seconds
+# How far past its run_date an unfired one-shot must be before the reconciler writes
+# it off as missed.  Only needs to cover the gap between a job coming due and
+# APScheduler dispatching it — a busy event loop can stretch that — so a reconcile
+# tick landing in the middle can never write off a job that is about to run.
+_MISSED_ONE_SHOT_AFTER = timedelta(minutes=5)
 
 
 async def start_scheduler(app: FastAPI) -> asyncio.Task:
@@ -80,8 +92,12 @@ async def _reconcile(app: FastAPI) -> None:
     wanted_ids: set[str] = set()
 
     for task in tasks:
-        if not task.enabled:
+        if not task.enabled or task.fired_at is not None:
             continue
+        if _is_missed_one_shot(task):
+            await _write_off(pool, task)
+            continue
+
         job_id = task.id
         wanted_ids.add(job_id)
         schedule_key = f"{task.schedule_type}:{json.dumps(task.schedule_params, sort_keys=True)}"
@@ -117,3 +133,47 @@ async def _reconcile(app: FastAPI) -> None:
 
     app.state._scheduler_cache = schedule_cache
     logger.debug("scheduler_reconcile total=%d enabled=%d", len(tasks), len(wanted_ids))
+
+
+def _is_missed_one_shot(task: ScheduledTask) -> bool:
+    """Return True if *task* fires once, at a moment that passed without it firing.
+
+    Only ever asked about tasks with no ``fired_at``, so a delivered one never gets
+    here.  What is left is a one-shot the service was not running for, or one created
+    after its own deadline: there is no run left in it either way.
+
+    The margin keeps a job that is merely mid-dispatch — due, but not yet handed to
+    the executor on a busy event loop — from being written off a moment too early.
+    """
+    if task.schedule_type != "date":
+        return False
+    run_date = task.schedule_params.get("run_date")
+    if not run_date:
+        return False
+    try:
+        parsed = normalize_run_date(run_date)
+    except (TypeError, ValueError):
+        # Leave it to make_trigger to reject and log with the full params.
+        logger.warning("Task %r has an unparseable run_date: %r", task.name, run_date)
+        return False
+    # A naive run_date is localised to the scheduler's timezone, which is UTC.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed < datetime.now(UTC) - _MISSED_ONE_SHOT_AFTER
+
+
+async def _write_off(pool: asyncpg.Pool, task: ScheduledTask) -> None:
+    """Record a missed one-shot as finished, so it is judged once and not every pass.
+
+    Says nothing about delivery — ``fire_task`` never reads this column, so a retry
+    still in flight for this task runs and reports as usual.
+    """
+    logger.warning(
+        "Task %r was never delivered — its run_date passed while nothing was scheduled",
+        task.name,
+    )
+    try:
+        async with pool.acquire() as conn:
+            await mark_fired(conn, task.id)
+    except Exception:
+        logger.exception("Could not write off missed task %r", task.name)

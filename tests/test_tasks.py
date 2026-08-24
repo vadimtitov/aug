@@ -20,6 +20,7 @@ from aug.utils.tasks import (
     delete_task,
     get_task,
     list_tasks,
+    mark_fired,
     update_task,
 )
 
@@ -38,6 +39,7 @@ def _task_row(**overrides):
         "schedule_params": _CRON_PARAMS,
         "enabled": True,
         "push_type": "agent",
+        "fired_at": None,
         "created_at": _NOW,
     }
     row.update(overrides)
@@ -158,6 +160,47 @@ async def test_update_task_no_fields_returns_false_without_db_call():
 
     assert result is False
     conn.fetchval.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rescheduling_clears_the_fired_stamp():
+    """A new schedule means a new run — otherwise a moved one-shot never fires again."""
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value="uuid-1")
+
+    await update_task(conn, "uuid-1", schedule_params={"run_date": "2099-01-01T00:00:00+00:00"})
+
+    assert "fired_at = NULL" in conn.fetchval.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_editing_the_message_leaves_the_fired_stamp_alone():
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value="uuid-1")
+
+    await update_task(conn, "uuid-1", message="new text")
+
+    assert "fired_at" not in conn.fetchval.call_args.args[0]
+
+
+# ── mark_fired ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_mark_fired_stamps_the_task():
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value="uuid-1")
+
+    assert await mark_fired(conn, "uuid-1") is True
+    assert "fired_at = NOW()" in conn.fetchval.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_mark_fired_returns_false_when_missing():
+    conn = AsyncMock()
+    conn.fetchval = AsyncMock(return_value=None)
+
+    assert await mark_fired(conn, "missing-id") is False
 
 
 # ── delete_task ───────────────────────────────────────────────────────────────
