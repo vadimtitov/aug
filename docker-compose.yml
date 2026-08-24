@@ -9,6 +9,8 @@ services:
       BROWSER_CDP_URL: http://chromium:9222
       BASE_URL: ${BASE_URL:-http://YOUR_HOST:8012}
       DEV_AUTH_BYPASS: "true"
+      # uvicorn --reload restarts on every file change; don't ping Telegram each time.
+      STARTUP_ANNOUNCEMENT: "false"
       # Persist the uv cache (skill PEP 723 dependencies) across rebuilds.
       UV_CACHE_DIR: /app/.uv-cache
     env_file: .env

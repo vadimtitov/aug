@@ -268,5 +268,6 @@ only when there is a clear, immediate reason.
 | `BRAVE_API_KEY` | No | Web search tool disabled if absent |
 | `PORTAINER_URL` | No | Portainer instance URL, e.g. `http://portainer:9000` |
 | `PORTAINER_API_TOKEN` | No | Portainer API token (generate in Portainer → Account Settings) |
+| `STARTUP_ANNOUNCEMENT` | No | `true` (default) → announce every boot on each interface with a push channel. Set `false` in local dev (`docker-compose.yml` already does) so `--reload` doesn't spam Telegram. |
 | `DEBUG` | No | `true` → human-readable logs; `false` (default) → JSON. Does NOT affect auth. |
 | `DEV_AUTH_BYPASS` | No | `true` → skip Telegram initData HMAC verification. Local dev only. **Must be `false` in production.** |

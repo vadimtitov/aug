@@ -6,6 +6,7 @@ Startup sequence:
 3. Create LangGraph Postgres checkpointer (shared across all agents).
 4. Mount API routers.
 5. Optionally start Telegram polling bot.
+6. Announce the boot on every interface that has a push channel.
 
 All shared resources are stored on ``app.state`` so routers can access them
 via ``request.app.state.<resource>``.
@@ -37,6 +38,7 @@ from aug.api.routers import (
 )
 from aug.config import get_settings
 from aug.core.browser_view import BrowserViewHub
+from aug.core.dispatch import broadcast
 from aug.core.dispatch import set_app as set_push_app
 from aug.core.memory import init_memory_files, start_consolidation_scheduler
 from aug.core.skill_deps import warm_all_skills
@@ -75,6 +77,18 @@ async def _checkpointer_context(dsn: str):
     async with AsyncPostgresSaver.from_conn_string(dsn, serde=serde) as checkpointer:
         await checkpointer.setup()
         yield checkpointer
+
+
+async def _announce_startup(app: FastAPI) -> None:
+    """Tell every interface with a push channel that AUG is back up.
+
+    Runs as a background task: broadcast is best-effort and swallows its own
+    delivery failures, so an unreachable chat can neither delay nor fail the boot.
+    """
+    if not get_settings().STARTUP_ANNOUNCEMENT:
+        return
+    delivered = await broadcast(app, f"🟢 AUG {get_settings().APP_VERSION} is up.")
+    logger.info("startup announcement delivered to %d thread(s)", delivered)
 
 
 @asynccontextmanager
@@ -116,6 +130,8 @@ async def lifespan(app: FastAPI):
         # startup, runs off the event loop (uv shells out, which is blocking).
         warmup_task = asyncio.create_task(asyncio.to_thread(warm_all_skills))
 
+        announce_task = asyncio.create_task(_announce_startup(app))
+
         sys.stdout.flush()
         sys.stdout.write(_BANNER)
         sys.stdout.flush()
@@ -130,6 +146,7 @@ async def lifespan(app: FastAPI):
         )
         yield
 
+        announce_task.cancel()
         consolidation_task.cancel()
         scheduler_task.cancel()
         warmup_task.cancel()

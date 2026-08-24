@@ -94,6 +94,9 @@ def interface(isolated_registry):
         async def send_proactive(self, thread_id: str, text: str) -> None:
             pass
 
+        async def announcement_threads(self) -> list[str]:
+            return []
+
         async def send_proactive_stream(self, thread_id, stream) -> None:
             async for _ in stream:
                 pass
