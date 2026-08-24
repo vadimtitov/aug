@@ -16,7 +16,9 @@ _KEYS_DIR = str(DATA_DIR / "keys")
 
 logger = logging.getLogger(__name__)
 
-_TIMEOUT = 60
+# Long enough for real installs, builds and large downloads; short enough that one
+# wedged command cannot hold an agent turn open indefinitely.
+_TIMEOUT = 300
 
 # Tell common tools up front that nobody is at the keyboard, so they fail or take a
 # default instead of prompting.  Note this does NOT help commands that read a password
@@ -51,10 +53,17 @@ def run_bash(command: str) -> str:
     Secret values are never visible — they are automatically redacted from output.
 
     Always run `hushed list` first if a command might need credentials.
-    This shell is NON-INTERACTIVE: nothing can answer a prompt. Always pass values as
-    arguments — use `hushed add NAME VALUE`, never bare `hushed add NAME`, which prompts
-    and fails. The same goes for any command that would ask for input: use its
-    non-interactive flag (-y, --yes, --no-input, --batch).
+    To store one, always pass the value inline: `hushed add NAME VALUE`. Bare
+    `hushed add NAME` prompts for the value and fails — see below.
+
+    NON-INTERACTIVE: nothing can answer a prompt, so any command that asks for input
+    fails. Pass values as arguments and use non-interactive flags (-y, --yes,
+    --no-input, --batch).
+
+    TIMEOUT: the command is killed after 300 seconds and you get an error back. For
+    work that takes longer, start it in the background and poll (e.g. redirect output
+    to a file with `nohup ... &`, then check the file on later calls), or split it
+    into smaller steps.
 
     Args:
         command: Shell command to run.
@@ -84,9 +93,10 @@ def run_bash(command: str) -> str:
     except subprocess.TimeoutExpired:
         logger.warning("run_bash timed out after %ds cmd=%.120r", _TIMEOUT, command)
         return (
-            f"Command did NOT complete: timed out after {_TIMEOUT}s. It may be waiting "
-            f"for input — this shell is non-interactive, so prompts never get an answer. "
-            f"Re-run with a non-interactive flag (e.g. -y, --yes, --no-input, --batch)."
+            f"Command did NOT complete: killed after the {_TIMEOUT}s limit. Either it "
+            f"needs longer than one call allows — start it in the background and poll "
+            f"for the result — or it is waiting for input, which never comes in this "
+            f"non-interactive shell."
         )
     except FileNotFoundError:
         logger.error("run_bash: hushed binary not found")

@@ -178,7 +178,7 @@ def test_run_bash_timeout_is_a_clean_error():
         out = _run_bash("sleep 999")
 
     assert "did NOT complete" in out
-    assert "timed out" in out
+    assert "300s limit" in out
 
 
 def test_run_bash_missing_hushed_binary():
@@ -196,3 +196,10 @@ def test_run_bash_nonzero_exit_is_labelled_as_failure():
 
     assert "failed (exit 2)" in out
     assert "no such file" in out
+
+
+def test_run_bash_docstring_states_the_real_timeout():
+    """The agent only knows the limit if the description says it — keep them in sync."""
+    from aug.core.tools.run_bash import _TIMEOUT, run_bash
+
+    assert str(_TIMEOUT) in run_bash.description
