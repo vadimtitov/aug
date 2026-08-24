@@ -19,10 +19,9 @@ logger = logging.getLogger(__name__)
 _TIMEOUT = 60
 
 # Tell common tools up front that nobody is at the keyboard, so they fail or take a
-# default instead of prompting into a void.  Inherits the rest of the environment —
-# hushed injects the user's secrets there.
-_NONINTERACTIVE_ENV = {
-    **os.environ,
+# default instead of prompting.  Note this does NOT help commands that read a password
+# via ioctl (hushed, ssh, sudo) — those fail on any non-TTY fd regardless.
+_NONINTERACTIVE_VARS = {
     "DEBIAN_FRONTEND": "noninteractive",
     "GIT_TERMINAL_PROMPT": "0",
     "PIP_NO_INPUT": "1",
@@ -52,6 +51,10 @@ def run_bash(command: str) -> str:
     Secret values are never visible — they are automatically redacted from output.
 
     Always run `hushed list` first if a command might need credentials.
+    This shell is NON-INTERACTIVE: nothing can answer a prompt. Always pass values as
+    arguments — use `hushed add NAME VALUE`, never bare `hushed add NAME`, which prompts
+    and fails. The same goes for any command that would ask for input: use its
+    non-interactive flag (-y, --yes, --no-input, --batch).
 
     Args:
         command: Shell command to run.
@@ -69,13 +72,14 @@ def run_bash(command: str) -> str:
             encoding="utf-8",
             errors="replace",
             timeout=_TIMEOUT,
-            # capture_output only redirects stdout/stderr — without this, stdin is
-            # inherited from the server process, which has no TTY.  Anything that
-            # prompts then fails with ENOTTY ("inappropriate ioctl for device") and
-            # retries in a loop instead of exiting.  DEVNULL turns a prompt into an
-            # immediate EOF, so interactive commands fail fast and predictably.
+            # capture_output only redirects stdout/stderr, so without this the child
+            # inherits the server's stdin.  DEVNULL makes plain line reads return EOF
+            # instead of consuming whatever the server happens to have.  It does NOT
+            # stop a password prompt: hushed/ssh/sudo disable echo via ioctl, which
+            # fails with ENOTTY on /dev/null just as it does on a pipe.  Those are
+            # caught below and reported as failures instead.
             stdin=subprocess.DEVNULL,
-            env=_NONINTERACTIVE_ENV,
+            env={**os.environ, **_NONINTERACTIVE_VARS},
         )
     except subprocess.TimeoutExpired:
         logger.warning("run_bash timed out after %ds cmd=%.120r", _TIMEOUT, command)
