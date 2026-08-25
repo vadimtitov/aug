@@ -71,35 +71,6 @@ ALTER TABLE scheduled_tasks ADD COLUMN IF NOT EXISTS push_type TEXT NOT NULL DEF
 ALTER TABLE scheduled_tasks ADD COLUMN IF NOT EXISTS fired_at  TIMESTAMPTZ;
 """
 
-# One-time backfill: a one-shot ("date") task whose moment has passed is finished,
-# whether it was delivered or missed, so it gets a fired_at stamp.  Without this,
-# rows created before the column existed have no terminal state and the reconciler
-# re-registers them with APScheduler every 30 seconds, for ever.
-#
-# Each row is cast on its own inside a sub-block so one hand-written run_date cannot
-# abort the migration and, with it, application startup.
-_BACKFILL_FIRED_ONE_SHOTS = """
-DO $$
-DECLARE
-    task RECORD;
-BEGIN
-    FOR task IN
-        SELECT id, schedule_params->>'run_date' AS run_date
-          FROM scheduled_tasks
-         WHERE schedule_type = 'date' AND fired_at IS NULL
-    LOOP
-        BEGIN
-            IF task.run_date::timestamptz < NOW() THEN
-                UPDATE scheduled_tasks SET fired_at = NOW() WHERE id = task.id;
-            END IF;
-        EXCEPTION WHEN others THEN
-            RAISE WARNING 'scheduled_tasks backfill: task % has an unusable run_date %',
-                task.id, task.run_date;
-        END;
-    END LOOP;
-END $$;
-"""
-
 # One-time migration: move unfired future reminders into scheduled_tasks so they
 # are delivered by the APScheduler path after the reminder loop is removed.
 _MIGRATE_REMINDERS_TO_TASKS = """
@@ -202,6 +173,5 @@ async def _ensure_schema(pool: asyncpg.Pool) -> None:
         await conn.execute(_MIGRATE_REMINDERS_COLUMNS)
         await conn.execute(_CREATE_SCHEDULED_TASKS_TABLE)
         await conn.execute(_MIGRATE_SCHEDULED_TASKS_COLUMNS)
-        await conn.execute(_BACKFILL_FIRED_ONE_SHOTS)
         await conn.execute(_MIGRATE_REMINDERS_TO_TASKS)
     logger.debug("DB schema verified.")
