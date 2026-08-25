@@ -41,7 +41,13 @@ class ScheduledTask:
                          Cron example: ``{"hour": 10, "minute": 0, "timezone": "Europe/Berlin"}``.
                          Interval example: ``{"minutes": 30}``.
                          Date example: ``{"run_date": "2026-06-01T09:00:00+00:00"}``.
-        enabled:         Whether the task is currently active.
+        enabled:         Whether the task is currently active — a user-facing switch,
+                         not a lifecycle state.
+        fired_at:        When a one-shot ("date") task reached its terminal state:
+                         delivered, or found to be past its moment.  ``None`` while it
+                         is still pending.  Never set for cron/interval tasks, which
+                         have no end.  The reconciler schedules only rows where this
+                         is ``None``, so a finished task can never be resurrected.
         created_at:      UTC creation timestamp.
     """
 
@@ -53,6 +59,7 @@ class ScheduledTask:
     schedule_type: ScheduleType
     schedule_params: dict
     enabled: bool
+    fired_at: datetime | None
     push_type: str
     created_at: datetime
 
@@ -121,6 +128,10 @@ async def update_task(conn: asyncpg.Connection, task_id: str, **fields) -> bool:
     if not fields:
         return False
 
+    # Giving a task a new schedule gives it a new run: clear the terminal stamp, or a
+    # one-shot moved to a later date would be silently ignored by the reconciler.
+    reset_fired = "schedule_params" in fields or "schedule_type" in fields
+
     set_parts = []
     values = []
     for i, (col, val) in enumerate(fields.items(), start=1):
@@ -131,11 +142,31 @@ async def update_task(conn: asyncpg.Connection, task_id: str, **fields) -> bool:
             set_parts.append(f"{col} = ${i}")
             values.append(val)
 
+    if reset_fired:
+        set_parts.append("fired_at = NULL")
+
     values.append(task_id)
     sql = (
         f"UPDATE scheduled_tasks SET {', '.join(set_parts)} WHERE id = ${len(values)} RETURNING id"
     )
     row = await conn.fetchval(sql, *values)
+    return row is not None
+
+
+async def mark_fired(conn: asyncpg.Connection, task_id: str) -> bool:
+    """Stamp a one-shot task as finished so it is never scheduled again.
+
+    Set when the task is delivered, or when the reconciler finds one whose moment
+    has passed unfired.  Deliberately separate from ``enabled``: that switch says
+    what the user wants, this column says what has already happened, and
+    overloading one for the other loses the difference.
+
+    Returns:
+        ``True`` if the task was found and stamped, ``False`` if not found.
+    """
+    row = await conn.fetchval(
+        "UPDATE scheduled_tasks SET fired_at = NOW() WHERE id = $1 RETURNING id", task_id
+    )
     return row is not None
 
 
@@ -149,7 +180,7 @@ def make_trigger(schedule_type: str, schedule_params: dict):
             return IntervalTrigger(**params)
         case "date":
             if "run_date" in params:
-                params["run_date"] = _normalize_run_date(params["run_date"])
+                params["run_date"] = normalize_run_date(params["run_date"])
             return DateTrigger(**params)
         case _:
             raise ValueError(f"Unknown schedule_type: {schedule_type!r}")
@@ -165,7 +196,7 @@ async def delete_task(conn: asyncpg.Connection, task_id: str) -> bool:
     return row is not None
 
 
-def _normalize_run_date(run_date: str | datetime) -> datetime:
+def normalize_run_date(run_date: str | datetime) -> datetime:
     """Parse a run_date value into a datetime APScheduler can consume.
 
     Handles PostgreSQL's ``::text`` timestamp format (e.g. ``"2026-05-21 23:38:00+00"``)
@@ -193,6 +224,7 @@ def _row_to_task(row) -> ScheduledTask:
         schedule_type=row["schedule_type"],
         schedule_params=dict(params) if params else {},
         enabled=row["enabled"],
+        fired_at=row["fired_at"],
         push_type=row["push_type"],
         created_at=row["created_at"],
     )

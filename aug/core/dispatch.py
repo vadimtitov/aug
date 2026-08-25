@@ -39,7 +39,7 @@ from aug.core.events import AgentEvent
 from aug.core.registry import get_agent
 from aug.core.state import AgentState
 from aug.utils.db import get_pool
-from aug.utils.tasks import get_task
+from aug.utils.tasks import ScheduledTask, get_task, mark_fired
 
 InterfaceName = Literal["telegram", "rest_api"]
 
@@ -108,6 +108,9 @@ async def fire_task(task_id: str, retry_count: int = 0) -> None:
             retry_count,
         )
         _schedule_task_retry(task_id, retry_count)
+        return
+
+    await _record_one_shot_fired(task)
 
 
 async def fire_push(
@@ -238,6 +241,26 @@ async def broadcast(app: FastAPI, message: str) -> int:
                     e,
                 )
     return delivered
+
+
+async def _record_one_shot_fired(task: ScheduledTask) -> None:
+    """Stamp a delivered ``date`` task as finished; recurring tasks are left alone.
+
+    This is the fact the reconciler reads to know the task is over.  Without it the
+    row looks pending for ever, and gets re-registered with APScheduler every 30
+    seconds only to misfire.
+
+    Failure is logged and swallowed: the message is already delivered, and a missing
+    stamp is repaired on the next reconcile pass, which marks past-due one-shots itself.
+    """
+    if task.schedule_type != "date":
+        return
+    try:
+        async with get_pool().acquire() as conn:
+            await mark_fired(conn, task.id)
+        logger.info("fire_task: one-shot complete task_id=%s name=%s", task.id, task.name)
+    except Exception:
+        logger.exception("fire_task: could not stamp one-shot task_id=%s", task.id)
 
 
 def _schedule_task_retry(task_id: str, retry_count: int) -> None:

@@ -47,6 +47,7 @@ def _task_row(**overrides):
         "schedule_params": _CRON_PARAMS,
         "enabled": True,
         "push_type": "agent",
+        "fired_at": None,
         "created_at": _NOW,
     }
     row.update(overrides)
