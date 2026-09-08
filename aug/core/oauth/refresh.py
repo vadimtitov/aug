@@ -7,7 +7,6 @@ benefit, and still cannot save you from a token the provider killed early.
 
 import asyncio
 import logging
-import os
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -15,6 +14,7 @@ import httpx
 
 from aug.core.oauth.providers import ProviderConfig
 from aug.core.oauth.store import StoredToken, load_token, mark_needs_reauth, save_token
+from aug.utils.hushed import read_secret
 from aug.utils.oauth import OAuthClient
 
 logger = logging.getLogger(__name__)
@@ -71,12 +71,8 @@ class TokenRefresher:
     async def _refresh(self, conn, token: StoredToken) -> StoredToken | None:
         """Perform the refresh and persist the result, including a rotated token."""
         config: ProviderConfig = self._state.oauth_providers.get(token.provider)
-        client_id = os.environ.get(
-            config.client_id_env or f"{token.provider.upper()}_CLIENT_ID", ""
-        )
-        secret = os.environ.get(
-            config.client_secret_env or f"{token.provider.upper()}_CLIENT_SECRET", ""
-        )
+        client_id = read_secret(config.client_id_env or f"{token.provider.upper()}_CLIENT_ID")
+        secret = read_secret(config.client_secret_env or f"{token.provider.upper()}_CLIENT_SECRET")
 
         async with httpx.AsyncClient(
             transport=self._state.oauth_transport, timeout=_TIMEOUT, follow_redirects=False
