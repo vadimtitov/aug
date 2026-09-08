@@ -32,8 +32,13 @@ services:
       PORTAINER_URL: ${PORTAINER_URL:-}
       PORTAINER_API_TOKEN: ${PORTAINER_API_TOKEN:-}
       BROWSER_CDP_URL: http://chromium:9222
-      BASE_URL: ${BASE_URL:-http://YOUR_HOST:8012}
+      # Public HTTPS origin. Required: the app refuses to boot without it when
+      # DEBUG is false, because every OAuth link is built from it.
+      BASE_URL: ${BASE_URL:?BASE_URL must be set, e.g. https://aug.example.com}
       DEBUG: ${DEBUG:-false}
+      # 32 random bytes, base64. Generate: openssl rand -base64 32
+      # Losing it means re-authorizing every OAuth provider.
+      OAUTH_ENCRYPTION_KEY: ${OAUTH_ENCRYPTION_KEY:-}
       DEV_AUTH_BYPASS: "false"
       # Persist the uv cache (skill PEP 723 dependencies) across rebuilds.
       UV_CACHE_DIR: /app/.uv-cache

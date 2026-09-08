@@ -41,6 +41,7 @@ def client():
         patch("aug.app.start_scheduler", new=AsyncMock(return_value=MagicMock())),
         patch("aug.app.set_push_app"),
         patch("aug.app.set_pool"),
+        patch("aug.app.serve_gateway", new=AsyncMock()),
         patch.object(TelegramInterface, "start_polling", new=AsyncMock()),
         patch.object(TelegramInterface, "stop_polling", new=AsyncMock()),
         patch("aug.api.routers.hooks.fire_push", new=AsyncMock()) as mock_fire,

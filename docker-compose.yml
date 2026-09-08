@@ -8,6 +8,7 @@ services:
       HUSHED_DIR: /app/data/.hushed
       BROWSER_CDP_URL: http://chromium:9222
       BASE_URL: ${BASE_URL:-http://YOUR_HOST:8012}
+      OAUTH_ENCRYPTION_KEY: ${OAUTH_ENCRYPTION_KEY:-}
       DEV_AUTH_BYPASS: "true"
       # uvicorn --reload restarts on every file change; don't ping Telegram each time.
       STARTUP_ANNOUNCEMENT: "false"

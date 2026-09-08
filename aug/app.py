@@ -25,6 +25,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from aug.api.interfaces.telegram import TelegramInterface
+from aug.api.internal.gateway import serve_gateway
 from aug.api.routers import (
     auth,
     browser,
@@ -32,6 +33,7 @@ from aug.api.routers import (
     files,
     gmail_auth,
     hooks,
+    oauth,
     settings,
     skills,
     threads,
@@ -41,9 +43,11 @@ from aug.core.browser_view import BrowserViewHub
 from aug.core.dispatch import broadcast
 from aug.core.dispatch import set_app as set_push_app
 from aug.core.memory import init_memory_files, start_consolidation_scheduler
+from aug.core.oauth.providers import PROVIDERS_FILE, ProviderRegistry
 from aug.core.skill_deps import warm_all_skills
 from aug.utils.db import create_pool, set_pool
 from aug.utils.logging import configure_logging, set_correlation_id
+from aug.utils.ratelimit import RateLimiter
 from aug.utils.scheduler import start_scheduler, stop_scheduler
 from aug.utils.storage import LocalFileStorage
 
@@ -112,6 +116,14 @@ async def lifespan(app: FastAPI):
         # File storage
         app.state.storage = LocalFileStorage()
 
+        # OAuth — provider registry, and the transport the flow uses (None = default).
+        app.state.oauth_providers = ProviderRegistry(PROVIDERS_FILE)
+        app.state.oauth_transport = None
+        # Both public OAuth endpoints are unauthenticated by necessity — see the
+        # design doc.  Per client IP, refused before any database work happens.
+        app.state.oauth_start_limiter = RateLimiter(limit=30, per_seconds=3600)
+        app.state.oauth_callback_limiter = RateLimiter(limit=10, per_seconds=60)
+
         # Interface registry — keyed by interface name, used for proactive notifications
         app.state.interfaces = {}
 
@@ -130,6 +142,9 @@ async def lifespan(app: FastAPI):
         # startup, runs off the event loop (uv shells out, which is blocking).
         warmup_task = asyncio.create_task(asyncio.to_thread(warm_all_skills))
 
+        # Loopback token gateway — lets the agent use OAuth credentials it cannot read.
+        gateway_task = asyncio.create_task(serve_gateway(app.state))
+
         announce_task = asyncio.create_task(_announce_startup(app))
 
         sys.stdout.flush()
@@ -146,6 +161,7 @@ async def lifespan(app: FastAPI):
         )
         yield
 
+        gateway_task.cancel()
         announce_task.cancel()
         consolidation_task.cancel()
         scheduler_task.cancel()
@@ -205,6 +221,7 @@ def create_app() -> FastAPI:
     app.include_router(skills.router)
     app.include_router(hooks.router)
     app.include_router(browser.router)
+    app.include_router(oauth.router)
 
     return app
 
