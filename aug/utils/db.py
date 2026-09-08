@@ -100,6 +100,47 @@ ON CONFLICT (name) DO NOTHING;
 """
 
 
+_CREATE_OAUTH_TABLES = """
+CREATE TABLE IF NOT EXISTS oauth_start_tokens (
+    token       TEXT PRIMARY KEY,
+    provider    TEXT NOT NULL,
+    account     TEXT NOT NULL DEFAULT 'primary',
+    expires_at  TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state         TEXT PRIMARY KEY,
+    provider      TEXT NOT NULL,
+    account       TEXT NOT NULL DEFAULT 'primary',
+    code_verifier TEXT NOT NULL,
+    redirect_uri  TEXT NOT NULL,
+    issuer        TEXT,
+    expires_at    TIMESTAMPTZ NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+    provider          TEXT NOT NULL,
+    account           TEXT NOT NULL DEFAULT 'primary',
+    access_token_enc  BYTEA NOT NULL,
+    refresh_token_enc BYTEA,
+    token_type        TEXT NOT NULL DEFAULT 'Bearer',
+    scopes            TEXT NOT NULL DEFAULT '',
+    issuer            TEXT,
+    expires_at        TIMESTAMPTZ,
+    needs_reauth      BOOLEAN NOT NULL DEFAULT FALSE,
+    last_error        TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (provider, account)
+);
+
+CREATE INDEX IF NOT EXISTS oauth_states_expiry_idx       ON oauth_states (expires_at);
+CREATE INDEX IF NOT EXISTS oauth_start_tokens_expiry_idx ON oauth_start_tokens (expires_at);
+"""
+
+
 _pool: asyncpg.Pool | None = None
 
 
@@ -174,4 +215,5 @@ async def _ensure_schema(pool: asyncpg.Pool) -> None:
         await conn.execute(_CREATE_SCHEDULED_TASKS_TABLE)
         await conn.execute(_MIGRATE_SCHEDULED_TASKS_COLUMNS)
         await conn.execute(_MIGRATE_REMINDERS_TO_TASKS)
+        await conn.execute(_CREATE_OAUTH_TABLES)
     logger.debug("DB schema verified.")

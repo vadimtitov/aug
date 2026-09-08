@@ -96,6 +96,13 @@ class Settings(BaseSettings):
             raise ValueError(
                 "PORTAINER_URL and PORTAINER_API_TOKEN must both be set or both absent"
             )
+        # Every OAuth link and redirect URI is built from BASE_URL, and it defaults to
+        # empty.  Failing the boot beats minting hostless links nobody notices until a
+        # user taps one — and providers reject a non-HTTPS redirect URI anyway.
+        if not self.DEBUG and not self.BASE_URL.startswith("https://"):
+            raise ValueError(
+                f"BASE_URL must start with https:// when DEBUG is false (got {self.BASE_URL!r})"
+            )
         return self
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
