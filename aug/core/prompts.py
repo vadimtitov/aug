@@ -418,6 +418,15 @@ LEGACY_SYSTEM_PROMPT = (
 # The LLM decides based on content: steer if it's a correction, stop if the user wants to cancel.
 MID_RUN_INJECTION_PREFIX = "[Message from user while you were working]: "
 
+# Rendered into the conversation when someone shares a location.  The sharer is named
+# because a group can have several live locations running at once, and coordinates alone
+# leave the agent unable to say whose is whose.
+LOCATION_SHARE_TEMPLATE = (
+    "{sender}'s current location:\nAddress: {address}\nCoordinates: {latitude}, {longitude}"
+)
+# Used when the interface supplies no name for the sharer.
+LOCATION_SHARE_UNKNOWN_SENDER = "User"
+
 IMAGE_DESCRIPTION_PROMPT = """\
 You are describing an image to a language model that cannot see it.
 Answer the following question about the image as specifically and concisely as possible.

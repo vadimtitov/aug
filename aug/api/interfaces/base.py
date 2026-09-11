@@ -34,7 +34,11 @@ from aug.config import get_settings
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.compaction import compact_thread
 from aug.core.events import AgentEvent, ChatModelStreamEvent
-from aug.core.prompts import MID_RUN_INJECTION_PREFIX
+from aug.core.prompts import (
+    LOCATION_SHARE_TEMPLATE,
+    LOCATION_SHARE_UNKNOWN_SENDER,
+    MID_RUN_INJECTION_PREFIX,
+)
 from aug.core.reflexes import Reflex, ReflexOutput, run_reflexes
 from aug.core.registry import get_agent
 from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, MessageContent, run_registry
@@ -105,6 +109,8 @@ class LocationContent(BaseModel):
         reported_at: Unix time the platform stamped on this particular position (an
                      edit date, where there is one).  Orders updates against each
                      other so a late delivery cannot replace a newer position.
+        sender_name: Display name of the person sharing, for the text the agent reads.
+                     Without it two group members' positions are indistinguishable.
 
     Both timestamps are None on interfaces that do not supply them; the receipt time
     is used instead.
@@ -115,6 +121,7 @@ class LocationContent(BaseModel):
     live_period: int | None = None
     sent_at: float | None = None
     reported_at: float | None = None
+    sender_name: str | None = None
 
 
 ContentPart = TextContent | FileContent | LocationContent
@@ -282,13 +289,17 @@ class BaseInterface[ContextT](ABC):
         """
         return self._location_state(thread_id).users
 
-    def record_location(self, thread_id: str, user_id: str, location: LocationContent) -> None:
+    def record_location(self, thread_id: str, user_id: str, location: LocationContent) -> bool:
         """Persist *location* as *user_id*'s latest position in *thread_id*'s conversation.
 
         Called for every location that arrives, whoever sent it, so several people in
         one group are tracked side by side.  An update the platform timestamped before
         the one already stored is dropped: delivery reorders, and a stale position must
         not displace a fresh one.
+
+        Returns False when the position was dropped as stale, so the caller can leave
+        the agent out of it too — showing it coordinates that are known to be outdated
+        is worse than saying nothing.
         """
         now = time.time()
         state = load_state()
@@ -298,7 +309,7 @@ class BaseInterface[ContextT](ABC):
         previous = conversation.users.get(user_id, LiveLocationState(user_id=user_id))
         if location.reported_at and location.reported_at < previous.reported_at:
             logger.debug("dropping out-of-order location for %s in %s", user_id, thread_id)
-            return
+            return False
 
         conversation.users[user_id] = LiveLocationState(
             user_id=user_id,
@@ -309,6 +320,7 @@ class BaseInterface[ContextT](ABC):
             live_until=_live_until(location, previous, now),
         )
         save_state(state)
+        return True
 
     def claim_location_run(self, thread_id: str) -> bool:
         """Reserve a location-triggered agent run for *thread_id*'s conversation.
@@ -368,10 +380,10 @@ class BaseInterface[ContextT](ABC):
         located = False
         for part in incoming.parts:
             if isinstance(part, LocationContent):
-                self.record_location(
+                accepted = self.record_location(
                     incoming.thread_id, incoming.user_id or incoming.sender_id, part
                 )
-                located = True
+                located = located or accepted
 
         # Preprocess before the lock — may be slow (Whisper, geocoding).
         content = await _preprocess(incoming.parts)
@@ -899,7 +911,7 @@ async def _preprocess(parts: list[ContentPart]) -> MessageContent:
                     }
                 )
         elif isinstance(part, LocationContent):
-            text = await _geocode(part.latitude, part.longitude)
+            text = await _geocode(part.latitude, part.longitude, part.sender_name)
             blocks.append({"type": "text", "text": text})
 
     text_only = all(b["type"] == "text" for b in blocks)
@@ -918,7 +930,7 @@ async def _transcribe(data: bytes, mime_type: str) -> str:
     return result.text
 
 
-async def _geocode(latitude: float, longitude: float) -> str:
+async def _geocode(latitude: float, longitude: float, sender_name: str | None = None) -> str:
     async with httpx.AsyncClient() as client:
         response = await client.get(
             "https://nominatim.openstreetmap.org/reverse",
@@ -929,4 +941,9 @@ async def _geocode(latitude: float, longitude: float) -> str:
         response.raise_for_status()
         data = response.json()
     display = data.get("display_name", f"{latitude}, {longitude}")
-    return f"User's current location:\nAddress: {display}\nCoordinates: {latitude}, {longitude}"
+    return LOCATION_SHARE_TEMPLATE.format(
+        sender=sender_name or LOCATION_SHARE_UNKNOWN_SENDER,
+        address=display,
+        latitude=latitude,
+        longitude=longitude,
+    )

@@ -653,7 +653,9 @@ async def test_receive_message_reads_edited_location(telegram_interface):
         incoming = await telegram_interface.receive_message(update)
 
     assert incoming is not None
-    assert incoming.parts == [LocationContent(latitude=10.0, longitude=20.0, live_period=600)]
+    assert incoming.parts == [
+        LocationContent(latitude=10.0, longitude=20.0, live_period=600, sender_name="V")
+    ]
     assert incoming.thread_id == "tg-123-0"
     assert incoming.user_id == "7"
     assert incoming.sender_id == "123"  # the chat, which is where a reply goes
@@ -981,3 +983,136 @@ async def test_successive_edits_of_one_share_expire_at_the_same_moment(telegram_
         )
 
     assert _stored(state).live_until == SENT_TS + 10800
+
+
+# ---------------------------------------------------------------------------
+# A stale position is kept away from the agent, not just out of storage
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_record_location_reports_whether_it_accepted_the_position(telegram_interface):
+    now = time.time()
+    state = AppState()
+
+    with (
+        patch("aug.api.interfaces.base.load_state", return_value=state),
+        patch("aug.api.interfaces.base.save_state"),
+    ):
+        fresh = telegram_interface.record_location(
+            "tg-123-0", "7", LocationContent(latitude=1.0, longitude=1.0, reported_at=now)
+        )
+        stale = telegram_interface.record_location(
+            "tg-123-0", "7", LocationContent(latitude=2.0, longitude=2.0, reported_at=now - 60)
+        )
+
+    assert (fresh, stale) == (True, False)
+
+
+@pytest.mark.asyncio
+async def test_a_stale_update_never_reaches_the_agent(telegram_interface):
+    """Dropping it from storage is not enough — the agent must not be told either."""
+    now = time.time()
+    state = _state(users={"7": {"latitude": 2.0, "reported_at": now}}, last_run_at=0.0)
+
+    saved, run_mock = await _handle(
+        telegram_interface,
+        _edited_location(lat=1.0, date=SENT, edit_date=datetime.fromtimestamp(now - 60, tz=UTC)),
+        state,
+    )
+
+    run_mock.assert_not_awaited()
+    assert not saved
+    assert state.locations[CONVERSATION].last_run_at == 0.0  # throttle untouched
+    assert _stored(state).latitude == 2.0
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_update_still_reaches_the_agent(telegram_interface):
+    now = time.time()
+    state = _state(users={"7": {"latitude": 2.0, "reported_at": now - 60}}, last_run_at=0.0)
+
+    _, run_mock = await _handle(
+        telegram_interface,
+        _edited_location(lat=1.0, date=SENT, edit_date=datetime.fromtimestamp(now, tz=UTC)),
+        state,
+    )
+
+    run_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_stale_location_does_not_consume_the_throttle_in_run(telegram_interface):
+    """run() is reached by other paths too — a dropped position must not stamp there."""
+    now = time.time()
+    state = _state(users={"7": {"latitude": 2.0, "reported_at": now}}, last_run_at=0.0)
+
+    await _run_update(
+        telegram_interface,
+        _new_location(lat=1.0, date=datetime.fromtimestamp(now - 60, tz=UTC)),
+        state,
+    )
+
+    assert state.locations[CONVERSATION].last_run_at == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Sender attribution in the text the agent reads
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_receive_message_names_the_sharer(telegram_interface):
+    sharer = User(id=9, first_name="Vadim", last_name="K", is_bot=False)
+
+    with patch("aug.api.interfaces.telegram.utils.load_state", return_value=_state()):
+        incoming = await telegram_interface.receive_message(_new_location(user=sharer))
+
+    assert incoming.parts[0].sender_name == "Vadim K"
+
+
+@pytest.mark.asyncio
+async def test_geocoded_text_names_the_sharer():
+    from aug.api.interfaces.base import _preprocess
+
+    with patch("aug.api.interfaces.base.httpx.AsyncClient") as client:
+        response = MagicMock()
+        response.json.return_value = {"display_name": "10 Downing St, London"}
+        client.return_value.__aenter__.return_value.get = AsyncMock(return_value=response)
+        text = await _preprocess(
+            [LocationContent(latitude=51.5, longitude=-0.12, sender_name="Vadim")]
+        )
+
+    assert text.startswith("Vadim's current location:")
+    assert "10 Downing St, London" in text
+    assert "51.5, -0.12" in text
+
+
+@pytest.mark.asyncio
+async def test_geocoded_text_falls_back_to_user_without_a_name():
+    """Interfaces that supply no name keep the wording the agent already knows."""
+    from aug.api.interfaces.base import _preprocess
+
+    with patch("aug.api.interfaces.base.httpx.AsyncClient") as client:
+        response = MagicMock()
+        response.json.return_value = {"display_name": "Somewhere"}
+        client.return_value.__aenter__.return_value.get = AsyncMock(return_value=response)
+        text = await _preprocess([LocationContent(latitude=1.0, longitude=2.0)])
+
+    assert text.startswith("User's current location:")
+
+
+@pytest.mark.asyncio
+async def test_two_sharers_are_distinguishable_in_one_conversation(telegram_interface):
+    """The whole point: in a group, the agent can tell whose position is whose."""
+    state = _state()
+    texts = []
+    for user in (
+        User(id=7, first_name="V", is_bot=False),
+        User(id=8, first_name="W", is_bot=False),
+    ):
+        with patch("aug.api.interfaces.telegram.utils.load_state", return_value=state):
+            incoming = await telegram_interface.receive_message(_new_location(user=user))
+        texts.append(incoming.parts[0].sender_name)
+
+    assert texts == ["V", "W"]

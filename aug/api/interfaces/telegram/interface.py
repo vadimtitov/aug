@@ -978,9 +978,9 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         """Live location update — an edited_message carrying a new position.
 
         Telegram edits the original message roughly once a minute for the whole
-        live_period. The coordinates are always persisted; the agent is only woken
-        when a run is already going (cheap injection) or the conversation's throttle
-        has elapsed.
+        live_period. The coordinates are persisted unless they arrive out of order;
+        the agent is only woken when a run is already going (cheap injection) or the
+        conversation's throttle has elapsed.
         """
         msg = update.edited_message
         if not msg or not msg.location:
@@ -990,7 +990,10 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
 
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         thread_id = get_thread_id(chat_id, topic_id=msg.message_thread_id)
-        self.record_location(thread_id, str(update.effective_user.id), _location_content(msg))
+        if not self.record_location(
+            thread_id, str(update.effective_user.id), _location_content(msg)
+        ):
+            return  # delivered out of order — we already hold a newer position
 
         # Cheap gate: skip the whole pipeline for an update nothing is waiting on.
         # It is only a gate — run() takes the real decision under its thread lock,
@@ -1619,4 +1622,5 @@ def _location_content(msg: Message) -> LocationContent:
         live_period=period,
         sent_at=msg.date.timestamp() if msg.date else None,
         reported_at=reported.timestamp() if reported else None,
+        sender_name=msg.from_user.full_name if msg.from_user else None,
     )
