@@ -14,8 +14,10 @@ import io
 import logging
 import re
 import subprocess
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -75,6 +77,7 @@ from aug.core.events import (
 from aug.core.memory import run_deep_consolidation, run_light_consolidation
 from aug.core.prompts import build_system_prompt
 from aug.core.registry import list_agents
+from aug.core.run import run_registry
 from aug.core.state import AgentState
 from aug.core.tools.approval import (
     ApprovalDecision,
@@ -131,7 +134,9 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     # ------------------------------------------------------------------
 
     async def receive_message(self, context: Update) -> IncomingMessage | None:
-        msg = context.message
+        # edited_message only reaches here from _handle_live_location — edited text
+        # messages match no handler and are dropped before this point.
+        msg = context.message or context.edited_message
         if not msg:
             return None
         chat_id = context.effective_chat.id  # type: ignore[union-attr]
@@ -862,6 +867,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         bot_app.add_handler(CommandHandler("clear", self._handle_clear))
         bot_app.add_handler(CommandHandler("stop", self._handle_stop))
         bot_app.add_handler(CommandHandler("thread_id", self._handle_thread_id))
+        bot_app.add_handler(CommandHandler("throttle", self._handle_throttle))
         bot_app.add_handler(
             ConversationHandler(
                 entry_points=[CommandHandler("secret", self._secret_start)],
@@ -903,7 +909,16 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         bot_app.add_handler(MessageHandler(filters.AUDIO, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.PHOTO, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.Document.ALL, self._handle_input))
-        bot_app.add_handler(MessageHandler(filters.LOCATION, self._handle_input))
+        bot_app.add_handler(
+            MessageHandler(
+                filters.LOCATION & filters.UpdateType.EDITED_MESSAGE, self._handle_live_location
+            )
+        )
+        bot_app.add_handler(
+            MessageHandler(
+                filters.LOCATION & ~filters.UpdateType.EDITED_MESSAGE, self._handle_input
+            )
+        )
         bot_app.add_handler(MessageHandler(filters.Sticker.ALL, self._handle_input))
         return bot_app
 
@@ -929,6 +944,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                 ("approvals", "List and revoke saved SSH command approvals"),
                 ("ssh", "Manage SSH targets"),
                 ("thread_id", "Show the thread ID of this chat"),
+                ("throttle", "Set live location update throttle (seconds)"),
             ]
         )
         await self._bot_app.start()
@@ -958,6 +974,53 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             return
         await self.run(update)
 
+    async def _handle_live_location(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Live location update — an edited_message carrying a new position.
+
+        Telegram edits the original message roughly once a minute for the whole
+        live_period. The coordinates are always persisted; the agent is only woken
+        when a run is already going (cheap injection) or the per-chat throttle has
+        elapsed.
+        """
+        msg = update.edited_message
+        if not msg or not msg.location:
+            return
+        if not update.effective_user or not is_allowed(update.effective_user.id):
+            return
+
+        chat_id = update.effective_chat.id  # type: ignore[union-attr]
+        thread_id = get_thread_id(chat_id, topic_id=msg.message_thread_id)
+        loc = msg.location
+        now = time.time()
+
+        st = load_state()
+        live = st.telegram.chats.setdefault(str(chat_id), TelegramChatState()).live_location
+        live.latitude = loc.latitude
+        live.longitude = loc.longitude
+        live.updated_at = now
+        if loc.live_period:
+            # live_period is int seconds today, timedelta under PTB_TIMEDELTA=true.
+            period = loc.live_period
+            live.live_until = now + (
+                period.total_seconds() if isinstance(period, timedelta) else period
+            )
+
+        run = run_registry.get(thread_id)
+        injecting = bool(run and run.active and not run.user_requested_stop.is_set())
+        throttled = not injecting and now - live.last_run_at < live.throttle_seconds
+        if not injecting and not throttled:
+            live.last_run_at = now
+        save_state(st)
+
+        if throttled:
+            logger.debug("live location throttled for %s", thread_id)
+            return
+
+        # run() injects into the active run if there is one, else starts a new one.
+        await self.run(update)
+
     # ------------------------------------------------------------------
     # Command handlers
     # ------------------------------------------------------------------
@@ -979,8 +1042,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             return
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         st = load_state()
-        current = st.telegram.chats.get(str(chat_id), TelegramChatState()).session
-        st.telegram.chats[str(chat_id)] = TelegramChatState(session=current + 1)
+        st.telegram.chats.setdefault(str(chat_id), TelegramChatState()).session += 1
         save_state(st)
         await update.message.reply_text("Context cleared. Starting fresh.")  # type: ignore[union-attr]
 
@@ -1098,6 +1160,33 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             f"<code>{escape(thread_id)}</code>",
             parse_mode="HTML",
         )
+
+    @restricted
+    async def _handle_throttle(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat_id = update.effective_chat.id  # type: ignore[union-attr]
+        reply = update.effective_message.reply_text  # type: ignore[union-attr]
+
+        if not context.args:
+            st = load_state()
+            chat_state = st.telegram.chats.get(str(chat_id), TelegramChatState())
+            await reply(f"Live location throttle: {chat_state.live_location.throttle_seconds}s")
+            return
+
+        try:
+            seconds = int(context.args[0])
+        except ValueError:
+            await reply("Usage: /throttle <seconds>")
+            return
+        if seconds < 60:
+            await reply("Minimum throttle is 60 seconds.")
+            return
+
+        st = load_state()
+        st.telegram.chats.setdefault(
+            str(chat_id), TelegramChatState()
+        ).live_location.throttle_seconds = seconds
+        save_state(st)
+        await reply(f"Live location throttle set to {seconds}s.")
 
     @restricted
     async def _handle_compact(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -24,10 +24,24 @@ from aug.utils.data import read_data_file, write_data_file
 _STATE_FILE = "state.json"
 
 
+class LiveLocationState(BaseModel):
+    """Latest shared live location for a chat, plus its agent-run throttle."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    latitude: float = 0.0
+    longitude: float = 0.0
+    updated_at: float = 0.0  # unix timestamp of the last coordinate update
+    live_until: float = 0.0  # unix timestamp when the Telegram live_period expires
+    last_run_at: float = 0.0  # unix timestamp of the last agent run triggered by a location
+    throttle_seconds: int = 300  # minimum seconds between location-triggered agent runs
+
+
 class TelegramChatState(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     session: int = 0
+    live_location: LiveLocationState = LiveLocationState()
 
 
 class TelegramState(BaseModel):
