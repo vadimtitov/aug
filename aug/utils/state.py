@@ -38,12 +38,17 @@ class LiveLocationState(BaseModel):
     user_id: str = ""  # platform user id of the sharer, mirrored from the dict key
     latitude: float = 0.0
     longitude: float = 0.0
-    updated_at: float = 0.0  # unix timestamp of the last coordinate update
+    updated_at: float = 0.0  # unix timestamp of when we recorded these coordinates
+    reported_at: float = 0.0  # unix timestamp the platform put on them (0 = unknown)
     live_until: float = 0.0  # unix timestamp when the live sharing period expires (0 = not live)
 
     def age_seconds(self, now: float | None = None) -> float:
-        """Seconds since these coordinates were last updated."""
-        return (time.time() if now is None else now) - self.updated_at
+        """Seconds since this position was reported.
+
+        Measured from the platform's own timestamp where there is one — how stale the
+        position is, not how long ago we happened to write it down.
+        """
+        return (time.time() if now is None else now) - (self.reported_at or self.updated_at)
 
     def is_live(self, now: float | None = None) -> bool:
         """True while the sharing period the user granted is still running."""

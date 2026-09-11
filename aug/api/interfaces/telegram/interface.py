@@ -26,7 +26,6 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LinkPreviewOptions,
-    Location,
     Message,
     MessageOriginChannel,
     MessageOriginChat,
@@ -213,7 +212,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             if msg.caption:
                 parts.append(TextContent(text=msg.caption))
         elif msg.location:
-            parts.append(_location_content(msg.location))
+            parts.append(_location_content(msg))
             if msg.caption:
                 parts.append(TextContent(text=msg.caption))
         elif msg.text:
@@ -991,10 +990,11 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
 
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         thread_id = get_thread_id(chat_id, topic_id=msg.message_thread_id)
-        self.record_location(
-            thread_id, str(update.effective_user.id), _location_content(msg.location)
-        )
+        self.record_location(thread_id, str(update.effective_user.id), _location_content(msg))
 
+        # Cheap gate: skip the whole pipeline for an update nothing is waiting on.
+        # It is only a gate — run() takes the real decision under its thread lock,
+        # since the run seen here can finish while run() is still preprocessing.
         run = run_registry.get(thread_id)
         injecting = bool(run and run.active and not run.user_requested_stop.is_set())
         if not injecting and not self.claim_location_run(thread_id):
@@ -1603,12 +1603,20 @@ def _forward_sender(msg: Message) -> str | None:
             return None
 
 
-def _location_content(location: Location) -> LocationContent:
-    """Translate a Telegram location into the interface-agnostic LocationContent."""
+def _location_content(msg: Message) -> LocationContent:
+    """Translate a Telegram location message into the interface-agnostic LocationContent."""
+    location = msg.location
     # live_period is int seconds today, timedelta under PTB_TIMEDELTA=true.
-    period = location.live_period
+    period = location.live_period  # type: ignore[union-attr]
     if isinstance(period, timedelta):
         period = int(period.total_seconds())
+    # date stays at the original send time across edits, so it anchors the expiry;
+    # edit_date advances with each update, so it orders them.
+    reported = msg.edit_date or msg.date
     return LocationContent(
-        latitude=location.latitude, longitude=location.longitude, live_period=period
+        latitude=location.latitude,  # type: ignore[union-attr]
+        longitude=location.longitude,  # type: ignore[union-attr]
+        live_period=period,
+        sent_at=msg.date.timestamp() if msg.date else None,
+        reported_at=reported.timestamp() if reported else None,
     )

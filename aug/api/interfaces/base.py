@@ -97,12 +97,24 @@ class LocationContent(BaseModel):
     Attributes:
         live_period: Seconds the sharer granted for live updates, if this is a live
                      share.  None for a one-off pin, and for a live update that does
-                     not restate the period (the known expiry is then left alone).
+                     not restate the period.
+        sent_at:     Unix time the message was sent, which is what ``live_period``
+                     counts from.  An edit of a live share keeps the original send
+                     date, so this anchors the expiry instead of letting each update
+                     push it further out.
+        reported_at: Unix time the platform stamped on this particular position (an
+                     edit date, where there is one).  Orders updates against each
+                     other so a late delivery cannot replace a newer position.
+
+    Both timestamps are None on interfaces that do not supply them; the receipt time
+    is used instead.
     """
 
     latitude: float
     longitude: float
     live_period: int | None = None
+    sent_at: float | None = None
+    reported_at: float | None = None
 
 
 ContentPart = TextContent | FileContent | LocationContent
@@ -274,20 +286,28 @@ class BaseInterface[ContextT](ABC):
         """Persist *location* as *user_id*'s latest position in *thread_id*'s conversation.
 
         Called for every location that arrives, whoever sent it, so several people in
-        one group are tracked side by side.  A live update that omits ``live_period``
-        leaves the known expiry in place rather than clearing it.
+        one group are tracked side by side.  An update the platform timestamped before
+        the one already stored is dropped: delivery reorders, and a stale position must
+        not displace a fresh one.
         """
         now = time.time()
         state = load_state()
         conversation = state.locations.setdefault(
             self.conversation_id(thread_id), ConversationLocationState()
         )
-        live = conversation.users.setdefault(user_id, LiveLocationState(user_id=user_id))
-        live.latitude = location.latitude
-        live.longitude = location.longitude
-        live.updated_at = now
-        if location.live_period:
-            live.live_until = now + location.live_period
+        previous = conversation.users.get(user_id, LiveLocationState(user_id=user_id))
+        if location.reported_at and location.reported_at < previous.reported_at:
+            logger.debug("dropping out-of-order location for %s in %s", user_id, thread_id)
+            return
+
+        conversation.users[user_id] = LiveLocationState(
+            user_id=user_id,
+            latitude=location.latitude,
+            longitude=location.longitude,
+            updated_at=now,
+            reported_at=location.reported_at or 0.0,
+            live_until=_live_until(location, previous, now),
+        )
         save_state(state)
 
     def claim_location_run(self, thread_id: str) -> bool:
@@ -308,6 +328,19 @@ class BaseInterface[ContextT](ABC):
         conversation.last_run_at = now
         save_state(state)
         return True
+
+    def stamp_location_run(self, thread_id: str) -> None:
+        """Record that a location is starting an agent run now, throttle or no throttle.
+
+        The decision to run has already been made by the time this is called — a first
+        share, or an update that won the race against a run finishing — so the clock
+        still has to be reset, or the very next update wakes the agent again.
+        """
+        state = load_state()
+        state.locations.setdefault(
+            self.conversation_id(thread_id), ConversationLocationState()
+        ).last_run_at = time.time()
+        save_state(state)
 
     def location_throttle(self, thread_id: str) -> int:
         """Minimum seconds between location-triggered agent runs in this conversation."""
@@ -330,9 +363,15 @@ class BaseInterface[ContextT](ABC):
 
         # Record before preprocessing: the very first share must land in the state too,
         # not only the live updates that follow it, or a reader sees an empty gap.
+        # Fall back to the sender when an interface has no per-user id, so locations
+        # from different places cannot pile up under one empty key.
+        located = False
         for part in incoming.parts:
             if isinstance(part, LocationContent):
-                self.record_location(incoming.thread_id, incoming.user_id, part)
+                self.record_location(
+                    incoming.thread_id, incoming.user_id or incoming.sender_id, part
+                )
+                located = True
 
         # Preprocess before the lock — may be slow (Whisper, geocoding).
         content = await _preprocess(incoming.parts)
@@ -343,6 +382,13 @@ class BaseInterface[ContextT](ABC):
             if existing and existing.active and not existing.user_requested_stop.is_set():
                 existing.inject_message(content)
                 return
+
+            # A location is about to start a run.  Stamp the throttle here, under the
+            # lock, because this is where the decision is actually taken: the caller's
+            # check happened before preprocessing, and the run it saw may since have
+            # finished.  Covers the first share too, which never passes such a check.
+            if located:
+                self.stamp_location_run(incoming.thread_id)
 
             # No active run — buffer for debounce window (or fire immediately if disabled).
             self._debounce_buf.setdefault(incoming.thread_id, []).append((incoming, content))
@@ -803,6 +849,23 @@ async def _collect(stream: AsyncIterator[AgentEvent]) -> str:
 # ---------------------------------------------------------------------------
 # Private: preprocessing utilities
 # ---------------------------------------------------------------------------
+
+
+def _live_until(location: LocationContent, previous: LiveLocationState, now: float) -> float:
+    """Unix time the live sharing period ends, or 0.0 if this position is not live.
+
+    ``live_period`` counts from when the message was sent, not from when it reached us,
+    so the expiry is anchored to the send date.  Recomputing it for each edit of the
+    same share therefore lands on the same answer: an update cannot push the window
+    further out, and one delivered after the window closed cannot revive it.
+
+    A platform sends ``live_period`` with an active live share.  Without it the update
+    is either an edit that simply omits the field — the known expiry stands — or a
+    one-off pin, which clears whatever live status an earlier share left behind.
+    """
+    if location.live_period:
+        return (location.sent_at or now) + location.live_period
+    return previous.live_until if previous.is_live(now) else 0.0
 
 
 async def _preprocess(parts: list[ContentPart]) -> MessageContent:
