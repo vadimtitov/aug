@@ -42,6 +42,7 @@ from aug.core.state import AgentState
 from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
 from aug.utils.file_settings import ConversationSettings, load_settings, save_settings
 from aug.utils.logging import set_correlation_id, set_thread_id
+from aug.utils.state import ConversationLocationState, LiveLocationState, load_state, save_state
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +92,17 @@ class FileContent(BaseModel):
 
 
 class LocationContent(BaseModel):
+    """A position shared from any interface.
+
+    Attributes:
+        live_period: Seconds the sharer granted for live updates, if this is a live
+                     share.  None for a one-off pin, and for a live update that does
+                     not restate the period (the known expiry is then left alone).
+    """
+
     latitude: float
     longitude: float
+    live_period: int | None = None
 
 
 ContentPart = TextContent | FileContent | LocationContent
@@ -103,9 +113,12 @@ class IncomingMessage(BaseModel):
 
     parts: list[ContentPart]
     interface: Literal["telegram", "rest_api"]
-    sender_id: str
+    sender_id: str  # delivery target — the chat a reply goes back to
     thread_id: str
     agent_version: str
+    # Platform id of the person who sent this.  Distinct from sender_id, which addresses
+    # a place: in a group chat many user_ids share one sender_id.
+    user_id: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -249,12 +262,77 @@ class BaseInterface[ContextT](ABC):
         settings.conversations.setdefault(conversation, ConversationSettings()).agent = agent
         save_settings(settings)
 
+    def live_locations(self, thread_id: str) -> dict[str, LiveLocationState]:
+        """Latest location per user for *thread_id*'s conversation, keyed by user id.
+
+        Includes users whose sharing period has already expired — callers decide what
+        counts as stale via ``LiveLocationState.is_live`` / ``age_seconds``.
+        """
+        return self._location_state(thread_id).users
+
+    def record_location(self, thread_id: str, user_id: str, location: LocationContent) -> None:
+        """Persist *location* as *user_id*'s latest position in *thread_id*'s conversation.
+
+        Called for every location that arrives, whoever sent it, so several people in
+        one group are tracked side by side.  A live update that omits ``live_period``
+        leaves the known expiry in place rather than clearing it.
+        """
+        now = time.time()
+        state = load_state()
+        conversation = state.locations.setdefault(
+            self.conversation_id(thread_id), ConversationLocationState()
+        )
+        live = conversation.users.setdefault(user_id, LiveLocationState(user_id=user_id))
+        live.latitude = location.latitude
+        live.longitude = location.longitude
+        live.updated_at = now
+        if location.live_period:
+            live.live_until = now + location.live_period
+        save_state(state)
+
+    def claim_location_run(self, thread_id: str) -> bool:
+        """Reserve a location-triggered agent run for *thread_id*'s conversation.
+
+        Returns True and stamps the throttle if enough time has passed since the last
+        such run, False if the update should be recorded but not woken on.  Only for
+        runs the location itself triggers — injecting into a run that is already going
+        is free and should not consume the throttle.
+        """
+        now = time.time()
+        state = load_state()
+        conversation = state.locations.setdefault(
+            self.conversation_id(thread_id), ConversationLocationState()
+        )
+        if now - conversation.last_run_at < conversation.throttle_seconds:
+            return False
+        conversation.last_run_at = now
+        save_state(state)
+        return True
+
+    def location_throttle(self, thread_id: str) -> int:
+        """Minimum seconds between location-triggered agent runs in this conversation."""
+        return self._location_state(thread_id).throttle_seconds
+
+    def set_location_throttle(self, thread_id: str, seconds: int) -> None:
+        """Set the minimum seconds between location-triggered runs in this conversation."""
+        state = load_state()
+        state.locations.setdefault(
+            self.conversation_id(thread_id), ConversationLocationState()
+        ).throttle_seconds = seconds
+        save_state(state)
+
     async def run(self, context: ContextT) -> None:
         """Route: inject into active run or start a new one."""
         incoming = await self.receive_message(context)
         if incoming is None:
             return
         set_correlation_id(str(uuid4())[:8])
+
+        # Record before preprocessing: the very first share must land in the state too,
+        # not only the live updates that follow it, or a reader sees an empty gap.
+        for part in incoming.parts:
+            if isinstance(part, LocationContent):
+                self.record_location(incoming.thread_id, incoming.user_id, part)
 
         # Preprocess before the lock — may be slow (Whisper, geocoding).
         content = await _preprocess(incoming.parts)
@@ -374,6 +452,12 @@ class BaseInterface[ContextT](ABC):
 
         logger.info("leftover_injection thread=%s new_run=%s", incoming.thread_id, new_run.id)
         await self._execute_run(new_run, incoming, leftover, context, fire_reflexes=False)
+
+    def _location_state(self, thread_id: str) -> ConversationLocationState:
+        """Stored location state for *thread_id*'s conversation, defaults if never used."""
+        return load_state().locations.get(
+            self.conversation_id(thread_id), ConversationLocationState()
+        )
 
     def stop_run(self, thread_id: str) -> bool:
         """Stop the active run for a thread. Returns True if there was one."""

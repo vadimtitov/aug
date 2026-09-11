@@ -14,7 +14,6 @@ import io
 import logging
 import re
 import subprocess
-import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -27,6 +26,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LinkPreviewOptions,
+    Location,
     Message,
     MessageOriginChannel,
     MessageOriginChat,
@@ -213,9 +213,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             if msg.caption:
                 parts.append(TextContent(text=msg.caption))
         elif msg.location:
-            parts.append(
-                LocationContent(latitude=msg.location.latitude, longitude=msg.location.longitude)
-            )
+            parts.append(_location_content(msg.location))
             if msg.caption:
                 parts.append(TextContent(text=msg.caption))
         elif msg.text:
@@ -234,6 +232,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             sender_id=str(chat_id),
             thread_id=thread_id,
             agent_version=self.get_agent_version(thread_id),
+            user_id=str(user_id),
         )
 
     async def send_stream(self, stream: AsyncIterator[AgentEvent], context: Update) -> None:
@@ -981,8 +980,8 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
 
         Telegram edits the original message roughly once a minute for the whole
         live_period. The coordinates are always persisted; the agent is only woken
-        when a run is already going (cheap injection) or the per-chat throttle has
-        elapsed.
+        when a run is already going (cheap injection) or the conversation's throttle
+        has elapsed.
         """
         msg = update.edited_message
         if not msg or not msg.location:
@@ -992,29 +991,13 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
 
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         thread_id = get_thread_id(chat_id, topic_id=msg.message_thread_id)
-        loc = msg.location
-        now = time.time()
-
-        st = load_state()
-        live = st.telegram.chats.setdefault(str(chat_id), TelegramChatState()).live_location
-        live.latitude = loc.latitude
-        live.longitude = loc.longitude
-        live.updated_at = now
-        if loc.live_period:
-            # live_period is int seconds today, timedelta under PTB_TIMEDELTA=true.
-            period = loc.live_period
-            live.live_until = now + (
-                period.total_seconds() if isinstance(period, timedelta) else period
-            )
+        self.record_location(
+            thread_id, str(update.effective_user.id), _location_content(msg.location)
+        )
 
         run = run_registry.get(thread_id)
         injecting = bool(run and run.active and not run.user_requested_stop.is_set())
-        throttled = not injecting and now - live.last_run_at < live.throttle_seconds
-        if not injecting and not throttled:
-            live.last_run_at = now
-        save_state(st)
-
-        if throttled:
+        if not injecting and not self.claim_location_run(thread_id):
             logger.debug("live location throttled for %s", thread_id)
             return
 
@@ -1164,12 +1147,12 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     @restricted
     async def _handle_throttle(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
+        topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
+        thread_id = get_thread_id(chat_id, topic_id)
         reply = update.effective_message.reply_text  # type: ignore[union-attr]
 
         if not context.args:
-            st = load_state()
-            chat_state = st.telegram.chats.get(str(chat_id), TelegramChatState())
-            await reply(f"Live location throttle: {chat_state.live_location.throttle_seconds}s")
+            await reply(f"Live location throttle: {self.location_throttle(thread_id)}s")
             return
 
         try:
@@ -1181,11 +1164,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             await reply("Minimum throttle is 60 seconds.")
             return
 
-        st = load_state()
-        st.telegram.chats.setdefault(
-            str(chat_id), TelegramChatState()
-        ).live_location.throttle_seconds = seconds
-        save_state(st)
+        self.set_location_throttle(thread_id, seconds)
         await reply(f"Live location throttle set to {seconds}s.")
 
     @restricted
@@ -1622,3 +1601,14 @@ def _forward_sender(msg: Message) -> str | None:
             return chat.title or chat.username
         case _:
             return None
+
+
+def _location_content(location: Location) -> LocationContent:
+    """Translate a Telegram location into the interface-agnostic LocationContent."""
+    # live_period is int seconds today, timedelta under PTB_TIMEDELTA=true.
+    period = location.live_period
+    if isinstance(period, timedelta):
+        period = int(period.total_seconds())
+    return LocationContent(
+        latitude=location.latitude, longitude=location.longitude, live_period=period
+    )
