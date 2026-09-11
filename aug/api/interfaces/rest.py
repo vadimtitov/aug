@@ -65,6 +65,7 @@ class RestApiInterface(BaseInterface[_RestContext]):
             sender_id=req.thread_id,
             thread_id=req.thread_id,
             agent_version=context.agent_version,
+            user_id=req.thread_id,  # REST has no separate user identity — the thread is the caller
         )
 
     async def send_stream(self, stream: AsyncIterator[AgentEvent], context: _RestContext) -> None:

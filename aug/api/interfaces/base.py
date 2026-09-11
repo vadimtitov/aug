@@ -34,7 +34,11 @@ from aug.config import get_settings
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.compaction import compact_thread
 from aug.core.events import AgentEvent, ChatModelStreamEvent
-from aug.core.prompts import MID_RUN_INJECTION_PREFIX
+from aug.core.prompts import (
+    LOCATION_SHARE_TEMPLATE,
+    LOCATION_SHARE_UNKNOWN_SENDER,
+    MID_RUN_INJECTION_PREFIX,
+)
 from aug.core.reflexes import Reflex, ReflexOutput, run_reflexes
 from aug.core.registry import get_agent
 from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, MessageContent, run_registry
@@ -42,6 +46,7 @@ from aug.core.state import AgentState
 from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
 from aug.utils.file_settings import ConversationSettings, load_settings, save_settings
 from aug.utils.logging import set_correlation_id, set_thread_id
+from aug.utils.state import ConversationLocationState, LiveLocationState, load_state, save_state
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +96,32 @@ class FileContent(BaseModel):
 
 
 class LocationContent(BaseModel):
+    """A position shared from any interface.
+
+    Attributes:
+        live_period: Seconds the sharer granted for live updates, if this is a live
+                     share.  None for a one-off pin, and for a live update that does
+                     not restate the period.
+        sent_at:     Unix time the message was sent, which is what ``live_period``
+                     counts from.  An edit of a live share keeps the original send
+                     date, so this anchors the expiry instead of letting each update
+                     push it further out.
+        reported_at: Unix time the platform stamped on this particular position (an
+                     edit date, where there is one).  Orders updates against each
+                     other so a late delivery cannot replace a newer position.
+        sender_name: Display name of the person sharing, for the text the agent reads.
+                     Without it two group members' positions are indistinguishable.
+
+    Both timestamps are None on interfaces that do not supply them; the receipt time
+    is used instead.
+    """
+
     latitude: float
     longitude: float
+    live_period: int | None = None
+    sent_at: float | None = None
+    reported_at: float | None = None
+    sender_name: str | None = None
 
 
 ContentPart = TextContent | FileContent | LocationContent
@@ -103,9 +132,12 @@ class IncomingMessage(BaseModel):
 
     parts: list[ContentPart]
     interface: Literal["telegram", "rest_api"]
-    sender_id: str
+    sender_id: str  # delivery target — the chat a reply goes back to
     thread_id: str
     agent_version: str
+    # Platform id of the person who sent this.  Distinct from sender_id, which addresses
+    # a place: in a group chat many user_ids share one sender_id.
+    user_id: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -249,12 +281,109 @@ class BaseInterface[ContextT](ABC):
         settings.conversations.setdefault(conversation, ConversationSettings()).agent = agent
         save_settings(settings)
 
+    def live_locations(self, thread_id: str) -> dict[str, LiveLocationState]:
+        """Latest location per user for *thread_id*'s conversation, keyed by user id.
+
+        Includes users whose sharing period has already expired — callers decide what
+        counts as stale via ``LiveLocationState.is_live`` / ``age_seconds``.
+        """
+        return self._location_state(thread_id).users
+
+    def record_location(self, thread_id: str, user_id: str, location: LocationContent) -> bool:
+        """Persist *location* as *user_id*'s latest position in *thread_id*'s conversation.
+
+        Called for every location that arrives, whoever sent it, so several people in
+        one group are tracked side by side.  An update the platform timestamped before
+        the one already stored is dropped: delivery reorders, and a stale position must
+        not displace a fresh one.
+
+        Returns False when the position was dropped as stale, so the caller can leave
+        the agent out of it too — showing it coordinates that are known to be outdated
+        is worse than saying nothing.
+        """
+        now = time.time()
+        state = load_state()
+        conversation = state.locations.setdefault(
+            self.conversation_id(thread_id), ConversationLocationState()
+        )
+        previous = conversation.users.get(user_id, LiveLocationState(user_id=user_id))
+        if location.reported_at and location.reported_at < previous.reported_at:
+            logger.debug("dropping out-of-order location for %s in %s", user_id, thread_id)
+            return False
+
+        conversation.users[user_id] = LiveLocationState(
+            user_id=user_id,
+            latitude=location.latitude,
+            longitude=location.longitude,
+            updated_at=now,
+            reported_at=location.reported_at or 0.0,
+            live_until=_live_until(location, previous, now),
+        )
+        save_state(state)
+        return True
+
+    def claim_location_run(self, thread_id: str) -> bool:
+        """Reserve a location-triggered agent run for *thread_id*'s conversation.
+
+        Returns True and stamps the throttle if enough time has passed since the last
+        such run, False if the update should be recorded but not woken on.  Only for
+        runs the location itself triggers — injecting into a run that is already going
+        is free and should not consume the throttle.
+        """
+        now = time.time()
+        state = load_state()
+        conversation = state.locations.setdefault(
+            self.conversation_id(thread_id), ConversationLocationState()
+        )
+        if now - conversation.last_run_at < conversation.throttle_seconds:
+            return False
+        conversation.last_run_at = now
+        save_state(state)
+        return True
+
+    def stamp_location_run(self, thread_id: str) -> None:
+        """Record that a location is starting an agent run now, throttle or no throttle.
+
+        The decision to run has already been made by the time this is called — a first
+        share, or an update that won the race against a run finishing — so the clock
+        still has to be reset, or the very next update wakes the agent again.
+        """
+        state = load_state()
+        state.locations.setdefault(
+            self.conversation_id(thread_id), ConversationLocationState()
+        ).last_run_at = time.time()
+        save_state(state)
+
+    def location_throttle(self, thread_id: str) -> int:
+        """Minimum seconds between location-triggered agent runs in this conversation."""
+        return self._location_state(thread_id).throttle_seconds
+
+    def set_location_throttle(self, thread_id: str, seconds: int) -> None:
+        """Set the minimum seconds between location-triggered runs in this conversation."""
+        state = load_state()
+        state.locations.setdefault(
+            self.conversation_id(thread_id), ConversationLocationState()
+        ).throttle_seconds = seconds
+        save_state(state)
+
     async def run(self, context: ContextT) -> None:
         """Route: inject into active run or start a new one."""
         incoming = await self.receive_message(context)
         if incoming is None:
             return
         set_correlation_id(str(uuid4())[:8])
+
+        # Record before preprocessing: the very first share must land in the state too,
+        # not only the live updates that follow it, or a reader sees an empty gap.
+        # Fall back to the sender when an interface has no per-user id, so locations
+        # from different places cannot pile up under one empty key.
+        located = False
+        for part in incoming.parts:
+            if isinstance(part, LocationContent):
+                accepted = self.record_location(
+                    incoming.thread_id, incoming.user_id or incoming.sender_id, part
+                )
+                located = located or accepted
 
         # Preprocess before the lock — may be slow (Whisper, geocoding).
         content = await _preprocess(incoming.parts)
@@ -265,6 +394,13 @@ class BaseInterface[ContextT](ABC):
             if existing and existing.active and not existing.user_requested_stop.is_set():
                 existing.inject_message(content)
                 return
+
+            # A location is about to start a run.  Stamp the throttle here, under the
+            # lock, because this is where the decision is actually taken: the caller's
+            # check happened before preprocessing, and the run it saw may since have
+            # finished.  Covers the first share too, which never passes such a check.
+            if located:
+                self.stamp_location_run(incoming.thread_id)
 
             # No active run — buffer for debounce window (or fire immediately if disabled).
             self._debounce_buf.setdefault(incoming.thread_id, []).append((incoming, content))
@@ -374,6 +510,12 @@ class BaseInterface[ContextT](ABC):
 
         logger.info("leftover_injection thread=%s new_run=%s", incoming.thread_id, new_run.id)
         await self._execute_run(new_run, incoming, leftover, context, fire_reflexes=False)
+
+    def _location_state(self, thread_id: str) -> ConversationLocationState:
+        """Stored location state for *thread_id*'s conversation, defaults if never used."""
+        return load_state().locations.get(
+            self.conversation_id(thread_id), ConversationLocationState()
+        )
 
     def stop_run(self, thread_id: str) -> bool:
         """Stop the active run for a thread. Returns True if there was one."""
@@ -721,6 +863,23 @@ async def _collect(stream: AsyncIterator[AgentEvent]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _live_until(location: LocationContent, previous: LiveLocationState, now: float) -> float:
+    """Unix time the live sharing period ends, or 0.0 if this position is not live.
+
+    ``live_period`` counts from when the message was sent, not from when it reached us,
+    so the expiry is anchored to the send date.  Recomputing it for each edit of the
+    same share therefore lands on the same answer: an update cannot push the window
+    further out, and one delivered after the window closed cannot revive it.
+
+    A platform sends ``live_period`` with an active live share.  Without it the update
+    is either an edit that simply omits the field — the known expiry stands — or a
+    one-off pin, which clears whatever live status an earlier share left behind.
+    """
+    if location.live_period:
+        return (location.sent_at or now) + location.live_period
+    return previous.live_until if previous.is_live(now) else 0.0
+
+
 async def _preprocess(parts: list[ContentPart]) -> MessageContent:
     blocks = []
     for part in parts:
@@ -752,7 +911,7 @@ async def _preprocess(parts: list[ContentPart]) -> MessageContent:
                     }
                 )
         elif isinstance(part, LocationContent):
-            text = await _geocode(part.latitude, part.longitude)
+            text = await _geocode(part.latitude, part.longitude, part.sender_name)
             blocks.append({"type": "text", "text": text})
 
     text_only = all(b["type"] == "text" for b in blocks)
@@ -771,7 +930,7 @@ async def _transcribe(data: bytes, mime_type: str) -> str:
     return result.text
 
 
-async def _geocode(latitude: float, longitude: float) -> str:
+async def _geocode(latitude: float, longitude: float, sender_name: str | None = None) -> str:
     async with httpx.AsyncClient() as client:
         response = await client.get(
             "https://nominatim.openstreetmap.org/reverse",
@@ -782,4 +941,9 @@ async def _geocode(latitude: float, longitude: float) -> str:
         response.raise_for_status()
         data = response.json()
     display = data.get("display_name", f"{latitude}, {longitude}")
-    return f"User's current location:\nAddress: {display}\nCoordinates: {latitude}, {longitude}"
+    return LOCATION_SHARE_TEMPLATE.format(
+        sender=sender_name or LOCATION_SHARE_UNKNOWN_SENDER,
+        address=display,
+        latitude=latitude,
+        longitude=longitude,
+    )

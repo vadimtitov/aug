@@ -16,12 +16,58 @@ Not for user-facing configuration — use aug/utils/file_settings.py for that.
 from __future__ import annotations
 
 import json
+import time
 
 from pydantic import BaseModel, ConfigDict
 
 from aug.utils.data import read_data_file, write_data_file
 
 _STATE_FILE = "state.json"
+
+
+class LiveLocationState(BaseModel):
+    """The latest location one user shared in one conversation.
+
+    Written by BaseInterface.record_location for every location that arrives —
+    the first share as well as each live update — so a reader never sees a gap
+    between the two.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    user_id: str = ""  # platform user id of the sharer, mirrored from the dict key
+    latitude: float = 0.0
+    longitude: float = 0.0
+    updated_at: float = 0.0  # unix timestamp of when we recorded these coordinates
+    reported_at: float = 0.0  # unix timestamp the platform put on them (0 = unknown)
+    live_until: float = 0.0  # unix timestamp when the live sharing period expires (0 = not live)
+
+    def age_seconds(self, now: float | None = None) -> float:
+        """Seconds since this position was reported.
+
+        Measured from the platform's own timestamp where there is one — how stale the
+        position is, not how long ago we happened to write it down.
+        """
+        return (time.time() if now is None else now) - (self.reported_at or self.updated_at)
+
+    def is_live(self, now: float | None = None) -> bool:
+        """True while the sharing period the user granted is still running."""
+        return self.live_until > (time.time() if now is None else now)
+
+
+class ConversationLocationState(BaseModel):
+    """Every live location shared in one conversation, plus its agent-run throttle.
+
+    Keyed by user id: several people in a group can share at once and are tracked
+    independently.  The throttle is per conversation, not per user — it limits how
+    often location updates wake the agent for this thread, whoever sent them.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    users: dict[str, LiveLocationState] = {}
+    last_run_at: float = 0.0  # unix timestamp of the last agent run triggered by a location
+    throttle_seconds: int = 300  # minimum seconds between location-triggered agent runs
 
 
 class TelegramChatState(BaseModel):
@@ -48,6 +94,9 @@ class AppState(BaseModel):
 
     telegram: TelegramState = TelegramState()
     consolidation: ConsolidationState = ConsolidationState()
+    # Keyed by BaseInterface.conversation_id — interface-namespaced, so this is shared
+    # by every frontend rather than living under any one of them.
+    locations: dict[str, ConversationLocationState] = {}
 
 
 def load_state() -> AppState:

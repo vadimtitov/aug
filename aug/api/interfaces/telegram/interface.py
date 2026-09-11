@@ -16,6 +16,7 @@ import re
 import subprocess
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -75,6 +76,7 @@ from aug.core.events import (
 from aug.core.memory import run_deep_consolidation, run_light_consolidation
 from aug.core.prompts import build_system_prompt
 from aug.core.registry import list_agents
+from aug.core.run import run_registry
 from aug.core.state import AgentState
 from aug.core.tools.approval import (
     ApprovalDecision,
@@ -131,7 +133,9 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     # ------------------------------------------------------------------
 
     async def receive_message(self, context: Update) -> IncomingMessage | None:
-        msg = context.message
+        # edited_message only reaches here from _handle_live_location — edited text
+        # messages match no handler and are dropped before this point.
+        msg = context.message or context.edited_message
         if not msg:
             return None
         chat_id = context.effective_chat.id  # type: ignore[union-attr]
@@ -208,9 +212,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             if msg.caption:
                 parts.append(TextContent(text=msg.caption))
         elif msg.location:
-            parts.append(
-                LocationContent(latitude=msg.location.latitude, longitude=msg.location.longitude)
-            )
+            parts.append(_location_content(msg))
             if msg.caption:
                 parts.append(TextContent(text=msg.caption))
         elif msg.text:
@@ -229,6 +231,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             sender_id=str(chat_id),
             thread_id=thread_id,
             agent_version=self.get_agent_version(thread_id),
+            user_id=str(user_id),
         )
 
     async def send_stream(self, stream: AsyncIterator[AgentEvent], context: Update) -> None:
@@ -862,6 +865,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         bot_app.add_handler(CommandHandler("clear", self._handle_clear))
         bot_app.add_handler(CommandHandler("stop", self._handle_stop))
         bot_app.add_handler(CommandHandler("thread_id", self._handle_thread_id))
+        bot_app.add_handler(CommandHandler("throttle", self._handle_throttle))
         bot_app.add_handler(
             ConversationHandler(
                 entry_points=[CommandHandler("secret", self._secret_start)],
@@ -903,7 +907,16 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         bot_app.add_handler(MessageHandler(filters.AUDIO, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.PHOTO, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.Document.ALL, self._handle_input))
-        bot_app.add_handler(MessageHandler(filters.LOCATION, self._handle_input))
+        bot_app.add_handler(
+            MessageHandler(
+                filters.LOCATION & filters.UpdateType.EDITED_MESSAGE, self._handle_live_location
+            )
+        )
+        bot_app.add_handler(
+            MessageHandler(
+                filters.LOCATION & ~filters.UpdateType.EDITED_MESSAGE, self._handle_input
+            )
+        )
         bot_app.add_handler(MessageHandler(filters.Sticker.ALL, self._handle_input))
         return bot_app
 
@@ -929,6 +942,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                 ("approvals", "List and revoke saved SSH command approvals"),
                 ("ssh", "Manage SSH targets"),
                 ("thread_id", "Show the thread ID of this chat"),
+                ("throttle", "Set live location update throttle (seconds)"),
             ]
         )
         await self._bot_app.start()
@@ -958,6 +972,41 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             return
         await self.run(update)
 
+    async def _handle_live_location(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Live location update — an edited_message carrying a new position.
+
+        Telegram edits the original message roughly once a minute for the whole
+        live_period. The coordinates are persisted unless they arrive out of order;
+        the agent is only woken when a run is already going (cheap injection) or the
+        conversation's throttle has elapsed.
+        """
+        msg = update.edited_message
+        if not msg or not msg.location:
+            return
+        if not update.effective_user or not is_allowed(update.effective_user.id):
+            return
+
+        chat_id = update.effective_chat.id  # type: ignore[union-attr]
+        thread_id = get_thread_id(chat_id, topic_id=msg.message_thread_id)
+        if not self.record_location(
+            thread_id, str(update.effective_user.id), _location_content(msg)
+        ):
+            return  # delivered out of order — we already hold a newer position
+
+        # Cheap gate: skip the whole pipeline for an update nothing is waiting on.
+        # It is only a gate — run() takes the real decision under its thread lock,
+        # since the run seen here can finish while run() is still preprocessing.
+        run = run_registry.get(thread_id)
+        injecting = bool(run and run.active and not run.user_requested_stop.is_set())
+        if not injecting and not self.claim_location_run(thread_id):
+            logger.debug("live location throttled for %s", thread_id)
+            return
+
+        # run() injects into the active run if there is one, else starts a new one.
+        await self.run(update)
+
     # ------------------------------------------------------------------
     # Command handlers
     # ------------------------------------------------------------------
@@ -979,8 +1028,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             return
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         st = load_state()
-        current = st.telegram.chats.get(str(chat_id), TelegramChatState()).session
-        st.telegram.chats[str(chat_id)] = TelegramChatState(session=current + 1)
+        st.telegram.chats.setdefault(str(chat_id), TelegramChatState()).session += 1
         save_state(st)
         await update.message.reply_text("Context cleared. Starting fresh.")  # type: ignore[union-attr]
 
@@ -1098,6 +1146,29 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             f"<code>{escape(thread_id)}</code>",
             parse_mode="HTML",
         )
+
+    @restricted
+    async def _handle_throttle(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        chat_id = update.effective_chat.id  # type: ignore[union-attr]
+        topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
+        thread_id = get_thread_id(chat_id, topic_id)
+        reply = update.effective_message.reply_text  # type: ignore[union-attr]
+
+        if not context.args:
+            await reply(f"Live location throttle: {self.location_throttle(thread_id)}s")
+            return
+
+        try:
+            seconds = int(context.args[0])
+        except ValueError:
+            await reply("Usage: /throttle <seconds>")
+            return
+        if seconds < 60:
+            await reply("Minimum throttle is 60 seconds.")
+            return
+
+        self.set_location_throttle(thread_id, seconds)
+        await reply(f"Live location throttle set to {seconds}s.")
 
     @restricted
     async def _handle_compact(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1533,3 +1604,23 @@ def _forward_sender(msg: Message) -> str | None:
             return chat.title or chat.username
         case _:
             return None
+
+
+def _location_content(msg: Message) -> LocationContent:
+    """Translate a Telegram location message into the interface-agnostic LocationContent."""
+    location = msg.location
+    # live_period is int seconds today, timedelta under PTB_TIMEDELTA=true.
+    period = location.live_period  # type: ignore[union-attr]
+    if isinstance(period, timedelta):
+        period = int(period.total_seconds())
+    # date stays at the original send time across edits, so it anchors the expiry;
+    # edit_date advances with each update, so it orders them.
+    reported = msg.edit_date or msg.date
+    return LocationContent(
+        latitude=location.latitude,  # type: ignore[union-attr]
+        longitude=location.longitude,  # type: ignore[union-attr]
+        live_period=period,
+        sent_at=msg.date.timestamp() if msg.date else None,
+        reported_at=reported.timestamp() if reported else None,
+        sender_name=msg.from_user.full_name if msg.from_user else None,
+    )
