@@ -5,7 +5,6 @@ necessity, so it is inert without a live, single-use, server-side ``state``.
 """
 
 import logging
-import os
 import secrets
 
 import httpx
@@ -15,6 +14,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from aug.config import get_settings
 from aug.core.oauth.providers import ProviderConfig
 from aug.core.oauth.store import claim_start_token, claim_state, create_state, save_token
+from aug.utils.hushed import read_secret
 from aug.utils.oauth import OAuthClient, Pkce, authorize_url
 
 logger = logging.getLogger(__name__)
@@ -178,7 +178,7 @@ def _redirect_uri(provider: str) -> str:
 
 
 def _credentials(provider: str, config: ProviderConfig) -> tuple[str, str]:
-    """Read the provider's client credentials from the environment (hushed-injected)."""
+    """Read the provider's client credentials from hushed (or the process environment)."""
     id_var = config.client_id_env or f"{provider.upper()}_CLIENT_ID"
     secret_var = config.client_secret_env or f"{provider.upper()}_CLIENT_SECRET"
-    return os.environ.get(id_var, ""), os.environ.get(secret_var, "")
+    return read_secret(id_var), read_secret(secret_var)
