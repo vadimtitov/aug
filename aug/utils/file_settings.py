@@ -18,6 +18,7 @@ Conversation IDs are interface-scoped and stable across context resets — see
 from __future__ import annotations
 
 import json
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -95,6 +96,28 @@ class ToolSettings(BaseModel):
     image_gen: ImageGenToolSettings = ImageGenToolSettings()
 
 
+class McpServerConfig(BaseModel):
+    """One configured MCP server. Loaded by MCPManager at startup.
+
+    ``env`` / ``headers`` values are ``hushed:KEY_NAME`` references, never plaintext
+    secrets — see ``aug/core/mcp_manager.py`` for how they're resolved. ``args``
+    carries the pinned package version for stdio servers (e.g.
+    ``["-y", "@modelcontextprotocol/server-github@1.0.0"]``) so an install never
+    silently picks up a newer, unreviewed release on restart.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    transport: Literal["stdio", "http"]
+    command: str = ""  # stdio only
+    args: list[str] = []  # stdio only
+    env: dict[str, str] = {}  # stdio only — hushed:KEY references
+    url: str = ""  # http only
+    headers: dict[str, str] = {}  # http only — hushed:KEY references
+    enabled: bool = True
+
+
 class HomeAssistantReflexSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -114,6 +137,7 @@ class AppSettings(BaseModel):
     consolidation: ConsolidationSettings = ConsolidationSettings()
     tools: ToolSettings = ToolSettings()
     reflexes: ReflexSettings = ReflexSettings()
+    mcp_servers: list[McpServerConfig] = []
 
 
 def load_settings() -> AppSettings:

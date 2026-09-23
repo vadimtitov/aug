@@ -7,6 +7,7 @@ from aug.utils.file_settings import (
     ApprovalRule,
     AppSettings,
     ConversationSettings,
+    McpServerConfig,
     SshTarget,
     load_settings,
     save_settings,
@@ -293,6 +294,90 @@ def test_migration_is_idempotent_without_an_intervening_save():
         second = load_settings()
     assert first.model_dump() == second.model_dump()
     assert second.conversations["tg-123"].agent == "v2_claude"
+
+
+def test_load_returns_no_mcp_servers_by_default():
+    with patch("aug.utils.file_settings.read_data_file", return_value=""):
+        s = load_settings()
+    assert s.mcp_servers == []
+
+
+def test_load_mcp_server_stdio():
+    raw = json.dumps(
+        {
+            "mcp_servers": [
+                {
+                    "name": "github",
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-github@1.0.0"],
+                    "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "hushed:GITHUB_PERSONAL_ACCESS_TOKEN"},
+                    "enabled": True,
+                }
+            ]
+        }
+    )
+    with patch("aug.utils.file_settings.read_data_file", return_value=raw):
+        s = load_settings()
+    assert len(s.mcp_servers) == 1
+    cfg = s.mcp_servers[0]
+    assert cfg.name == "github"
+    assert cfg.command == "npx"
+    assert cfg.args == ["-y", "@modelcontextprotocol/server-github@1.0.0"]
+    assert cfg.env == {"GITHUB_PERSONAL_ACCESS_TOKEN": "hushed:GITHUB_PERSONAL_ACCESS_TOKEN"}
+    assert cfg.enabled is True
+
+
+def test_load_mcp_server_http():
+    raw = json.dumps(
+        {
+            "mcp_servers": [
+                {
+                    "name": "sentry",
+                    "transport": "http",
+                    "url": "https://mcp.sentry.dev/mcp",
+                    "headers": {"Authorization": "hushed:SENTRY_BEARER_TOKEN"},
+                }
+            ]
+        }
+    )
+    with patch("aug.utils.file_settings.read_data_file", return_value=raw):
+        s = load_settings()
+    cfg = s.mcp_servers[0]
+    assert cfg.transport == "http"
+    assert cfg.url == "https://mcp.sentry.dev/mcp"
+    assert cfg.headers == {"Authorization": "hushed:SENTRY_BEARER_TOKEN"}
+    assert cfg.enabled is True  # default
+
+
+def test_save_round_trips_mcp_servers():
+    written: list[str] = []
+    s = AppSettings()
+    s.mcp_servers.append(
+        McpServerConfig(
+            name="postgres",
+            transport="stdio",
+            command="npx",
+            args=["-y", "@modelcontextprotocol/server-postgres@1.2.0"],
+            env={"DATABASE_URL": "hushed:DATABASE_URL"},
+        )
+    )
+
+    with patch(
+        "aug.utils.file_settings.write_data_file",
+        side_effect=lambda _f, d: written.append(d),
+    ):
+        save_settings(s)
+
+    loaded = AppSettings.model_validate(json.loads(written[0]))
+    assert loaded.mcp_servers[0].name == "postgres"
+    assert loaded.mcp_servers[0].env == {"DATABASE_URL": "hushed:DATABASE_URL"}
+
+
+def test_mcp_server_config_never_stores_plaintext_secrets_by_convention():
+    """Not an enforced invariant — just documents that env/headers are references."""
+    cfg = McpServerConfig(name="x", transport="stdio", env={"TOKEN": "hushed:TOKEN"})
+    assert cfg.env["TOKEN"].startswith("hushed:")
 
 
 def test_migration_tolerates_malformed_legacy_shapes():

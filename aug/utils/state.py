@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import time
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -89,6 +90,31 @@ class ConsolidationState(BaseModel):
     last_deep_run: str | None = None
 
 
+class McpOperation(BaseModel):
+    """One install/remove operation, tracked across the restart it triggers.
+
+    A restart that crashes AUG before the next boot can update this record
+    leaves it at ``restart_pending`` — that's exactly the state
+    ``MCPManager.reconcile_operations`` looks for and resolves on the next
+    successful startup, so an operation is never silently lost.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    action: Literal["install", "remove"]
+    server_name: str
+    state: Literal["saved", "restart_pending", "active", "failed"]
+    detail: str = ""
+    created_at: float = 0.0
+
+
+class McpState(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    operations: list[McpOperation] = []
+
+
 class AppState(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -97,6 +123,7 @@ class AppState(BaseModel):
     # Keyed by BaseInterface.conversation_id — interface-namespaced, so this is shared
     # by every frontend rather than living under any one of them.
     locations: dict[str, ConversationLocationState] = {}
+    mcp: McpState = McpState()
 
 
 def load_state() -> AppState:

@@ -42,8 +42,11 @@ from aug.config import get_settings
 from aug.core.browser_view import BrowserViewHub
 from aug.core.dispatch import broadcast
 from aug.core.dispatch import set_app as set_push_app
+from aug.core.mcp_manager import MCPManager
+from aug.core.mcp_manager import set_manager as set_mcp_manager
 from aug.core.memory import init_memory_files, start_consolidation_scheduler
 from aug.core.oauth.providers import PROVIDERS_FILE, ProviderRegistry
+from aug.core.registry import configure_mcp_tools, v12_base_tool_names
 from aug.core.skill_deps import warm_all_skills
 from aug.utils.db import create_pool, set_pool
 from aug.utils.logging import configure_logging, set_correlation_id
@@ -83,15 +86,23 @@ async def _checkpointer_context(dsn: str):
         yield checkpointer
 
 
-async def _announce_startup(app: FastAPI) -> None:
+async def _announce_startup(app: FastAPI, mcp_report: str | None) -> None:
     """Tell every interface with a push channel that AUG is back up.
 
     Runs as a background task: broadcast is best-effort and swallows its own
     delivery failures, so an unreachable chat can neither delay nor fail the boot.
+
+    ``mcp_report`` is the outcome of any MCP install/remove operation a
+    previous boot left mid-restart (see MCPManager.reconcile_operations) — it
+    rides along on this same message since it's the one channel AUG already
+    has for "something happened while nobody was watching."
     """
     if not get_settings().STARTUP_ANNOUNCEMENT:
         return
-    delivered = await broadcast(app, f"🟢 AUG {get_settings().APP_VERSION} is up.")
+    message = f"🟢 AUG {get_settings().APP_VERSION} is up."
+    if mcp_report:
+        message = f"{message}\n{mcp_report}"
+    delivered = await broadcast(app, message)
     logger.info("startup announcement delivered to %d thread(s)", delivered)
 
 
@@ -133,6 +144,17 @@ async def lifespan(app: FastAPI):
         telegram = TelegramInterface(checkpointer)
         await telegram.start_polling(app)
 
+        # MCP servers — connects before v12_claude's tool list is finalized, so
+        # the agent that gets built (or resumed from a checkpoint) sees whichever
+        # servers were actually reachable this boot. Bounded by its own overall
+        # deadline; a server that never comes up just isn't in the tool list.
+        mcp_manager = MCPManager()
+        await mcp_manager.load_all(base_tool_names=v12_base_tool_names())
+        configure_mcp_tools(mcp_manager.tools)
+        set_mcp_manager(mcp_manager)
+        app.state.mcp_manager = mcp_manager
+        mcp_report = mcp_manager.reconcile_operations()
+
         set_push_app(app)
         consolidation_task = await start_consolidation_scheduler()
         scheduler_task = await start_scheduler(app)
@@ -145,19 +167,24 @@ async def lifespan(app: FastAPI):
         # Loopback token gateway — lets the agent use OAuth credentials it cannot read.
         gateway_task = asyncio.create_task(serve_gateway(app.state))
 
-        announce_task = asyncio.create_task(_announce_startup(app))
+        announce_task = asyncio.create_task(_announce_startup(app, mcp_report))
 
         sys.stdout.flush()
         sys.stdout.write(_BANNER)
         sys.stdout.flush()
         settings = get_settings()
+        mcp_active = sum(1 for h in mcp_manager.health.values() if h.status == "active")
         logger.info(
-            "AUG startup complete — version=%s telegram=%s brave=%s gmail=%s portainer=%s",
+            "AUG startup complete — version=%s telegram=%s brave=%s gmail=%s portainer=%s "
+            "mcp_servers=%d/%d mcp_tools=%d",
             settings.APP_VERSION,
             bool(settings.TELEGRAM_BOT_TOKEN),
             bool(settings.BRAVE_API_KEY),
             bool(settings.GMAIL_CLIENT_ID),
             bool(settings.PORTAINER_URL),
+            mcp_active,
+            len(mcp_manager.health),
+            len(mcp_manager.tools),
         )
         yield
 
@@ -169,6 +196,7 @@ async def lifespan(app: FastAPI):
         await stop_scheduler(app)
         await telegram.stop_polling(app)
         await app.state.browser_view_hub.aclose()
+        await mcp_manager.aclose()
 
     # Shutdown
     await pool.close()
