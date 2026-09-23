@@ -445,6 +445,8 @@ MCP_INSTALL_PLAN_MISSING_FOOTER = (
     "Set the missing secret(s) on musya (hushed add NAME <value>), "
     "then install result #{index} again."
 )
+MCP_INSTALL_PLAN_DEFAULTS_HEADER = "Defaults (from the registry, not secret):"
+MCP_INSTALL_PLAN_DEFAULT_LINE = "  {target_name} = {value}"
 
 IMAGE_DESCRIPTION_PROMPT = """\
 You are describing an image to a language model that cannot see it.

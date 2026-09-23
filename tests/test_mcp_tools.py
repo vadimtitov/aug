@@ -8,6 +8,7 @@ import pytest
 
 import aug.core.tools.mcp as mcp_tools
 from aug.core.mcp_manager import McpServerHealth
+from aug.core.tools.approval import ApprovalDecision
 from aug.utils.file_settings import ApprovalRule, AppSettings, McpServerConfig, ToolSettings
 from aug.utils.mcp_registry import McpRegistryServer
 from aug.utils.state import AppState
@@ -206,7 +207,7 @@ async def test_install_mcp_server_invalid_index():
 async def test_install_mcp_server_already_configured():
     mcp_tools._state.last_search[""] = [_server(name="io.github.x/server-postgres")]
     settings = AppSettings(
-        mcp_servers=[McpServerConfig(name="postgres", transport="stdio", command="npx", args=[])]
+        mcp_servers=[McpServerConfig(name="x-postgres", transport="stdio", command="npx", args=[])]
     )
     load_p, save_p = _patch_no_plans()
     with patch(_P_APPROVAL, return_value=_APPROVE_ALL), _patch_settings(settings), load_p, save_p:
@@ -251,9 +252,9 @@ async def test_install_mcp_server_shows_existing_secret_binding_for_approval():
         save_p,
         patch("aug.core.tools.mcp._list_hushed_secrets", return_value={"GITHUB_TOKEN"}),
     ):
-        resource, operation = mcp_tools._describe_install(1)
+        resource, operation = await mcp_tools._describe_install(1)
 
-    assert resource == "github"
+    assert resource == "x-github"
     assert "GITHUB_TOKEN" in operation
     assert "existing hushed secret" in operation
 
@@ -275,7 +276,9 @@ async def test_install_mcp_server_succeeds_when_secrets_present():
         patch("aug.core.tools.mcp.record_operation", AsyncMock(return_value="op1")) as mock_record,
         patch(
             "aug.core.tools.mcp._schedule_restart",
-            side_effect=lambda op_id, name: schedule_calls.append((op_id, name)),
+            side_effect=lambda op_id, name, interface, thread_id: schedule_calls.append(
+                (op_id, name, interface, thread_id)
+            ),
         ),
         load_p,
         save_p,
@@ -286,8 +289,8 @@ async def test_install_mcp_server_succeeds_when_secrets_present():
     assert len(save_calls) == 1
     saved_cfg = save_calls[0].mcp_servers[0]
     assert saved_cfg.env == {"GITHUB_TOKEN": "hushed:GITHUB_TOKEN"}
-    mock_record.assert_called_once_with("install", "github", "saved", interface="", thread_id="")
-    assert schedule_calls == [("op1", "github")]
+    mock_record.assert_called_once_with("install", "x-github", "saved", interface="", thread_id="")
+    assert schedule_calls == [("op1", "x-github", "", "")]
 
 
 @pytest.mark.asyncio
@@ -346,6 +349,27 @@ async def test_install_mcp_server_no_required_secrets_installs_directly():
 
 
 @pytest.mark.asyncio
+async def test_install_mcp_server_denial_clears_the_plan():
+    """Item 2 (denied plan lingers): denying an install must not leave its
+    plan behind — otherwise a later search resolving the same index reuses
+    the stale denied plan instead of the new search's result."""
+    mcp_tools._state.last_search[""] = [_server(name="io.github.x/server-postgres")]
+    state = AppState()
+
+    with (
+        patch("aug.core.tools.mcp.load_state", return_value=state),
+        patch("aug.core.tools.mcp.save_state"),
+        patch("aug.core.tools.mcp._list_hushed_secrets", return_value=set()),
+        patch(_P_APPROVAL, return_value=AppSettings()),  # no saved rule -> triggers interrupt
+        patch("aug.core.tools.approval.interrupt", return_value=ApprovalDecision.DENIED),
+    ):
+        output = await mcp_tools.install_mcp_server.ainvoke({"index": 1})
+
+    assert "denied" in output.lower()
+    assert state.mcp.install_plans == {}
+
+
+@pytest.mark.asyncio
 async def test_install_mcp_server_rechecks_duplicates_inside_lock():
     """Item 8: even if the fast-path check (against a snapshot loaded before
     the lock) passes, a duplicate that another writer already saved by the
@@ -356,7 +380,7 @@ async def test_install_mcp_server_rechecks_duplicates_inside_lock():
     # By the time update_settings() reloads under the lock, another writer
     # has already installed the same server.
     installed = AppSettings(
-        mcp_servers=[McpServerConfig(name="simple", transport="stdio", command="npx")]
+        mcp_servers=[McpServerConfig(name="x-simple", transport="stdio", command="npx")]
     )
 
     with (
@@ -365,6 +389,8 @@ async def test_install_mcp_server_rechecks_duplicates_inside_lock():
         patch("aug.utils.file_settings.load_settings", return_value=installed),
         patch("aug.utils.file_settings.save_settings") as mock_save,
         patch("aug.core.tools.mcp._list_hushed_secrets", return_value=set()),
+        patch("aug.core.tools.mcp.record_operation", AsyncMock(return_value="op1")),
+        patch("aug.core.tools.mcp.update_operation_state", AsyncMock()),
         load_p,
         save_p,
     ):
@@ -382,7 +408,8 @@ async def test_install_mcp_server_rechecks_duplicates_inside_lock():
 # ---------------------------------------------------------------------------
 
 
-def test_get_or_build_plan_reuses_persisted_plan_across_a_different_search():
+@pytest.mark.asyncio
+async def test_get_or_build_plan_reuses_persisted_plan_across_a_different_search():
     """Regression test for the P1: an in-progress install must not be resolved
     against a different, later search snapshot — even the same process's own
     later search for a *different* thread must not interfere, and a persisted
@@ -396,9 +423,9 @@ def test_get_or_build_plan_reuses_persisted_plan_across_a_different_search():
         patch("aug.core.tools.mcp.save_state"),
         patch("aug.core.tools.mcp._list_hushed_secrets", return_value=set()),
     ):
-        plan = mcp_tools._get_or_build_plan("thread-a", 1)
+        plan = await mcp_tools._get_or_build_plan("thread-a", 1)
         assert plan is not None
-        assert plan.slug == "postgres"
+        assert plan.slug == "x-postgres"
 
         # Another conversation now searches and would, if scoping were
         # broken, shadow thread-a's in-flight install.
@@ -406,11 +433,12 @@ def test_get_or_build_plan_reuses_persisted_plan_across_a_different_search():
 
         # thread-a resolving #1 again (LangGraph replaying the node on
         # resume) must get back the exact same persisted plan.
-        again = mcp_tools._get_or_build_plan("thread-a", 1)
+        again = await mcp_tools._get_or_build_plan("thread-a", 1)
     assert again == plan
 
 
-def test_get_or_build_plan_survives_missing_live_snapshot():
+@pytest.mark.asyncio
+async def test_get_or_build_plan_survives_missing_live_snapshot():
     """Simulates a process restart while approval was pending: the in-memory
     search cache is gone, but the persisted plan (state.json) is not."""
     from aug.utils.state import McpCredentialBinding, McpInstallPlan
@@ -431,10 +459,69 @@ def test_get_or_build_plan_survives_missing_live_snapshot():
     state.mcp.install_plans["thread-a"] = plan
 
     # No live snapshot at all (mcp_tools._state.last_search left empty by the fixture).
-    with patch("aug.core.tools.mcp.load_state", return_value=state):
-        resolved = mcp_tools._get_or_build_plan("thread-a", 1)
+    # Secret "X" still present so revalidation doesn't flip `bound` and force
+    # an (unmocked) save_state call.
+    with (
+        patch("aug.core.tools.mcp.load_state", return_value=state),
+        patch("aug.core.tools.mcp._list_hushed_secrets", return_value={"X"}),
+    ):
+        resolved = await mcp_tools._get_or_build_plan("thread-a", 1)
 
     assert resolved == plan
+
+
+@pytest.mark.asyncio
+async def test_get_or_build_plan_revalidates_bound_status_on_retry():
+    """Item 2 (missing-secret retry): a plan built while a secret was missing
+    must notice once the user adds it and retries the same index — the old
+    behavior reused the stale persisted plan forever, reporting the secret as
+    still missing even after `hushed add` made it available."""
+    from aug.utils.state import McpCredentialBinding, McpInstallPlan
+
+    plan = McpInstallPlan(
+        id="p1",
+        thread_id="thread-a",
+        search_index=1,
+        server_name="io.github.x/server-github",
+        slug="github",
+        version="1.0.0",
+        transport="stdio",
+        command="npx",
+        args=["-y", "server-github@1.0.0"],
+        credentials=[
+            McpCredentialBinding(
+                target_name="GITHUB_TOKEN", secret_name="GITHUB_TOKEN", bound=False
+            )
+        ],
+    )
+    state = AppState()
+    state.mcp.install_plans["thread-a"] = plan
+    saved = []
+
+    with (
+        patch("aug.core.tools.mcp.load_state", return_value=state),
+        patch("aug.core.tools.mcp.save_state", side_effect=lambda s: saved.append(s)),
+        patch("aug.core.tools.mcp._list_hushed_secrets", return_value={"GITHUB_TOKEN"}),
+    ):
+        resolved = await mcp_tools._get_or_build_plan("thread-a", 1)
+
+    assert resolved.credentials[0].bound is True
+    assert len(saved) == 1
+    assert saved[0].mcp.install_plans["thread-a"].credentials[0].bound is True
+
+
+@pytest.mark.asyncio
+async def test_build_plan_preserves_literal_inputs():
+    """Item 7: registry-declared literal/default values must survive into the
+    persisted plan (and from there into the saved config's env_static)."""
+    server = _server(name="io.github.x/server-simple")
+    server = server.model_copy(update={"literal_inputs": {"LOG_LEVEL": "info"}})
+
+    plan = mcp_tools._build_plan("thread-a", 1, server, known_secrets=set())
+
+    assert plan.literal_inputs == {"LOG_LEVEL": "info"}
+    cfg = mcp_tools._plan_to_config(plan, bindings={})
+    assert cfg.env_static == {"LOG_LEVEL": "info"}
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +553,9 @@ async def test_remove_mcp_server_success():
         patch("aug.core.tools.mcp.record_operation", AsyncMock(return_value="op2")) as mock_record,
         patch(
             "aug.core.tools.mcp._schedule_restart",
-            side_effect=lambda op_id, name: schedule_calls.append((op_id, name)),
+            side_effect=lambda op_id, name, interface, thread_id: schedule_calls.append(
+                (op_id, name, interface, thread_id)
+            ),
         ),
     ):
         output = await mcp_tools.remove_mcp_server.ainvoke({"name": "postgres"})
@@ -474,7 +563,7 @@ async def test_remove_mcp_server_success():
     assert "removed" in output.lower()
     assert save_calls[0].mcp_servers == []
     mock_record.assert_called_once_with("remove", "postgres", "saved", interface="", thread_id="")
-    assert schedule_calls == [("op2", "postgres")]
+    assert schedule_calls == [("op2", "postgres", "", "")]
 
 
 # ---------------------------------------------------------------------------
@@ -482,24 +571,27 @@ async def test_remove_mcp_server_success():
 # ---------------------------------------------------------------------------
 
 
-def test_list_hushed_secrets_parses_names():
+@pytest.mark.asyncio
+async def test_list_hushed_secrets_parses_names():
     result = MagicMock(returncode=0, stdout="GITHUB_TOKEN\nDATABASE_URL\n", stderr="")
     with patch("aug.core.tools.mcp.subprocess.run", return_value=result):
-        names = mcp_tools._list_hushed_secrets()
+        names = await mcp_tools._list_hushed_secrets()
     assert names == {"GITHUB_TOKEN", "DATABASE_URL"}
 
 
-def test_list_hushed_secrets_returns_empty_on_failure():
+@pytest.mark.asyncio
+async def test_list_hushed_secrets_returns_empty_on_failure():
     with patch(
         "aug.core.tools.mcp.subprocess.run", side_effect=subprocess.TimeoutExpired("hushed", 10)
     ):
-        assert mcp_tools._list_hushed_secrets() == set()
+        assert await mcp_tools._list_hushed_secrets() == set()
 
 
-def test_list_hushed_secrets_returns_empty_on_nonzero_exit():
+@pytest.mark.asyncio
+async def test_list_hushed_secrets_returns_empty_on_nonzero_exit():
     result = MagicMock(returncode=1, stdout="", stderr="hushed: not found")
     with patch("aug.core.tools.mcp.subprocess.run", return_value=result):
-        assert mcp_tools._list_hushed_secrets() == set()
+        assert await mcp_tools._list_hushed_secrets() == set()
 
 
 # ---------------------------------------------------------------------------

@@ -390,6 +390,25 @@ def test_mcp_server_config_rejects_plaintext_secret_value():
         )
 
 
+def test_mcp_server_config_rejects_empty_credential_reference():
+    with pytest.raises(ValidationError, match="hushed:NAME"):
+        McpServerConfig(name="x", transport="stdio", command="npx", env={"TOKEN": ""})
+
+
+def test_mcp_server_config_validation_message_never_echoes_the_rejected_value():
+    """The validator's own message must never repeat the rejected value — a
+    hand-edited settings.json can easily hold a real plaintext secret here.
+    (Pydantic's ValidationError separately echoes the raw input for
+    debugging; that's framework behavior, not the message this validator
+    controls.)"""
+    with pytest.raises(ValidationError) as excinfo:
+        McpServerConfig(
+            name="x", transport="stdio", command="npx", env={"TOKEN": "super-secret-plaintext"}
+        )
+    messages = " ".join(e["msg"] for e in excinfo.value.errors())
+    assert "super-secret-plaintext" not in messages
+
+
 def test_mcp_server_config_rejects_missing_command_for_stdio():
     with pytest.raises(ValidationError, match="requires 'command'"):
         McpServerConfig(name="x", transport="stdio")

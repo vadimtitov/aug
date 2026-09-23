@@ -155,6 +155,9 @@ class McpInstallPlan(BaseModel):
     args: list[str] = []
     url: str = ""
     credentials: list[McpCredentialBinding] = []
+    # Literal, non-secret env vars / headers the registry declared with a
+    # concrete value or default — see McpRegistryServer.literal_inputs.
+    literal_inputs: dict[str, str] = {}
     created_at: float = 0.0
 
 

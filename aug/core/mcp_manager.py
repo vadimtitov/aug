@@ -34,10 +34,11 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
+import anyio
 from langchain_core.tools import BaseTool, StructuredTool, ToolException
 from langchain_mcp_adapters.sessions import create_session
 from langchain_mcp_adapters.tools import load_mcp_tools
@@ -61,7 +62,17 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # a single over-long MCP tool name must not prevent every *other* tool in the
 # request from binding.
 _MAX_TOOL_NAME_LEN = 64
+# The un-namespaced half of a tool name, before "{server}__" is prepended —
+# function-calling APIs restrict names to this set, so a server whose tool
+# name doesn't qualify must be skipped rather than handed to the LLM broken.
+_TOOL_NAME_CHARS_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _MAX_ERROR_LEN = 300
+# Transport-death signals a tool call can observe directly — a broken pipe or
+# a session someone already closed. conn.stop.wait() never notices these on
+# its own (nothing signals it), so a tool call catching one is the only place
+# health finds out the server actually died, rather than staying "active"
+# until the next restart.
+_TRANSPORT_DEAD_EXCEPTIONS = (anyio.ClosedResourceError, anyio.BrokenResourceError)
 
 # A tiny, argv-driven reader: `hushed run` injects the secret into this child's
 # environment under NAME, and it writes the raw bytes straight to the fd number
@@ -177,6 +188,8 @@ class MCPManager:
         if not any(op.state in ("saved", "restart_pending") for op in load_state().mcp.operations):
             return []
 
+        configured_names = {s.name for s in load_settings().mcp_servers}
+
         outcomes = []
         async with update_state() as state:
             pending = [
@@ -185,8 +198,19 @@ class MCPManager:
             for op in pending:
                 health = self.health.get(op.server_name)
                 if op.action == "remove":
-                    succeeded = health is None or health.status != "active"
-                    failure_detail = "server is still connected after restart"
+                    # Both must be true: gone from config (nobody will ever
+                    # reconnect it) and not an active session (nothing is
+                    # actually still serving tools) — a server that's merely
+                    # disabled or mid-failure but still listed in settings.json
+                    # is not a completed removal.
+                    still_configured = op.server_name in configured_names
+                    still_active = health is not None and health.status == "active"
+                    succeeded = not still_configured and not still_active
+                    failure_detail = (
+                        "server is still in configuration"
+                        if still_configured
+                        else "server is still connected after restart"
+                    )
                 else:
                     succeeded = health is not None and health.status == "active"
                     failure_detail = health.error if health else "server not found after restart"
@@ -210,41 +234,53 @@ class MCPManager:
             self._run_session(cfg, conn), name=f"mcp-session-{cfg.name}"
         )
 
+        # Everything below is cancellable — load_all()'s overall deadline can
+        # cancel this coroutine at any await point, including mid-startup.
+        # CancelledError is a BaseException, so it skips straight past the
+        # `except TimeoutError`/`except Exception` blocks below without the
+        # `finally` here, leaving conn.task registered nowhere: not in
+        # self._connections (only a successful finish adds it) and no longer
+        # reachable to cancel, so aclose() can never find and close it. The
+        # `finally` runs on the normal-return paths too — see `registered`.
+        registered = False
         try:
-            await asyncio.wait_for(conn.ready.wait(), timeout=_PER_SERVER_TIMEOUT)
-        except TimeoutError:
-            conn.error = conn.error or TimeoutError(
-                f"connection timed out after {_PER_SERVER_TIMEOUT:.0f}s"
-            )
+            try:
+                await asyncio.wait_for(conn.ready.wait(), timeout=_PER_SERVER_TIMEOUT)
+            except TimeoutError:
+                conn.error = conn.error or TimeoutError(
+                    f"connection timed out after {_PER_SERVER_TIMEOUT:.0f}s"
+                )
 
-        if conn.error is not None:
-            await self._abandon(conn)
-            logger.warning("mcp server %s: %s", cfg.name, _sanitize_error(conn.error))
+            if conn.error is not None:
+                logger.warning("mcp server %s: %s", cfg.name, _sanitize_error(conn.error))
+                self.health[cfg.name] = McpServerHealth(
+                    cfg.name, cfg.transport, "failed", error=_sanitize_error(conn.error)
+                )
+                return
+
+            try:
+                tools = await asyncio.wait_for(
+                    self._namespaced_tools(cfg, conn.session), timeout=_PER_SERVER_TIMEOUT
+                )
+            except Exception as exc:
+                logger.warning(
+                    "mcp server %s: failed to load tools: %s", cfg.name, _sanitize_error(exc)
+                )
+                self.health[cfg.name] = McpServerHealth(
+                    cfg.name, cfg.transport, "failed", error=_sanitize_error(exc)
+                )
+                return
+
+            self._connections[cfg.name] = conn
+            registered = True
+            self.tools.extend(tools)
             self.health[cfg.name] = McpServerHealth(
-                cfg.name, cfg.transport, "failed", error=_sanitize_error(conn.error)
+                cfg.name, cfg.transport, "active", tool_count=len(tools)
             )
-            return
-
-        try:
-            tools = await asyncio.wait_for(
-                self._namespaced_tools(cfg, conn.session), timeout=_PER_SERVER_TIMEOUT
-            )
-        except Exception as exc:
-            await self._abandon(conn)
-            logger.warning(
-                "mcp server %s: failed to load tools: %s", cfg.name, _sanitize_error(exc)
-            )
-            self.health[cfg.name] = McpServerHealth(
-                cfg.name, cfg.transport, "failed", error=_sanitize_error(exc)
-            )
-            return
-
-        self._connections[cfg.name] = conn
-        self.tools.extend(tools)
-        self.health[cfg.name] = McpServerHealth(
-            cfg.name, cfg.transport, "active", tool_count=len(tools)
-        )
-        logger.info("mcp server %s: connected, %d tool(s)", cfg.name, len(tools))
+            logger.info("mcp server %s: connected, %d tool(s)", cfg.name, len(tools))
+        finally:
+            if not registered:
+                await self._abandon(conn)
 
     async def _run_session(self, cfg: McpServerConfig, conn: _ServerConnection) -> None:
         """Owner task: the only task that ever enters or exits this server's
@@ -302,6 +338,13 @@ class MCPManager:
         namespaced: list[BaseTool] = []
         for t in raw_tools:
             new_name = f"{cfg.name}__{t.name}"
+            if not _TOOL_NAME_CHARS_RE.match(t.name):
+                logger.warning(
+                    "mcp server %s: tool name %r has unsupported characters, skipped",
+                    cfg.name,
+                    t.name,
+                )
+                continue
             if len(new_name) > _MAX_TOOL_NAME_LEN:
                 logger.warning(
                     "mcp server %s: tool name %r exceeds %d chars, skipped",
@@ -316,8 +359,37 @@ class MCPManager:
                 )
                 continue
             self._tool_names.add(new_name)
-            namespaced.append(_namespace_tool(t, new_name))
+            namespaced.append(
+                _namespace_tool(
+                    t,
+                    new_name,
+                    on_transport_death=lambda exc, name=cfg.name: self._mark_transport_dead(
+                        name, exc
+                    ),
+                )
+            )
         return namespaced
+
+    def _mark_transport_dead(self, server_name: str, exc: BaseException) -> None:
+        """A tool call just observed the transport is gone. ``conn.stop.wait()``
+        in ``_run_session`` has no way to notice a dead pipe on its own —
+        nothing signals it — so a tool call catching ``ClosedResourceError``/
+        ``BrokenResourceError`` is the only place able to tell health the
+        server actually died, instead of it reading "active" until the next
+        restart. Also wakes the owner task so it unwinds the (already broken)
+        session instead of sitting on a stop event nobody will ever set.
+        """
+        prior = self.health.get(server_name)
+        transport = prior.transport if prior else ""
+        logger.warning(
+            "mcp server %s: transport lost during tool call: %s", server_name, _sanitize_error(exc)
+        )
+        self.health[server_name] = McpServerHealth(
+            server_name, transport, "failed", error=_sanitize_error(exc)
+        )
+        conn = self._connections.get(server_name)
+        if conn is not None:
+            conn.stop.set()
 
 
 # ---------------------------------------------------------------------------
@@ -386,29 +458,52 @@ def _operation_summary(op: McpOperation, succeeded: bool, tool_count: int) -> st
     return f"MCP server '{op.server_name}' {op.action} failed: {op.detail}"
 
 
-def _namespace_tool(t: BaseTool, new_name: str) -> BaseTool:
+def _namespace_tool(
+    t: BaseTool,
+    new_name: str,
+    *,
+    on_transport_death: Callable[[BaseException], None] | None = None,
+) -> BaseTool:
     """Rename an MCP-derived tool, bound to the per-call timeout, and turn
     expected failures (timeout, transport/connection errors) into an explicit
     tool-error response instead of letting them escape the compiled graph —
     ToolException + handle_tool_error=True is what makes LangGraph's ToolNode
-    emit a normal error ToolMessage rather than re-raising."""
+    emit a normal error ToolMessage rather than re-raising.
+
+    ``on_transport_death``, when given, is called on ``ClosedResourceError``/
+    ``BrokenResourceError`` — MCPManager wires this to mark the server's
+    health failed, since a tool call is the only place that ever observes a
+    dead pipe (see ``MCPManager._mark_transport_dead``).
+
+    Every string this returns — success or failure — is run through
+    ``_redact`` first: a resolved secret can just as easily come back in a
+    successful tool result (a server echoing a header) as in an exception.
+    """
     original_coroutine = t.coroutine
 
     async def _timed(*args, **kwargs):
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 original_coroutine(*args, **kwargs), timeout=_TOOL_CALL_TIMEOUT
             )
         except TimeoutError as exc:
             raise ToolException(
                 f"Tool '{new_name}' did NOT complete: timed out after {_TOOL_CALL_TIMEOUT:.0f}s."
             ) from exc
-        except ToolException:
-            raise
+        except _TRANSPORT_DEAD_EXCEPTIONS as exc:
+            if on_transport_death is not None:
+                on_transport_death(exc)
+            raise ToolException(
+                f"Tool '{new_name}' did NOT complete: server connection lost "
+                f"({_sanitize_error(exc)})."
+            ) from exc
+        except ToolException as exc:
+            raise ToolException(_redact(str(exc))) from exc
         except Exception as exc:
             raise ToolException(
                 f"Tool '{new_name}' did NOT complete: {_sanitize_error(exc)}"
             ) from exc
+        return _redact_result(result)
 
     return StructuredTool(
         name=new_name,
@@ -421,17 +516,56 @@ def _namespace_tool(t: BaseTool, new_name: str) -> BaseTool:
     )
 
 
+def _redact_result(result):
+    """Scrub a successful tool result the same way an error message is
+    scrubbed — a server can echo a resolved secret back just as easily as an
+    exception can (e.g. confirming a header/token it received). MCP results
+    are nested — content blocks are dicts inside a list inside a
+    ``(content, artifact)`` tuple — so this walks the whole structure rather
+    than assuming a bare string.
+    """
+    if isinstance(result, str):
+        return _redact(result)
+    if isinstance(result, dict):
+        return {k: _redact_result(v) for k, v in result.items()}
+    if isinstance(result, list):
+        return [_redact_result(v) for v in result]
+    if isinstance(result, tuple):
+        return tuple(_redact_result(v) for v in result)
+    return result
+
+
+# Every plaintext secret value this process has ever resolved via `hushed`,
+# for any MCP server — see _resolve_hushed_ref. `_redact`/`_sanitize_error`
+# scrub against this so a leaked value can never reach a log line, a tool
+# result, or a health/error string regardless of which code path produced it.
+_known_secrets: set[str] = set()
+
+
+def _register_secret(value: str) -> None:
+    if value:
+        _known_secrets.add(value)
+
+
+def _redact(text: str) -> str:
+    for secret in _known_secrets:
+        if secret in text:
+            text = text.replace(secret, "[REDACTED]")
+    return text
+
+
 def _sanitize_error(exc: BaseException) -> str:
     """A short, safe-to-log-or-return summary of *exc*.
 
     Deliberately ``str(exc)``, never ``%r``/``repr`` — a transport exception's
     repr can carry a whole request (headers, URL, body) verbatim, which is
-    exactly where a resolved secret would show up. Capped in length so one
-    verbose error (e.g. an HTML error page a broken proxy returned) can't
-    flood logs or a tool result.
+    exactly where a resolved secret would show up. Redacted against every
+    secret this process has resolved (see ``_redact``), then capped in length
+    so one verbose error (e.g. an HTML error page a broken proxy returned)
+    can't flood logs or a tool result.
     """
     text = str(exc) or exc.__class__.__name__
-    return text[:_MAX_ERROR_LEN]
+    return _redact(text)[:_MAX_ERROR_LEN]
 
 
 class _StderrPump:
@@ -478,7 +612,10 @@ async def _open_session(cfg: McpServerConfig) -> AsyncIterator[ClientSession]:
     ``async with`` — the caller (``MCPManager._run_session``) is what makes
     this the owner task for the session's whole lifetime."""
     if cfg.transport == "stdio":
-        resolved_env = await _resolve_stdio_env(cfg.env)
+        # Static (literal, non-secret) values first, then the scrubbed
+        # defaults + resolved hushed secrets on top — a registry-declared
+        # default never shadows an explicitly bound secret.
+        resolved_env = {**cfg.env_static, **await _resolve_stdio_env(cfg.env)}
         pump = _StderrPump(cfg.name, resolved_env.values())
         params = StdioServerParameters(command=cfg.command, args=cfg.args, env=resolved_env)
         try:
@@ -493,7 +630,7 @@ async def _open_session(cfg: McpServerConfig) -> AsyncIterator[ClientSession]:
         connection = {
             "transport": "streamable_http",
             "url": cfg.url,
-            "headers": await _resolve_refs(cfg.headers),
+            "headers": {**cfg.headers_static, **await _resolve_refs(cfg.headers)},
         }
         async with create_session(connection) as session:
             yield session
@@ -522,7 +659,9 @@ async def _resolve_hushed_ref(ref: str) -> str:
             "(value withheld from this message — it may be an unintended plaintext secret)"
         )
     key = ref[len(_HUSHED_PREFIX) :]
-    return await asyncio.to_thread(_read_hushed_secret, key)
+    value = await asyncio.to_thread(_read_hushed_secret, key)
+    _register_secret(value)
+    return value
 
 
 def _read_hushed_secret(name: str) -> str:

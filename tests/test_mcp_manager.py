@@ -6,6 +6,7 @@ import subprocess
 from contextlib import asynccontextmanager, contextmanager
 from unittest.mock import AsyncMock, patch
 
+import anyio
 import pytest
 from langchain_core.tools import StructuredTool, ToolException
 from pydantic import BaseModel
@@ -18,8 +19,10 @@ from aug.core.mcp_manager import (
     McpServerHealth,
     _namespace_tool,
     _read_hushed_secret,
+    _redact,
     _resolve_hushed_ref,
     _resolve_stdio_env,
+    _sanitize_error,
     get_manager,
     record_operation,
     set_manager,
@@ -27,6 +30,19 @@ from aug.core.mcp_manager import (
 )
 from aug.utils.file_settings import AppSettings, McpServerConfig
 from aug.utils.state import AppState, McpOperation
+
+
+@pytest.fixture(autouse=True)
+def _reset_known_secrets():
+    """`_known_secrets` is a process-wide registry populated as a side effect
+    of resolving hushed refs — reset it around every test so one test's
+    resolved value can't leak into another's redaction assertions."""
+    original = set(mcp_manager._known_secrets)
+    mcp_manager._known_secrets.clear()
+    yield
+    mcp_manager._known_secrets.clear()
+    mcp_manager._known_secrets.update(original)
+
 
 # ---------------------------------------------------------------------------
 # _read_hushed_secret / _resolve_hushed_ref
@@ -251,6 +267,39 @@ async def test_namespace_tool_wraps_other_failures_as_tool_exception():
         await wrapped.coroutine(text="x")
 
 
+@pytest.mark.asyncio
+async def test_namespace_tool_marks_transport_dead_on_closed_resource_error():
+    """Item 5: health must flip to failed the moment a tool call observes the
+    transport is actually gone — conn.stop.wait() has no way to notice a dead
+    pipe on its own."""
+
+    async def _dead(text: str = "") -> str:
+        raise anyio.ClosedResourceError()
+
+    calls = []
+    original = _make_tool("dead", _dead)
+    wrapped = _namespace_tool(original, "server__dead", on_transport_death=calls.append)
+
+    with pytest.raises(ToolException, match="connection lost"):
+        await wrapped.coroutine(text="x")
+    assert len(calls) == 1
+    assert isinstance(calls[0], anyio.ClosedResourceError)
+
+
+@pytest.mark.asyncio
+async def test_namespace_tool_redacts_known_secrets_from_successful_result():
+    mcp_manager._register_secret("super-secret-value")
+
+    async def _echo(text: str = "") -> str:
+        return f"the value is super-secret-value, text={text}"
+
+    wrapped = _namespace_tool(_make_tool("echo", _echo), "server__echo")
+    result = await wrapped.coroutine(text="hi")
+
+    assert "super-secret-value" not in result
+    assert "[REDACTED]" in result
+
+
 # ---------------------------------------------------------------------------
 # MCPManager.load_all / aclose — owner-task session lifecycle
 # ---------------------------------------------------------------------------
@@ -294,7 +343,7 @@ def _session_factory(session: _TaskBoundSession):
     return _open
 
 
-def _fake_tool(name: str) -> StructuredTool:
+def _fake_tool(name: str, coroutine=None) -> StructuredTool:
     async def _noop(**kwargs) -> str:
         return "ok"
 
@@ -302,7 +351,7 @@ def _fake_tool(name: str) -> StructuredTool:
         name=name,
         description="d",
         args_schema=_EchoArgs,
-        coroutine=_noop,
+        coroutine=coroutine or _noop,
         response_format="content",
     )
 
@@ -420,6 +469,35 @@ async def test_load_one_timeout_abandons_and_cleans_up_in_owner_task():
 
 
 @pytest.mark.asyncio
+async def test_load_one_cancelled_mid_startup_still_closes_the_owner_task():
+    """Item 1 (P1): load_all()'s overall deadline cancels _load_one() itself,
+    not just the inner per-server wait_for. CancelledError is a BaseException
+    that skips straight past `except TimeoutError`/`except Exception`, so
+    without a `finally` around the whole method the owner task was never
+    abandoned — reproduced here by cancelling _load_one() directly while it
+    waits on conn.ready, mirroring what the overall gather timeout does."""
+    cfg = _stdio_cfg("slow")
+    session = _TaskBoundSession()
+
+    @asynccontextmanager
+    async def _open(cfg):
+        async with session as s:
+            await asyncio.sleep(10)  # never reaches session.initialize()
+            yield s
+
+    manager = MCPManager()
+    with patch("aug.core.mcp_manager._open_session", _open):
+        task = asyncio.create_task(manager._load_one(cfg))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert manager._connections == {}
+    assert session.closed_cleanly is True
+
+
+@pytest.mark.asyncio
 async def test_connect_namespaces_tools_and_detects_collision():
     cfg_a = _stdio_cfg("github")
     session = _TaskBoundSession()
@@ -473,6 +551,49 @@ async def test_namespaced_tools_skips_overlong_tool_name():
         tools = await manager._namespaced_tools(_stdio_cfg("server"), session)
 
     assert tools == []
+
+
+@pytest.mark.asyncio
+async def test_namespaced_tools_skips_tool_name_with_unsupported_characters():
+    """Item 8: length was validated but characters weren't — a tool name
+    with e.g. a space or slash would reach the LLM's function-calling schema
+    broken."""
+    manager = MCPManager()
+    manager._tool_names = set()
+    session = AsyncMock()
+
+    with patch(
+        "aug.core.mcp_manager.load_mcp_tools",
+        AsyncMock(return_value=[_fake_tool("weird tool/name")]),
+    ):
+        tools = await manager._namespaced_tools(_stdio_cfg("server"), session)
+
+    assert tools == []
+
+
+@pytest.mark.asyncio
+async def test_namespaced_tools_wires_transport_death_to_mark_dead():
+    """A tool call losing its transport must be able to find and stop its own
+    server's connection through the manager, not just report health."""
+    manager = MCPManager()
+    manager._tool_names = set()
+    manager._connections["server"] = mcp_manager._ServerConnection(name="server")
+    session = AsyncMock()
+
+    async def _dead(**kwargs) -> str:
+        raise anyio.ClosedResourceError()
+
+    with patch(
+        "aug.core.mcp_manager.load_mcp_tools",
+        AsyncMock(return_value=[_fake_tool("dead", coroutine=_dead)]),
+    ):
+        tools = await manager._namespaced_tools(_stdio_cfg("server"), session)
+
+    with pytest.raises(ToolException):
+        await tools[0].coroutine()
+
+    assert manager.health["server"].status == "failed"
+    assert manager._connections["server"].stop.is_set()
 
 
 @pytest.mark.asyncio
@@ -595,6 +716,26 @@ async def test_reconcile_operations_removal_failure_when_still_connected():
 
 
 @pytest.mark.asyncio
+async def test_reconcile_operations_removal_failure_when_still_configured_but_no_health():
+    """Item 6 (P2): a server that's still in settings.json — merely disabled
+    or mid-failure, with no active session — must not be reported as a
+    successfully completed removal just because health has no entry for it."""
+    manager = MCPManager()  # no health entry — the old check alone would call this "removed"
+    settings = AppSettings(
+        mcp_servers=[McpServerConfig(name="postgres", transport="stdio", command="npx", args=[])]
+    )
+
+    with (
+        _patch_state(_state_with_pending(action="remove")),
+        patch("aug.core.mcp_manager.load_settings", return_value=settings),
+    ):
+        outcomes = await manager.reconcile_operations()
+
+    assert "failed" in outcomes[0].summary
+    assert "still in configuration" in outcomes[0].summary
+
+
+@pytest.mark.asyncio
 async def test_reconcile_operations_returns_empty_when_nothing_pending():
     manager = MCPManager()
     with _patch_state(AppState()):
@@ -688,3 +829,41 @@ def test_get_manager_returns_none_before_set():
         assert get_manager() is None
     finally:
         mcp_manager._manager = original
+
+
+# ---------------------------------------------------------------------------
+# _redact / _sanitize_error — secret redaction (item 3)
+# ---------------------------------------------------------------------------
+
+
+def test_redact_replaces_every_known_secret():
+    mcp_manager._register_secret("token-abc")
+    mcp_manager._register_secret("token-xyz")
+    text = "auth failed with token-abc and also token-xyz in the body"
+
+    assert _redact(text) == "auth failed with [REDACTED] and also [REDACTED] in the body"
+
+
+def test_redact_ignores_empty_secret_values():
+    mcp_manager._register_secret("")
+    assert _redact("nothing to see here") == "nothing to see here"
+
+
+def test_sanitize_error_redacts_a_registered_secret():
+    mcp_manager._register_secret("my-real-token")
+    exc = RuntimeError("upstream returned 401 for my-real-token")
+
+    result = _sanitize_error(exc)
+
+    assert "my-real-token" not in result
+    assert "[REDACTED]" in result
+
+
+def test_sanitize_error_still_truncates_after_redaction():
+    mcp_manager._register_secret("my-real-token")
+    exc = RuntimeError("boom " * 200 + "my-real-token")
+
+    result = _sanitize_error(exc)
+
+    assert len(result) <= mcp_manager._MAX_ERROR_LEN
+    assert "my-real-token" not in result

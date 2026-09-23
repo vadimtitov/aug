@@ -124,8 +124,10 @@ class McpServerConfig(BaseModel):
     command: str = ""  # stdio only
     args: list[str] = []  # stdio only
     env: dict[str, str] = {}  # stdio only — hushed:KEY references
+    env_static: dict[str, str] = {}  # stdio only — literal, non-secret defaults
     url: str = ""  # http only
     headers: dict[str, str] = {}  # http only — hushed:KEY references
+    headers_static: dict[str, str] = {}  # http only — literal, non-secret defaults
     enabled: bool = True
 
     @field_validator("name")
@@ -138,11 +140,15 @@ class McpServerConfig(BaseModel):
     @field_validator("env", "headers")
     @classmethod
     def _validate_refs(cls, v: dict[str, str]) -> dict[str, str]:
-        for target_name, ref in v.items():
-            if ref and not _HUSHED_REF_RE.match(ref):
+        # Never echo `ref` back in the error — a hand-edited settings.json can
+        # easily hold a real plaintext secret here instead of a reference, and
+        # that value must not be repeated into a validation error message that
+        # ends up in logs. Empty is rejected too: it's neither a valid
+        # reference nor a value this model is meant to carry.
+        for target_name in v:
+            if not _HUSHED_REF_RE.match(v[target_name]):
                 raise ValueError(
-                    f"invalid credential reference {ref!r} for {target_name!r} "
-                    "— must be 'hushed:NAME'"
+                    f"invalid credential reference for {target_name!r} — must be 'hushed:NAME'"
                 )
         return v
 

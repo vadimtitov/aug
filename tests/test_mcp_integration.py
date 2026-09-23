@@ -7,8 +7,10 @@ tests that would have caught the P1s a fully-mocked suite missed.
 """
 
 import asyncio
+import contextlib
 import logging
 import os
+import socket
 import sys
 import textwrap
 from unittest.mock import AsyncMock, patch
@@ -17,11 +19,16 @@ import pytest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
+from typing_extensions import TypedDict
 
 import aug.core.tools.mcp as mcp_tools
 from aug.core.agents.chat_agent import ChatAgent
 from aug.core.mcp_manager import MCPManager
 from aug.core.state import AgentState
+from aug.core.tools.approval import ApprovalDecision
 from aug.utils.file_settings import ApprovalRule, AppSettings, McpServerConfig, ToolSettings
 from aug.utils.mcp_registry import McpRegistryServer
 from aug.utils.state import AppState
@@ -70,6 +77,36 @@ _SECRET_LEAKING_SERVER = textwrap.dedent("""
     mcp.run(transport="stdio")
 """)
 
+_SECRET_ECHOING_SERVER = textwrap.dedent("""
+    import os
+    from mcp.server.fastmcp import FastMCP
+
+    mcp = FastMCP("secret-echo")
+
+    @mcp.tool()
+    def whoami() -> str:
+        return f"token is {os.environ.get('MY_SECRET_VAR', '')}"
+
+    @mcp.tool()
+    def boom() -> str:
+        raise RuntimeError(f"upstream rejected token {os.environ.get('MY_SECRET_VAR', '')}")
+
+    mcp.run(transport="stdio")
+""")
+
+_HTTP_ECHO_SERVER = textwrap.dedent("""
+    import sys
+    from mcp.server.fastmcp import FastMCP
+
+    mcp = FastMCP("http-echo", port=int(sys.argv[1]))
+
+    @mcp.tool()
+    def echo(text: str) -> str:
+        return f"echo: {text}"
+
+    mcp.run(transport="streamable-http")
+""")
+
 
 def _stdio_cfg(
     name: str, script: str, tmp_path, env: dict[str, str] | None = None
@@ -79,6 +116,26 @@ def _stdio_cfg(
     return McpServerConfig(
         name=name, transport="stdio", command=sys.executable, args=[str(script_path)], env=env or {}
     )
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+async def _wait_for_port(port: int, timeout_seconds: float = 8.0) -> None:
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout_seconds
+    while loop.time() < deadline:
+        with socket.socket() as s:
+            s.settimeout(0.1)
+            try:
+                s.connect(("127.0.0.1", port))
+                return
+            except OSError:
+                await asyncio.sleep(0.05)
+    raise TimeoutError(f"port {port} never opened")
 
 
 def _server(name: str, required_inputs: list[str] | None = None) -> McpRegistryServer:
@@ -184,7 +241,7 @@ async def test_install_plan_survives_a_concurrent_search_in_another_conversation
         output = await mcp_tools.install_mcp_server.ainvoke({"index": 1}, config=cfg_a)
 
     assert "postgres" in output.lower()
-    assert saved[0].mcp_servers[0].name == "postgres"
+    assert saved[0].mcp_servers[0].name == "x-postgres"
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +281,7 @@ async def test_concurrent_installs_of_different_servers_both_persist():
         )
 
     names = {s.name for s in store["settings"].mcp_servers}
-    assert names == {"postgres", "mysql"}
+    assert names == {"x-postgres", "x-mysql"}
 
 
 # ---------------------------------------------------------------------------
@@ -366,3 +423,194 @@ async def test_agent_graph_executes_real_mcp_tool_end_to_end(tmp_path):
 
     tool_message = next(m for m in result["messages"] if getattr(m, "name", None) == "echo__echo")
     assert tool_message.content[0]["text"] == "echo: hi"
+
+
+# ---------------------------------------------------------------------------
+# 9. Real streamable-HTTP MCP session lifecycle
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_real_http_session_connect_call_and_clean_shutdown(tmp_path):
+    """Every other test in this file uses stdio — streamable-HTTP is a
+    separate code path in _open_session (headers instead of env/stdin) that
+    had no real-transport coverage at all."""
+    port = _free_port()
+    script_path = tmp_path / "http_echo.py"
+    script_path.write_text(_HTTP_ECHO_SERVER)
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, str(script_path), str(port), stderr=asyncio.subprocess.DEVNULL
+    )
+    manager = MCPManager()
+    try:
+        await _wait_for_port(port)
+        cfg = McpServerConfig(name="httpecho", transport="http", url=f"http://127.0.0.1:{port}/mcp")
+        await manager._load_one(cfg)
+        assert manager.health["httpecho"].status == "active"
+        assert [t.name for t in manager.tools] == ["httpecho__echo"]
+
+        content, _artifact = await manager.tools[0].coroutine(text="hi")
+        assert content[0]["text"] == "echo: hi"
+    finally:
+        await manager.aclose()  # must not raise — same task enters and exits
+        proc.terminate()
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(proc.wait(), timeout=3)
+
+
+# ---------------------------------------------------------------------------
+# 10. Approval interrupt/resume through a real LangGraph checkpoint
+# ---------------------------------------------------------------------------
+
+
+class _ApprovalGraphState(TypedDict):
+    result: str
+
+
+async def _call_remove_mcp_server(state: _ApprovalGraphState) -> dict:
+    result = await mcp_tools.remove_mcp_server.ainvoke({"name": "postgres"})
+    return {"result": result}
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_approval_survives_a_real_checkpoint_interrupt_and_resume():
+    """Unlike the plan-persistence tests above (which call tools directly
+    with approval always pre-granted), this drives the actual LangGraph
+    interrupt: the graph must genuinely pause, park state in a real
+    checkpointer, and only run the tool once resumed with a decision."""
+    graph = StateGraph(_ApprovalGraphState)
+    graph.add_node("call", _call_remove_mcp_server)
+    graph.add_edge(START, "call")
+    graph.add_edge("call", END)
+    compiled = graph.compile(checkpointer=MemorySaver())
+    config = {"configurable": {"thread_id": "approval-checkpoint-t1"}}
+
+    settings = AppSettings(
+        mcp_servers=[McpServerConfig(name="postgres", transport="stdio", command="npx", args=[])]
+    )
+    saved = []
+
+    with (
+        patch(_P_APPROVAL, return_value=AppSettings()),  # no saved rule -> must interrupt
+        patch("aug.core.tools.mcp.load_settings", return_value=settings),
+        patch("aug.utils.file_settings.load_settings", return_value=settings),
+        patch("aug.utils.file_settings.save_settings", side_effect=lambda s: saved.append(s)),
+        patch("aug.core.tools.mcp.record_operation", AsyncMock(return_value="op1")),
+        patch("aug.core.tools.mcp._schedule_restart"),
+    ):
+        await compiled.ainvoke({"result": ""}, config)
+        paused = await compiled.aget_state(config)
+        assert paused.interrupts, "graph must actually pause for approval, not just call the tool"
+        assert paused.interrupts[0].value.tool_name == "remove_mcp_server"
+
+        final = await compiled.ainvoke(Command(resume=ApprovalDecision.APPROVED_ONCE), config)
+
+    assert "removed" in final["result"].lower()
+    assert saved[0].mcp_servers == []
+
+
+# ---------------------------------------------------------------------------
+# 11. Graph-level timeout — the compiled graph completes, it doesn't hang
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_agent_graph_completes_when_an_mcp_tool_call_times_out(tmp_path):
+    """test_slow_mcp_server_times_out_as_tool_error_not_exception (above)
+    only proves the tool wrapper itself turns a timeout into a ToolException.
+    This drives the same slow server through the full compiled agent graph,
+    the way a real request would, and checks the graph run finishes on its
+    own — a timeout that instead propagated as a bare exception would abort
+    ainvoke() entirely rather than handing the model an error ToolMessage."""
+    cfg = _stdio_cfg("slow", _SLOW_SERVER, tmp_path)
+    manager = MCPManager()
+    await manager._load_one(cfg)
+    assert manager.tools, "MCP server failed to connect"
+
+    fake_llm = _FakeToolCallingChatModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "slow__slow_echo", "args": {"text": "hi"}, "id": "call_1"}],
+            ),
+            AIMessage(content="The tool timed out."),
+        ]
+    )
+
+    try:
+        with (
+            patch("aug.core.agents.chat_agent.build_chat_model", return_value=fake_llm),
+            patch("aug.core.mcp_manager._TOOL_CALL_TIMEOUT", 0.2),
+        ):
+            agent = ChatAgent(model="fake-model", tools=manager.tools)
+            graph = agent._build_subagent()
+            state = AgentState(
+                messages=[HumanMessage(content="run it")], thread_id="t1", interface="rest_api"
+            )
+            result = await asyncio.wait_for(
+                graph.ainvoke(state, config={"recursion_limit": 10}), timeout=5
+            )
+    finally:
+        await manager.aclose()
+
+    assert result["messages"][-1].content == "The tool timed out."
+    tool_message = next(
+        m for m in result["messages"] if getattr(m, "name", None) == "slow__slow_echo"
+    )
+    assert "did not complete" in tool_message.content.lower()
+
+
+# ---------------------------------------------------------------------------
+# 12. Secret redaction in successful tool results and tool-execution errors
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_successful_tool_result_redacts_a_resolved_secret(tmp_path):
+    """Item 3: redaction previously only covered stderr and error strings —
+    a resolved secret echoed back in a *successful* tool result (e.g. a
+    server confirming the token it received) reached the agent verbatim."""
+    cfg = _stdio_cfg(
+        "secretecho",
+        _SECRET_ECHOING_SERVER,
+        tmp_path,
+        env={"MY_SECRET_VAR": "hushed:MY_SECRET_VAR"},
+    )
+    manager = MCPManager()
+    with patch("aug.core.mcp_manager._read_hushed_secret", return_value="super-secret-token-xyz"):
+        await manager._load_one(cfg)
+        try:
+            whoami = next(t for t in manager.tools if t.name == "secretecho__whoami")
+            content, _artifact = await whoami.coroutine()
+        finally:
+            await manager.aclose()
+
+    text = content[0]["text"]
+    assert "super-secret-token-xyz" not in text
+    assert "[REDACTED]" in text
+
+
+@pytest.mark.asyncio
+async def test_tool_execution_error_redacts_a_resolved_secret(tmp_path):
+    """The same resolved secret, this time surfacing through the server's
+    own error path (CallToolResult(isError=True)) rather than a successful
+    result or a transport-level exception."""
+    cfg = _stdio_cfg(
+        "secretecho",
+        _SECRET_ECHOING_SERVER,
+        tmp_path,
+        env={"MY_SECRET_VAR": "hushed:MY_SECRET_VAR"},
+    )
+    manager = MCPManager()
+    with patch("aug.core.mcp_manager._read_hushed_secret", return_value="super-secret-token-xyz"):
+        await manager._load_one(cfg)
+        try:
+            from langchain_core.tools import ToolException
+
+            boom = next(t for t in manager.tools if t.name == "secretecho__boom")
+            with pytest.raises(ToolException) as excinfo:
+                await boom.coroutine()
+        finally:
+            await manager.aclose()
+
+    assert "super-secret-token-xyz" not in str(excinfo.value)

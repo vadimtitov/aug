@@ -39,11 +39,14 @@ import uuid
 from langchain_core.tools import tool
 from langgraph.config import get_config
 
+from aug.core.app_registry import get_app
 from aug.core.mcp_manager import get_manager, record_operation, update_operation_state
 from aug.core.prompts import (
     MCP_INSTALL_PLAN_CREDENTIAL_BOUND,
     MCP_INSTALL_PLAN_CREDENTIAL_MISSING,
     MCP_INSTALL_PLAN_CREDENTIALS_HEADER,
+    MCP_INSTALL_PLAN_DEFAULT_LINE,
+    MCP_INSTALL_PLAN_DEFAULTS_HEADER,
     MCP_INSTALL_PLAN_DESTINATION_HTTP,
     MCP_INSTALL_PLAN_DESTINATION_STDIO,
     MCP_INSTALL_PLAN_HEADER,
@@ -140,7 +143,10 @@ async def list_mcp_servers() -> str:
 
 
 @tool
-@requires_approval(describe=lambda index: _describe_install(index))
+@requires_approval(
+    describe=lambda index: _describe_install(index),
+    on_denied=lambda index: _clear_plan(_current_thread_id()),
+)
 async def install_mcp_server(index: int) -> str:
     """Install an MCP server found by a previous search_mcp_servers call.
 
@@ -155,7 +161,7 @@ async def install_mcp_server(index: int) -> str:
         index: The 1-based result number from the last search_mcp_servers call.
     """
     thread_id = _current_thread_id()
-    plan = _get_or_build_plan(thread_id, index)
+    plan = await _get_or_build_plan(thread_id, index)
     if plan is None:
         snapshot = _state.last_search.get(thread_id)
         if not snapshot:
@@ -170,18 +176,26 @@ async def install_mcp_server(index: int) -> str:
     if missing:
         return _render_missing_secrets(plan)
 
+    interface = _current_interface()
     bindings = {c.target_name: f"hushed:{c.secret_name}" for c in plan.credentials}
+
+    # Operation record first, config second: if AUG dies between the two
+    # writes, an operation with no matching config is a safe "failed" on the
+    # next reconcile; the reverse order (current bug) leaves a config change
+    # with nothing to reconcile it, so the requester never hears the outcome.
+    op_id = await record_operation(
+        "install", plan.slug, "saved", interface=interface, thread_id=thread_id
+    )
+
     async with update_settings() as settings:
         if any(s.name == plan.slug for s in settings.mcp_servers):
             _clear_plan(thread_id)
+            await update_operation_state(op_id, "failed", "server already configured")
             return f"'{plan.slug}' is already configured. Use remove_mcp_server to reinstall."
         settings.mcp_servers.append(_plan_to_config(plan, bindings))
 
     _clear_plan(thread_id)
-    op_id = await record_operation(
-        "install", plan.slug, "saved", interface=_current_interface(), thread_id=thread_id
-    )
-    _schedule_restart(op_id, plan.slug)
+    _schedule_restart(op_id, plan.slug, interface, thread_id)
     return f"Config saved for '{plan.slug}'. Restarting to activate..."
 
 
@@ -193,6 +207,16 @@ async def remove_mcp_server(name: str) -> str:
     Args:
         name: The configured server's name (see list_mcp_servers).
     """
+    if not any(s.name == name for s in load_settings().mcp_servers):
+        return f"No MCP server named '{name}' is configured. See list_mcp_servers for what's there."
+
+    interface = _current_interface()
+    thread_id = _current_thread_id()
+    # Operation record first, config second — see install_mcp_server's comment.
+    op_id = await record_operation(
+        "remove", name, "saved", interface=interface, thread_id=thread_id
+    )
+
     found = False
     async with update_settings() as settings:
         remaining = [s for s in settings.mcp_servers if s.name != name]
@@ -201,12 +225,13 @@ async def remove_mcp_server(name: str) -> str:
             settings.mcp_servers = remaining
 
     if not found:
+        # Lost a race against another removal between the check above and the
+        # lock — the operation record it already wrote must not sit at
+        # "saved" forever with nothing left to reconcile it.
+        await update_operation_state(op_id, "failed", "server no longer configured")
         return f"No MCP server named '{name}' is configured. See list_mcp_servers for what's there."
 
-    op_id = await record_operation(
-        "remove", name, "saved", interface=_current_interface(), thread_id=_current_thread_id()
-    )
-    _schedule_restart(op_id, name)
+    _schedule_restart(op_id, name, interface, thread_id)
     return f"Removed '{name}' from config. Restarting to deactivate..."
 
 
@@ -233,14 +258,14 @@ def _configurable(key: str) -> str:
     return configurable.get(key) or ""
 
 
-def _describe_install(index: int) -> tuple[str, str]:
-    plan = _get_or_build_plan(_current_thread_id(), index)
+async def _describe_install(index: int) -> tuple[str, str]:
+    plan = await _get_or_build_plan(_current_thread_id(), index)
     if plan is None:
         return (f"#{index}", "install MCP server")
     return (plan.slug, _render_plan(plan))
 
 
-def _get_or_build_plan(thread_id: str, index: int) -> McpInstallPlan | None:
+async def _get_or_build_plan(thread_id: str, index: int) -> McpInstallPlan | None:
     """Return the durable plan for *index* in this conversation, building and
     persisting one if this is the first time it's been resolved.
 
@@ -249,22 +274,41 @@ def _get_or_build_plan(thread_id: str, index: int) -> McpInstallPlan | None:
     again on every resume, and a plan already on disk answers identically
     regardless of what ``search_mcp_servers`` has done elsewhere since, or
     whether this process even restarted in between.
+
+    Every call — including the "reuse the existing plan" path — revalidates
+    each credential's ``bound`` status against hushed's *current* secret
+    list. Without this, a plan built while a secret was still missing would
+    say so forever: the user adds the secret and retries the same index, but
+    the persisted plan's stale snapshot never notices.
     """
     state = load_state()
+    known_secrets = await _list_hushed_secrets()
     existing = state.mcp.install_plans.get(thread_id)
     if existing is not None and existing.search_index == index:
-        return existing
+        refreshed = _revalidate_plan(existing, known_secrets)
+        if refreshed is not existing:
+            state.mcp.install_plans[thread_id] = refreshed
+            save_state(state)
+        return refreshed
 
     snapshot = _state.last_search.get(thread_id) or []
     if not (1 <= index <= len(snapshot)):
         return None
 
     server = snapshot[index - 1]
-    known_secrets = _list_hushed_secrets()
     plan = _build_plan(thread_id, index, server, known_secrets)
     state.mcp.install_plans[thread_id] = plan
     save_state(state)
     return plan
+
+
+def _revalidate_plan(plan: McpInstallPlan, known_secrets: set[str]) -> McpInstallPlan:
+    refreshed_credentials = [
+        c.model_copy(update={"bound": c.secret_name in known_secrets}) for c in plan.credentials
+    ]
+    if refreshed_credentials == plan.credentials:
+        return plan
+    return plan.model_copy(update={"credentials": refreshed_credentials})
 
 
 def _build_plan(
@@ -290,6 +334,7 @@ def _build_plan(
         args=server.args,
         url=server.url,
         credentials=credentials,
+        literal_inputs=server.literal_inputs,
         created_at=time.time(),
     )
 
@@ -310,10 +355,16 @@ def _plan_to_config(plan: McpInstallPlan, bindings: dict[str, str]) -> McpServer
             command=plan.command,
             args=plan.args,
             env=bindings,
+            env_static=plan.literal_inputs,
             enabled=True,
         )
     return McpServerConfig(
-        name=plan.slug, transport="http", url=plan.url, headers=bindings, enabled=True
+        name=plan.slug,
+        transport="http",
+        url=plan.url,
+        headers=bindings,
+        headers_static=plan.literal_inputs,
+        enabled=True,
     )
 
 
@@ -349,6 +400,11 @@ def _render_plan(plan: McpInstallPlan) -> str:
                 else MCP_INSTALL_PLAN_CREDENTIAL_MISSING
             )
             lines.append(template.format(target_name=c.target_name, secret_name=c.secret_name))
+
+    if plan.literal_inputs:
+        lines.append(MCP_INSTALL_PLAN_DEFAULTS_HEADER)
+        for target_name, value in plan.literal_inputs.items():
+            lines.append(MCP_INSTALL_PLAN_DEFAULT_LINE.format(target_name=target_name, value=value))
     return "\n".join(lines)
 
 
@@ -358,12 +414,16 @@ def _render_missing_secrets(plan: McpInstallPlan) -> str:
     )
 
 
-def _list_hushed_secrets() -> set[str]:
+async def _list_hushed_secrets() -> set[str]:
     """Names only — hushed never reveals values via `list`, so this check never
     exposes anything to AUG that it shouldn't see."""
     try:
-        result = subprocess.run(
-            ["hushed", "list"], capture_output=True, text=True, timeout=_HUSHED_LIST_TIMEOUT
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["hushed", "list"],
+            capture_output=True,
+            text=True,
+            timeout=_HUSHED_LIST_TIMEOUT,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         logger.warning("hushed list failed: %r", exc)
@@ -404,15 +464,52 @@ async def _trigger_restart(op_id: str, server_name: str) -> str:
     return "Restart triggered — AUG will report the result once it's back."
 
 
-def _schedule_restart(op_id: str, server_name: str) -> None:
+def _schedule_restart(op_id: str, server_name: str, interface: str, thread_id: str) -> None:
     """Fire the restart a few seconds after returning, so the tool's own result
-    reaches the user before the container that would deliver it goes down."""
+    reaches the user before the container that would deliver it goes down.
+
+    Whatever ``_trigger_restart`` reports — success or failure — is then
+    pushed back to the conversation that requested it: previously this only
+    reached the logger, so a missing Portainer config or a restart that never
+    fired left the user staring at "Restarting to activate..." forever with
+    no idea it hadn't happened.
+    """
 
     async def _delayed() -> None:
         await asyncio.sleep(_RESTART_DELAY_SECONDS)
         msg = await _trigger_restart(op_id, server_name)
         logger.info("mcp restart op=%s server=%s result=%s", op_id, server_name, msg)
+        await _deliver_restart_outcome(interface, thread_id, msg)
 
     task = asyncio.create_task(_delayed())
     _state.background_tasks.add(task)
     task.add_done_callback(_state.background_tasks.discard)
+
+
+async def _deliver_restart_outcome(interface: str, thread_id: str, message: str) -> None:
+    """Best-effort push of a restart outcome back to whoever triggered it.
+
+    Uses ``app_registry`` rather than ``aug.core.dispatch``'s ``fire_push``:
+    ``aug.core.registry`` imports this module, and ``dispatch`` imports
+    ``aug.core.registry`` for ``get_agent`` — importing dispatch here would
+    form a cycle. All that's actually needed is the same plain-forward
+    delivery ``fire_push``'s ``push_type="forward"`` does.
+    """
+    if not (interface and thread_id):
+        return
+    app = get_app()
+    if app is None:
+        return
+    iface = getattr(app.state, "interfaces", {}).get(interface)
+    if iface is None:
+        return
+    try:
+        actual_thread_id = await iface.resolve_thread(thread_id)
+        await iface.send_proactive(actual_thread_id, message)
+    except Exception:
+        logger.warning(
+            "mcp restart outcome delivery failed interface=%s thread_id=%s",
+            interface,
+            thread_id,
+            exc_info=True,
+        )

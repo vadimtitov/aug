@@ -37,7 +37,7 @@ def test_parse_server_npm_package():
     assert server.args == ["-y", "@modelcontextprotocol/server-postgres@1.2.0"]
     assert server.required_inputs == ["DATABASE_URL"]
     assert server.namespace == "io.github.modelcontextprotocol"
-    assert server.slug == "postgres"
+    assert server.slug == "modelcontextprotocol-postgres"
 
 
 def test_parse_server_pypi_package():
@@ -233,6 +233,53 @@ def test_parse_server_required_env_var_with_default_is_not_a_secret_prompt():
     }
     server = _parse_server(raw)
     assert server.required_inputs == ["API_KEY"]
+    assert server.literal_inputs == {"LOG_LEVEL": "info"}
+
+
+def test_parse_server_skips_package_with_unresolvable_required_template_default():
+    """A required var whose only value is a template referencing another
+    input (e.g. "{other_var}") has no literal AUG could preserve and no
+    secret it could bind either — the whole package must be skipped."""
+    raw = {
+        "name": "io.github.example/templated",
+        "description": "d",
+        "version": "1.0.0",
+        "packages": [
+            {
+                "registryType": "npm",
+                "identifier": "pkg",
+                "version": "1.0.0",
+                "transport": {"type": "stdio"},
+                "environmentVariables": [
+                    {"name": "REGION", "isRequired": True, "default": "{other_var}"}
+                ],
+            }
+        ],
+    }
+    assert _parse_server(raw) is None
+
+
+def test_parse_server_drops_unresolvable_optional_template_default():
+    """An optional templated default is simply dropped, not preserved as a
+    literal — it can't be resolved, but it also isn't required."""
+    raw = {
+        "name": "io.github.example/optional-template",
+        "description": "d",
+        "version": "1.0.0",
+        "packages": [
+            {
+                "registryType": "npm",
+                "identifier": "pkg",
+                "version": "1.0.0",
+                "transport": {"type": "stdio"},
+                "environmentVariables": [{"name": "REGION", "default": "{other_var}"}],
+            }
+        ],
+    }
+    server = _parse_server(raw)
+    assert server is not None
+    assert server.literal_inputs == {}
+    assert server.required_inputs == []
 
 
 def test_parse_server_preserves_literal_package_arguments():
@@ -291,7 +338,7 @@ def test_slug_strips_server_prefix():
         command="npx",
         args=["-y", "pkg@1.0.0"],
     )
-    assert server.slug == "github"
+    assert server.slug == "x-github"
 
 
 def test_slug_keeps_name_without_server_prefix():
@@ -304,7 +351,51 @@ def test_slug_keeps_name_without_server_prefix():
         command="npx",
         args=["-y", "pkg@1.0.0"],
     )
-    assert server.slug == "dbhub"
+    assert server.slug == "x-dbhub"
+
+
+def test_slug_disambiguates_identically_named_packages_from_different_accounts():
+    """Item 11 (P2): the namespace must be folded into the slug — two
+    accounts both shipping "server-postgres" must not collide on the same
+    config name, or installing the second would read as "already
+    configured" for what is actually a different server."""
+    alice = McpRegistryServer(
+        name="io.github.alice/server-postgres",
+        namespace="io.github.alice",
+        description="",
+        version="1.0.0",
+        transport="stdio",
+        command="npx",
+        args=["-y", "pkg@1.0.0"],
+    )
+    bob = McpRegistryServer(
+        name="io.github.bob/server-postgres",
+        namespace="io.github.bob",
+        description="",
+        version="1.0.0",
+        transport="stdio",
+        command="npx",
+        args=["-y", "pkg@1.0.0"],
+    )
+    assert alice.slug != bob.slug
+    assert alice.slug == "alice-postgres"
+    assert bob.slug == "bob-postgres"
+
+
+def test_slug_skips_the_account_prefix_when_it_matches_the_tail():
+    """A namespace whose own account name equals the tail (e.g. an org named
+    "postgres" shipping a package also called "postgres") would otherwise
+    slug to the useless "postgres-postgres"."""
+    server = McpRegistryServer(
+        name="io.github.postgres/postgres",
+        namespace="io.github.postgres",
+        description="",
+        version="1.0.0",
+        transport="stdio",
+        command="npx",
+        args=["-y", "pkg@1.0.0"],
+    )
+    assert server.slug == "postgres"
 
 
 def test_to_config_stdio():
@@ -317,13 +408,15 @@ def test_to_config_stdio():
         command="npx",
         args=["-y", "@modelcontextprotocol/server-github@1.0.0"],
         required_inputs=["GITHUB_PERSONAL_ACCESS_TOKEN"],
+        literal_inputs={"LOG_LEVEL": "info"},
     )
     cfg = server.to_config({"GITHUB_PERSONAL_ACCESS_TOKEN": "hushed:GITHUB_PERSONAL_ACCESS_TOKEN"})
     assert isinstance(cfg, McpServerConfig)
-    assert cfg.name == "github"
+    assert cfg.name == "x-github"
     assert cfg.transport == "stdio"
     assert cfg.command == "npx"
     assert cfg.env == {"GITHUB_PERSONAL_ACCESS_TOKEN": "hushed:GITHUB_PERSONAL_ACCESS_TOKEN"}
+    assert cfg.env_static == {"LOG_LEVEL": "info"}
 
 
 def test_to_config_http():
@@ -335,11 +428,13 @@ def test_to_config_http():
         transport="http",
         url="https://mcp.sentry.dev/mcp",
         required_inputs=["Authorization"],
+        literal_inputs={"X-Region": "us-east-1"},
     )
     cfg = server.to_config({"Authorization": "hushed:SENTRY_BEARER_TOKEN"})
     assert cfg.transport == "http"
     assert cfg.url == "https://mcp.sentry.dev/mcp"
     assert cfg.headers == {"Authorization": "hushed:SENTRY_BEARER_TOKEN"}
+    assert cfg.headers_static == {"X-Region": "us-east-1"}
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +478,7 @@ async def test_search_returns_parsed_servers():
         results = await McpRegistryClient().search("postgres")
 
     assert len(results) == 1
-    assert results[0].slug == "postgres"
+    assert results[0].slug == "x-postgres"
 
 
 @pytest.mark.asyncio

@@ -39,6 +39,7 @@ from aug.api.routers import (
     threads,
 )
 from aug.config import get_settings
+from aug.core.app_registry import set_app as register_app
 from aug.core.browser_view import BrowserViewHub
 from aug.core.dispatch import broadcast, fire_push
 from aug.core.dispatch import set_app as set_push_app
@@ -182,6 +183,7 @@ async def lifespan(app: FastAPI):
         mcp_outcomes = await mcp_manager.reconcile_operations()
 
         set_push_app(app)
+        register_app(app)
         consolidation_task = await start_consolidation_scheduler()
         scheduler_task = await start_scheduler(app)
 

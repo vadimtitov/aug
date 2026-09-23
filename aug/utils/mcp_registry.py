@@ -11,6 +11,7 @@ scope" (v1 has no Docker socket access).
 """
 
 import logging
+import re
 from typing import Literal
 
 import httpx
@@ -23,6 +24,11 @@ logger = logging.getLogger(__name__)
 _REGISTRY_BASE = "https://registry.modelcontextprotocol.io"
 _TIMEOUT = 15.0
 _DEFAULT_LIMIT = 10
+# A literal/default value the registry declares as e.g. "{other_var}" is a
+# template referencing some other input this v1 install flow has no way to
+# resolve — see _split_inputs.
+_TEMPLATE_RE = re.compile(r"\{[^{}]+\}")
+_SLUG_INVALID_CHARS_RE = re.compile(r"[^a-z0-9_-]+")
 
 
 class McpRegistryServer(BaseModel):
@@ -46,19 +52,41 @@ class McpRegistryServer(BaseModel):
     args: list[str] = []  # stdio only — includes the pinned version + literal arguments
     url: str = ""  # http only
     required_inputs: list[str] = []
+    # Env vars / headers the registry declares with a concrete, non-secret
+    # value or default — these need no hushed binding, but the value itself
+    # must still reach the installed server (see _split_inputs).
+    literal_inputs: dict[str, str] = {}
 
     @property
     def slug(self) -> str:
-        """Config + tool-namespace-safe short name, e.g. 'server-postgres' -> 'postgres'."""
+        """Config + tool-namespace-safe short name, disambiguated by publisher.
+
+        Two different registry namespaces can legitimately publish an
+        identically-named package (e.g. two accounts both shipping
+        "server-postgres") — a slug built from the tail alone would silently
+        collide, and installing the second would read as "already
+        configured" instead of the different server it actually is. The
+        namespace's last dot-segment (the publishing account, e.g. "acme" in
+        "io.github.acme") is what actually distinguishes them, so it's
+        folded in; the registry's generic domain prefix ("io.github.") is
+        not, since it says nothing about who published it.
+        """
         tail = self.name.rsplit("/", 1)[-1]
-        return tail.removeprefix("server-") if tail.startswith("server-") else tail
+        tail = tail.removeprefix("server-") if tail.startswith("server-") else tail
+        account = self.namespace.rsplit(".", 1)[-1].lower()
+        account = _SLUG_INVALID_CHARS_RE.sub("-", account).strip("-")
+        if not account or tail == account or tail.startswith(f"{account}-"):
+            return tail
+        return f"{account}-{tail}"
 
     def to_config(self, bindings: dict[str, str]) -> McpServerConfig:
         """Build the settings.json entry for this server.
 
         ``bindings`` maps each entry in ``required_inputs`` (an env var or
         header name) to its ``hushed:KEY`` reference — built by the caller
-        once it has decided which secret backs each input.
+        once it has decided which secret backs each input. ``literal_inputs``
+        rides along separately since those are plain values, never secret
+        references.
         """
         if self.transport == "stdio":
             return McpServerConfig(
@@ -67,6 +95,7 @@ class McpRegistryServer(BaseModel):
                 command=self.command,
                 args=self.args,
                 env=bindings,
+                env_static=self.literal_inputs,
                 enabled=True,
             )
         return McpServerConfig(
@@ -74,6 +103,7 @@ class McpRegistryServer(BaseModel):
             transport="http",
             url=self.url,
             headers=bindings,
+            headers_static=self.literal_inputs,
             enabled=True,
         )
 
@@ -125,7 +155,7 @@ def _parse_server(raw: dict) -> McpRegistryServer | None:
 
     package = _pick_package(raw.get("packages") or [], server_version)
     if package is not None:
-        command, args, required_inputs = package
+        command, args, required_inputs, literal_inputs = package
         return McpRegistryServer(
             name=name,
             namespace=namespace,
@@ -135,11 +165,12 @@ def _parse_server(raw: dict) -> McpRegistryServer | None:
             command=command,
             args=args,
             required_inputs=required_inputs,
+            literal_inputs=literal_inputs,
         )
 
     remote = _pick_remote(raw.get("remotes") or [])
     if remote is not None:
-        url, required_inputs = remote
+        url, required_inputs, literal_inputs = remote
         return McpRegistryServer(
             name=name,
             namespace=namespace,
@@ -148,6 +179,7 @@ def _parse_server(raw: dict) -> McpRegistryServer | None:
             transport="http",
             url=url,
             required_inputs=required_inputs,
+            literal_inputs=literal_inputs,
         )
 
     logger.debug("mcp_registry: skipping %r — no installable package or remote", name)
@@ -156,8 +188,9 @@ def _parse_server(raw: dict) -> McpRegistryServer | None:
 
 def _pick_package(
     packages: list[dict], server_version: str
-) -> tuple[str, list[str], list[str]] | None:
-    """Return (command, args, required_inputs) for the first supported package.
+) -> tuple[str, list[str], list[str], dict[str, str]] | None:
+    """Return (command, args, required_inputs, literal_inputs) for the first
+    supported package.
 
     Only npm (-> npx) and pypi (-> uvx) registry types are supported, and only
     when the package itself runs over stdio (a package whose own transport is
@@ -187,18 +220,27 @@ def _pick_package(
                 identifier,
             )
             continue
-        required_inputs = _required_names(pkg.get("environmentVariables"))
+        inputs = _split_inputs(pkg.get("environmentVariables"))
+        if inputs is None:
+            logger.debug(
+                "mcp_registry: skipping package %r — a required variable's default "
+                "is an unresolvable template (unsupported in v1)",
+                identifier,
+            )
+            continue
+        required_inputs, literal_inputs = inputs
         if registry_type == "npm":
             args = ["-y", *runtime_args, f"{identifier}@{version}", *package_args]
-            return "npx", args, required_inputs
+            return "npx", args, required_inputs, literal_inputs
         if registry_type == "pypi":
             args = [*runtime_args, f"{identifier}=={version}", *package_args]
-            return "uvx", args, required_inputs
+            return "uvx", args, required_inputs, literal_inputs
     return None
 
 
-def _pick_remote(remotes: list[dict]) -> tuple[str, list[str]] | None:
-    """Return (url, required_header_names) for the first streamable-HTTP remote.
+def _pick_remote(remotes: list[dict]) -> tuple[str, list[str], dict[str, str]] | None:
+    """Return (url, required_header_names, literal_headers) for the first
+    streamable-HTTP remote.
 
     SSE remotes are skipped explicitly rather than folded into "http" — v1
     only ever connects over streamable HTTP (see ``mcp_manager._connect``),
@@ -211,35 +253,60 @@ def _pick_remote(remotes: list[dict]) -> tuple[str, list[str]] | None:
         if not url:
             continue
         if transport_type in ("streamable-http", "streamable_http", "http"):
-            return url, _required_names(remote.get("headers"))
+            inputs = _split_inputs(remote.get("headers"))
+            if inputs is None:
+                logger.debug(
+                    "mcp_registry: skipping remote %r — a required header's default "
+                    "is an unresolvable template (unsupported in v1)",
+                    url,
+                )
+                continue
+            required_inputs, literal_inputs = inputs
+            return url, required_inputs, literal_inputs
         if transport_type == "sse":
             logger.debug("mcp_registry: skipping SSE remote %r — unsupported transport", url)
     return None
 
 
-def _required_names(entries: list[dict] | None) -> list[str]:
-    """Names of variables/headers that need a secret bound at install time.
+def _split_inputs(entries: list[dict] | None) -> tuple[list[str], dict[str, str]] | None:
+    """Split declared env vars / headers into ones needing a hushed secret at
+    install time vs. ones with a literal, usable value.
 
-    An entry carrying its own concrete ``value``/``default`` doesn't need
-    one — even when marked required — since installing would otherwise ask
-    the user to set a hushed secret for an input that already has a working
-    value AUG has no way to pass through today; see the module docstring's
-    v1 scope note.
+    An entry carrying its own concrete ``value``/``default`` doesn't need a
+    secret — even when marked required — since prompting for one would ask
+    for a hushed binding on an input that already has a working value. That
+    literal must still reach the installed server rather than being dropped
+    on the floor, unless it's an unresolvable template like ``"{other_var}"``
+    (a reference to some other input this v1 install flow has no way to
+    substitute) — a *required* entry stuck in that state means the whole
+    package/remote can't be installed as configured, so this returns None to
+    signal "skip it entirely", matching ``_literal_args``' handling of an
+    unsuppliable required argument.
     """
     if not entries:
-        return []
-    names = []
+        return [], {}
+    required: list[str] = []
+    literal: dict[str, str] = {}
     for entry in entries:
         if not isinstance(entry, dict):
             continue
-        entry_name = entry.get("name")
-        if not entry_name:
+        name = entry.get("name")
+        if not name:
             continue
-        if entry.get("value") not in (None, "") or entry.get("default") not in (None, ""):
+        value = entry.get("value")
+        if value in (None, ""):
+            value = entry.get("default")
+        if value not in (None, ""):
+            value = str(value)
+            if _TEMPLATE_RE.search(value):
+                if entry.get("isRequired"):
+                    return None
+                continue
+            literal[name] = value
             continue
         if entry.get("isRequired") or entry.get("isSecret"):
-            names.append(entry_name)
-    return names
+            required.append(name)
+    return required, literal
 
 
 def _literal_args(entries: list[dict] | None) -> list[str] | None:

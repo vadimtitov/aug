@@ -387,19 +387,6 @@ def configure_mcp_tools(tools: list[BaseTool]) -> None:
     _REGISTRY["v12_claude"] = _build_v12_claude(tools)
 
 
-def _build_v12_claude(mcp_tools: list[BaseTool]) -> AugAgent:
-    return AugAgent(
-        model="claude-sonnet-4-6",
-        tools=[*_V12_BASE_TOOLS, *mcp_tools],
-        temperature=0.0,
-        recursion_limit=100,
-        compaction_model="claude-haiku-4-5",
-        compaction_threshold=0.7,
-        context_window=500_000,
-        max_summary_tokens=2000,
-    )
-
-
 _REGISTRY: dict[str, BaseAgent] = {
     "fake": FakeAgent(),
     "subagent": _subagent_claude,
@@ -558,7 +545,6 @@ _REGISTRY: dict[str, BaseAgent] = {
         context_window=200_000,
         max_summary_tokens=2000,
     ),
-    "v12_claude": _build_v12_claude([]),
 }
 
 
@@ -577,3 +563,21 @@ def get_agent(name: str) -> BaseAgent:
         registered = ", ".join(_REGISTRY)
         raise ValueError(f"Unknown agent '{name}'. Registered agents: {registered}")
     return _REGISTRY[name]
+
+
+def _build_v12_claude(mcp_tools: list[BaseTool]) -> AugAgent:
+    return AugAgent(
+        model="claude-sonnet-4-6",
+        tools=[*_V12_BASE_TOOLS, *mcp_tools],
+        temperature=0.0,
+        recursion_limit=100,
+        compaction_model="claude-haiku-4-5",
+        compaction_threshold=0.7,
+        context_window=500_000,
+        max_summary_tokens=2000,
+    )
+
+
+# Seeds v12_claude with no MCP tools until aug/app.py's lifespan() calls
+# configure_mcp_tools() again with whatever MCPManager actually connected.
+configure_mcp_tools([])
