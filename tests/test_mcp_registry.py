@@ -35,7 +35,7 @@ def test_parse_server_npm_package():
     assert server.transport == "stdio"
     assert server.command == "npx"
     assert server.args == ["-y", "@modelcontextprotocol/server-postgres@1.2.0"]
-    assert server.required_env == ["DATABASE_URL"]
+    assert server.required_inputs == ["DATABASE_URL"]
     assert server.namespace == "io.github.modelcontextprotocol"
     assert server.slug == "postgres"
 
@@ -58,7 +58,7 @@ def test_parse_server_pypi_package():
     assert server is not None
     assert server.command == "uvx"
     assert server.args == ["some-mcp-tool==0.3.0"]
-    assert server.required_env == []
+    assert server.required_inputs == []
 
 
 def test_parse_server_package_without_transport_key_defaults_to_stdio():
@@ -130,7 +130,7 @@ def test_parse_server_http_remote():
     assert server is not None
     assert server.transport == "http"
     assert server.url == "https://mcp.sentry.dev/mcp"
-    assert server.required_env == ["Authorization"]
+    assert server.required_inputs == ["Authorization"]
 
 
 def test_parse_server_prefers_package_over_remote():
@@ -194,7 +194,91 @@ def test_parse_server_no_env_vars_required():
         ],
     }
     server = _parse_server(raw)
-    assert server.required_env == []
+    assert server.required_inputs == []
+
+
+def test_parse_server_skips_sse_remote_rather_than_mislabeling_as_http():
+    """Item 11: v1 only ever connects over streamable HTTP — an SSE-only
+    remote must be rejected explicitly, not silently mapped onto "http" and
+    produce a config that looks installed but can never connect."""
+    raw = {
+        "name": "io.github.example/sse-only",
+        "description": "sse transport",
+        "version": "1.0.0",
+        "remotes": [{"type": "sse", "url": "https://example.com/sse"}],
+    }
+    assert _parse_server(raw) is None
+
+
+def test_parse_server_required_env_var_with_default_is_not_a_secret_prompt():
+    """A required env var that already ships a concrete default doesn't need
+    a hushed secret — asking the user to set one anyway would be asking for
+    an input AUG has no way to actually pass through."""
+    raw = {
+        "name": "io.github.example/has-default",
+        "description": "d",
+        "version": "1.0.0",
+        "packages": [
+            {
+                "registryType": "npm",
+                "identifier": "pkg",
+                "version": "1.0.0",
+                "transport": {"type": "stdio"},
+                "environmentVariables": [
+                    {"name": "LOG_LEVEL", "isRequired": True, "default": "info"},
+                    {"name": "API_KEY", "isRequired": True, "isSecret": True},
+                ],
+            }
+        ],
+    }
+    server = _parse_server(raw)
+    assert server.required_inputs == ["API_KEY"]
+
+
+def test_parse_server_preserves_literal_package_arguments():
+    """Item 11: fixed-value runtime/package arguments must reach argv, not be
+    silently dropped."""
+    raw = {
+        "name": "io.github.example/with-args",
+        "description": "d",
+        "version": "1.0.0",
+        "packages": [
+            {
+                "registryType": "npm",
+                "identifier": "pkg",
+                "version": "1.0.0",
+                "transport": {"type": "stdio"},
+                "packageArguments": [
+                    {"type": "named", "name": "--port", "value": "3000"},
+                    {"type": "positional", "value": "serve"},
+                ],
+            }
+        ],
+    }
+    server = _parse_server(raw)
+    assert server is not None
+    assert server.args == ["-y", "pkg@1.0.0", "--port", "3000", "serve"]
+
+
+def test_parse_server_skips_package_needing_unsuppliable_argument():
+    """A required argument with no fixed value or default needs user input
+    this v1 install flow has no way to collect — the package must be skipped
+    explicitly rather than launched broken."""
+    raw = {
+        "name": "io.github.example/needs-input",
+        "description": "d",
+        "version": "1.0.0",
+        "packages": [
+            {
+                "registryType": "npm",
+                "identifier": "pkg",
+                "version": "1.0.0",
+                "transport": {"type": "stdio"},
+                "packageArguments": [{"type": "named", "name": "--workspace", "isRequired": True}],
+            }
+        ],
+    }
+    assert _parse_server(raw) is None
 
 
 def test_slug_strips_server_prefix():
@@ -232,7 +316,7 @@ def test_to_config_stdio():
         transport="stdio",
         command="npx",
         args=["-y", "@modelcontextprotocol/server-github@1.0.0"],
-        required_env=["GITHUB_PERSONAL_ACCESS_TOKEN"],
+        required_inputs=["GITHUB_PERSONAL_ACCESS_TOKEN"],
     )
     cfg = server.to_config({"GITHUB_PERSONAL_ACCESS_TOKEN": "hushed:GITHUB_PERSONAL_ACCESS_TOKEN"})
     assert isinstance(cfg, McpServerConfig)
@@ -250,7 +334,7 @@ def test_to_config_http():
         version="1.0.0",
         transport="http",
         url="https://mcp.sentry.dev/mcp",
-        required_env=["Authorization"],
+        required_inputs=["Authorization"],
     )
     cfg = server.to_config({"Authorization": "hushed:SENTRY_BEARER_TOKEN"})
     assert cfg.transport == "http"

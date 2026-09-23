@@ -3,6 +3,9 @@
 import json
 from unittest.mock import patch
 
+import pytest
+from pydantic import ValidationError
+
 from aug.utils.file_settings import (
     ApprovalRule,
     AppSettings,
@@ -375,9 +378,41 @@ def test_save_round_trips_mcp_servers():
 
 
 def test_mcp_server_config_never_stores_plaintext_secrets_by_convention():
-    """Not an enforced invariant — just documents that env/headers are references."""
-    cfg = McpServerConfig(name="x", transport="stdio", env={"TOKEN": "hushed:TOKEN"})
+    """Documents that env/headers are references; enforced by a field validator."""
+    cfg = McpServerConfig(name="x", transport="stdio", command="npx", env={"TOKEN": "hushed:TOKEN"})
     assert cfg.env["TOKEN"].startswith("hushed:")
+
+
+def test_mcp_server_config_rejects_plaintext_secret_value():
+    with pytest.raises(ValidationError, match="hushed:NAME"):
+        McpServerConfig(
+            name="x", transport="stdio", command="npx", env={"TOKEN": "plaintext-value"}
+        )
+
+
+def test_mcp_server_config_rejects_missing_command_for_stdio():
+    with pytest.raises(ValidationError, match="requires 'command'"):
+        McpServerConfig(name="x", transport="stdio")
+
+
+def test_mcp_server_config_rejects_missing_url_for_http():
+    with pytest.raises(ValidationError, match="requires 'url'"):
+        McpServerConfig(name="x", transport="http")
+
+
+def test_mcp_server_config_rejects_invalid_name():
+    with pytest.raises(ValidationError, match="invalid MCP server name"):
+        McpServerConfig(name="Not Valid!", transport="stdio", command="npx")
+
+
+def test_app_settings_rejects_duplicate_mcp_names():
+    with pytest.raises(ValidationError, match="duplicate MCP server name"):
+        AppSettings(
+            mcp_servers=[
+                McpServerConfig(name="postgres", transport="stdio", command="npx"),
+                McpServerConfig(name="postgres", transport="stdio", command="uvx"),
+            ]
+        )
 
 
 def test_migration_tolerates_malformed_legacy_shapes():

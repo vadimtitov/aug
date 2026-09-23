@@ -15,8 +15,11 @@ Not for user-facing configuration — use aug/utils/file_settings.py for that.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -97,6 +100,10 @@ class McpOperation(BaseModel):
     leaves it at ``restart_pending`` — that's exactly the state
     ``MCPManager.reconcile_operations`` looks for and resolves on the next
     successful startup, so an operation is never silently lost.
+
+    ``interface``/``thread_id`` name the conversation that requested the
+    operation, so its outcome can be delivered back there specifically
+    instead of only riding along on the general startup announcement.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -107,12 +114,57 @@ class McpOperation(BaseModel):
     state: Literal["saved", "restart_pending", "active", "failed"]
     detail: str = ""
     created_at: float = 0.0
+    interface: str = ""
+    thread_id: str = ""
+
+
+class McpCredentialBinding(BaseModel):
+    """One requested credential input and how the plan proposes to satisfy it."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    # The name the server actually reads at runtime — an env var name for
+    # stdio, an HTTP header name for http. Never itself a hushed secret name.
+    target_name: str
+    # The hushed secret name this will be bound to, e.g. "SENTRY_BEARER_TOKEN".
+    secret_name: str
+    # Whether `secret_name` already existed in hushed at plan-build time.
+    bound: bool
+
+
+class McpInstallPlan(BaseModel):
+    """An immutable, durable snapshot of one install decision.
+
+    Built once, the moment ``install_mcp_server`` first resolves a search
+    result to an index, and persisted before the approval interrupt pauses
+    the graph — so resuming (even from a different process, after a crash)
+    approves and installs exactly what was previewed, never a result a
+    later search happened to reorder into that slot.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    thread_id: str
+    search_index: int
+    server_name: str  # registry name, e.g. "io.github.x/server-postgres"
+    slug: str  # config name this will be saved under, e.g. "postgres"
+    version: str
+    transport: Literal["stdio", "http"]
+    command: str = ""
+    args: list[str] = []
+    url: str = ""
+    credentials: list[McpCredentialBinding] = []
+    created_at: float = 0.0
 
 
 class McpState(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     operations: list[McpOperation] = []
+    # Keyed by thread_id — at most one pending install plan per conversation,
+    # since LangGraph fully pauses that thread while it awaits approval.
+    install_plans: dict[str, McpInstallPlan] = {}
 
 
 class AppState(BaseModel):
@@ -137,3 +189,24 @@ def load_state() -> AppState:
 def save_state(state: AppState) -> None:
     """Persist runtime state to data/state.json."""
     write_data_file(_STATE_FILE, json.dumps(state.model_dump(), indent=2))
+
+
+# Serializes concurrent read-modify-write cycles against state.json — the same
+# hazard file_settings.update_settings() guards against, applied here for
+# things like McpManager's install-plan bookkeeping, where two conversations
+# can otherwise both load a stale snapshot and clobber each other's save.
+_state_lock = asyncio.Lock()
+
+
+@asynccontextmanager
+async def update_state() -> AsyncIterator[AppState]:
+    """Serialized read-modify-write: reload the current file under a lock, let
+    the caller mutate it, then save.
+
+        async with update_state() as st:
+            st.mcp.operations.append(...)
+    """
+    async with _state_lock:
+        state = load_state()
+        yield state
+        save_state(state)

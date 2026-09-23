@@ -40,9 +40,9 @@ from aug.api.routers import (
 )
 from aug.config import get_settings
 from aug.core.browser_view import BrowserViewHub
-from aug.core.dispatch import broadcast
+from aug.core.dispatch import broadcast, fire_push
 from aug.core.dispatch import set_app as set_push_app
-from aug.core.mcp_manager import MCPManager
+from aug.core.mcp_manager import MCPManager, McpOperationOutcome
 from aug.core.mcp_manager import set_manager as set_mcp_manager
 from aug.core.memory import init_memory_files, start_consolidation_scheduler
 from aug.core.oauth.providers import PROVIDERS_FILE, ProviderRegistry
@@ -86,22 +86,48 @@ async def _checkpointer_context(dsn: str):
         yield checkpointer
 
 
-async def _announce_startup(app: FastAPI, mcp_report: str | None) -> None:
-    """Tell every interface with a push channel that AUG is back up.
+async def _announce_startup(app: FastAPI, mcp_outcomes: list[McpOperationOutcome]) -> None:
+    """Tell every interface with a push channel that AUG is back up, and
+    deliver any MCP install/remove outcome a previous boot left mid-restart
+    (see MCPManager.reconcile_operations) back to whoever requested it.
 
-    Runs as a background task: broadcast is best-effort and swallows its own
-    delivery failures, so an unreachable chat can neither delay nor fail the boot.
+    Runs as a background task: both broadcast and the per-conversation
+    deliveries are best-effort and swallow their own failures, so an
+    unreachable chat can neither delay nor fail the boot.
 
-    ``mcp_report`` is the outcome of any MCP install/remove operation a
-    previous boot left mid-restart (see MCPManager.reconcile_operations) — it
-    rides along on this same message since it's the one channel AUG already
-    has for "something happened while nobody was watching."
+    Per-conversation delivery isn't gated on STARTUP_ANNOUNCEMENT — that
+    setting exists to silence "yet another reload" spam in local dev, not to
+    withhold the answer to something a user actually asked AUG to do.
+    Outcomes recorded before ``interface``/``thread_id`` existed fall back to
+    riding along on the general announcement instead.
     """
+    fallback_summaries = []
+    for outcome in mcp_outcomes:
+        if not (outcome.interface and outcome.thread_id):
+            fallback_summaries.append(outcome.summary)
+            continue
+        try:
+            await fire_push(
+                app,
+                interface=outcome.interface,
+                thread_id=outcome.thread_id,
+                message=outcome.summary,
+                push_type="forward",
+            )
+        except Exception:
+            logger.warning(
+                "mcp outcome delivery failed server=%s interface=%s",
+                outcome.server_name,
+                outcome.interface,
+                exc_info=True,
+            )
+            fallback_summaries.append(outcome.summary)
+
     if not get_settings().STARTUP_ANNOUNCEMENT:
         return
     message = f"🟢 AUG {get_settings().APP_VERSION} is up."
-    if mcp_report:
-        message = f"{message}\n{mcp_report}"
+    if fallback_summaries:
+        message = "\n".join([message, *fallback_summaries])
     delivered = await broadcast(app, message)
     logger.info("startup announcement delivered to %d thread(s)", delivered)
 
@@ -153,7 +179,7 @@ async def lifespan(app: FastAPI):
         configure_mcp_tools(mcp_manager.tools)
         set_mcp_manager(mcp_manager)
         app.state.mcp_manager = mcp_manager
-        mcp_report = mcp_manager.reconcile_operations()
+        mcp_outcomes = await mcp_manager.reconcile_operations()
 
         set_push_app(app)
         consolidation_task = await start_consolidation_scheduler()
@@ -167,7 +193,7 @@ async def lifespan(app: FastAPI):
         # Loopback token gateway — lets the agent use OAuth credentials it cannot read.
         gateway_task = asyncio.create_task(serve_gateway(app.state))
 
-        announce_task = asyncio.create_task(_announce_startup(app, mcp_report))
+        announce_task = asyncio.create_task(_announce_startup(app, mcp_outcomes))
 
         sys.stdout.flush()
         sys.stdout.write(_BANNER)

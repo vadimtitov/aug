@@ -369,19 +369,6 @@ _V12_BASE_TOOLS = [
 ]
 
 
-def _build_v12_claude(mcp_tools: list[BaseTool]) -> AugAgent:
-    return AugAgent(
-        model="claude-sonnet-4-6",
-        tools=[*_V12_BASE_TOOLS, *mcp_tools],
-        temperature=0.0,
-        recursion_limit=100,
-        compaction_model="claude-haiku-4-5",
-        compaction_threshold=0.7,
-        context_window=500_000,
-        max_summary_tokens=2000,
-    )
-
-
 def v12_base_tool_names() -> set[str]:
     """Names of v12_claude's non-MCP tools — seeds MCPManager's collision check
     so a server can never shadow a native AUG tool."""
@@ -398,6 +385,19 @@ def configure_mcp_tools(tools: list[BaseTool]) -> None:
     degradation as "every MCP server failed to connect".
     """
     _REGISTRY["v12_claude"] = _build_v12_claude(tools)
+
+
+def _build_v12_claude(mcp_tools: list[BaseTool]) -> AugAgent:
+    return AugAgent(
+        model="claude-sonnet-4-6",
+        tools=[*_V12_BASE_TOOLS, *mcp_tools],
+        temperature=0.0,
+        recursion_limit=100,
+        compaction_model="claude-haiku-4-5",
+        compaction_threshold=0.7,
+        context_window=500_000,
+        max_summary_tokens=2000,
+    )
 
 
 _REGISTRY: dict[str, BaseAgent] = {

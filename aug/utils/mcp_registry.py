@@ -28,9 +28,11 @@ _DEFAULT_LIMIT = 10
 class McpRegistryServer(BaseModel):
     """One search result, reduced to what installing it needs.
 
-    ``required_env`` names environment variables (stdio) or header names
-    (http) the server needs at runtime. Values are never part of a registry
-    listing — they come from hushed, resolved at install/startup time.
+    ``required_inputs`` names the runtime inputs the server needs — env var
+    names for stdio, HTTP header names for http. These are the literal names
+    the server reads; they are never themselves hushed secret names (a header
+    like "X-API-Key" isn't a valid one) — see ``to_config``'s ``bindings``
+    parameter for how a caller maps each to an actual secret.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -41,9 +43,9 @@ class McpRegistryServer(BaseModel):
     version: str
     transport: Literal["stdio", "http"]
     command: str = ""  # stdio only
-    args: list[str] = []  # stdio only — includes the pinned version
+    args: list[str] = []  # stdio only — includes the pinned version + literal arguments
     url: str = ""  # http only
-    required_env: list[str] = []
+    required_inputs: list[str] = []
 
     @property
     def slug(self) -> str:
@@ -51,11 +53,12 @@ class McpRegistryServer(BaseModel):
         tail = self.name.rsplit("/", 1)[-1]
         return tail.removeprefix("server-") if tail.startswith("server-") else tail
 
-    def to_config(self, env_refs: dict[str, str]) -> McpServerConfig:
+    def to_config(self, bindings: dict[str, str]) -> McpServerConfig:
         """Build the settings.json entry for this server.
 
-        ``env_refs`` maps each required var/header name to its ``hushed:KEY``
-        reference — built by the caller once it has confirmed the secret exists.
+        ``bindings`` maps each entry in ``required_inputs`` (an env var or
+        header name) to its ``hushed:KEY`` reference — built by the caller
+        once it has decided which secret backs each input.
         """
         if self.transport == "stdio":
             return McpServerConfig(
@@ -63,14 +66,14 @@ class McpRegistryServer(BaseModel):
                 transport="stdio",
                 command=self.command,
                 args=self.args,
-                env=env_refs,
+                env=bindings,
                 enabled=True,
             )
         return McpServerConfig(
             name=self.slug,
             transport="http",
             url=self.url,
-            headers=env_refs,
+            headers=bindings,
             enabled=True,
         )
 
@@ -122,7 +125,7 @@ def _parse_server(raw: dict) -> McpRegistryServer | None:
 
     package = _pick_package(raw.get("packages") or [], server_version)
     if package is not None:
-        command, args, required_env = package
+        command, args, required_inputs = package
         return McpRegistryServer(
             name=name,
             namespace=namespace,
@@ -131,12 +134,12 @@ def _parse_server(raw: dict) -> McpRegistryServer | None:
             transport="stdio",
             command=command,
             args=args,
-            required_env=required_env,
+            required_inputs=required_inputs,
         )
 
     remote = _pick_remote(raw.get("remotes") or [])
     if remote is not None:
-        url, required_env = remote
+        url, required_inputs = remote
         return McpRegistryServer(
             name=name,
             namespace=namespace,
@@ -144,7 +147,7 @@ def _parse_server(raw: dict) -> McpRegistryServer | None:
             version=server_version,
             transport="http",
             url=url,
-            required_env=required_env,
+            required_inputs=required_inputs,
         )
 
     logger.debug("mcp_registry: skipping %r — no installable package or remote", name)
@@ -154,7 +157,7 @@ def _parse_server(raw: dict) -> McpRegistryServer | None:
 def _pick_package(
     packages: list[dict], server_version: str
 ) -> tuple[str, list[str], list[str]] | None:
-    """Return (command, args, required_env) for the first supported package.
+    """Return (command, args, required_inputs) for the first supported package.
 
     Only npm (-> npx) and pypi (-> uvx) registry types are supported, and only
     when the package itself runs over stdio (a package whose own transport is
@@ -175,29 +178,54 @@ def _pick_package(
             version = server_version
         if not version:
             continue
-        required_env = _required_names(pkg.get("environmentVariables"))
+        runtime_args = _literal_args(pkg.get("runtimeArguments"))
+        package_args = _literal_args(pkg.get("packageArguments"))
+        if runtime_args is None or package_args is None:
+            logger.debug(
+                "mcp_registry: skipping package %r — needs a runtime argument "
+                "with no fixed value (unsupported in v1)",
+                identifier,
+            )
+            continue
+        required_inputs = _required_names(pkg.get("environmentVariables"))
         if registry_type == "npm":
-            return "npx", ["-y", f"{identifier}@{version}"], required_env
+            args = ["-y", *runtime_args, f"{identifier}@{version}", *package_args]
+            return "npx", args, required_inputs
         if registry_type == "pypi":
-            return "uvx", [f"{identifier}=={version}"], required_env
+            args = [*runtime_args, f"{identifier}=={version}", *package_args]
+            return "uvx", args, required_inputs
     return None
 
 
 def _pick_remote(remotes: list[dict]) -> tuple[str, list[str]] | None:
-    """Return (url, required_header_names) for the first http/streamable-http remote."""
+    """Return (url, required_header_names) for the first streamable-HTTP remote.
+
+    SSE remotes are skipped explicitly rather than folded into "http" — v1
+    only ever connects over streamable HTTP (see ``mcp_manager._connect``),
+    and silently mislabeling an SSE-only server as "http" would produce a
+    config that looks installed but can never actually connect.
+    """
     for remote in remotes:
         transport_type = remote.get("type") or remote.get("transport_type")
         url = remote.get("url")
         if not url:
             continue
-        if transport_type in ("streamable-http", "streamable_http", "http", "sse"):
+        if transport_type in ("streamable-http", "streamable_http", "http"):
             return url, _required_names(remote.get("headers"))
+        if transport_type == "sse":
+            logger.debug("mcp_registry: skipping SSE remote %r — unsupported transport", url)
     return None
 
 
 def _required_names(entries: list[dict] | None) -> list[str]:
-    """Extract the names of required (or secret) variables/headers from a list of
-    registry ``{"name": ..., "isRequired": ..., "isSecret": ...}``-shaped dicts."""
+    """Names of variables/headers that need a secret bound at install time.
+
+    An entry carrying its own concrete ``value``/``default`` doesn't need
+    one — even when marked required — since installing would otherwise ask
+    the user to set a hushed secret for an input that already has a working
+    value AUG has no way to pass through today; see the module docstring's
+    v1 scope note.
+    """
     if not entries:
         return []
     names = []
@@ -205,6 +233,39 @@ def _required_names(entries: list[dict] | None) -> list[str]:
         if not isinstance(entry, dict):
             continue
         entry_name = entry.get("name")
-        if entry_name and (entry.get("isRequired") or entry.get("isSecret")):
+        if not entry_name:
+            continue
+        if entry.get("value") not in (None, "") or entry.get("default") not in (None, ""):
+            continue
+        if entry.get("isRequired") or entry.get("isSecret"):
             names.append(entry_name)
     return names
+
+
+def _literal_args(entries: list[dict] | None) -> list[str] | None:
+    """Flatten a package's runtimeArguments/packageArguments into argv.
+
+    Only entries with a fixed ``value`` or ``default`` can be represented —
+    there's no v1 mechanism to collect an arbitrary user-supplied argument at
+    install time. Returns None (skip the whole package) if a *required*
+    argument has neither, since launching without it is known to be broken
+    rather than merely incomplete.
+    """
+    if not entries:
+        return []
+    argv: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        value = entry.get("value")
+        if value in (None, ""):
+            value = entry.get("default")
+        if value in (None, ""):
+            if entry.get("isRequired"):
+                return None
+            continue
+        if entry.get("type") == "named" and entry.get("name"):
+            argv.extend([str(entry["name"]), str(value)])
+        else:
+            argv.append(str(value))
+    return argv

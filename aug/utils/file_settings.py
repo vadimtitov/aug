@@ -17,14 +17,25 @@ Conversation IDs are interface-scoped and stable across context resets — see
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from aug.utils.data import read_data_file, write_data_file
 
 _SETTINGS_FILE = "settings.json"
+
+# MCP server config names double as tool-namespace prefixes and directory-safe
+# identifiers, so they're restricted the same way env-var-derived slugs are.
+_MCP_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+# env/header values are always hushed references, never plaintext — see
+# McpServerConfig's docstring.
+_HUSHED_REF_RE = re.compile(r"^hushed:[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class ConversationSettings(BaseModel):
@@ -117,6 +128,32 @@ class McpServerConfig(BaseModel):
     headers: dict[str, str] = {}  # http only — hushed:KEY references
     enabled: bool = True
 
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        if not _MCP_NAME_RE.match(v):
+            raise ValueError(f"invalid MCP server name {v!r} — must match {_MCP_NAME_RE.pattern}")
+        return v
+
+    @field_validator("env", "headers")
+    @classmethod
+    def _validate_refs(cls, v: dict[str, str]) -> dict[str, str]:
+        for target_name, ref in v.items():
+            if ref and not _HUSHED_REF_RE.match(ref):
+                raise ValueError(
+                    f"invalid credential reference {ref!r} for {target_name!r} "
+                    "— must be 'hushed:NAME'"
+                )
+        return v
+
+    @model_validator(mode="after")
+    def _validate_transport_fields(self) -> McpServerConfig:
+        if self.transport == "stdio" and not self.command:
+            raise ValueError(f"MCP server {self.name!r}: stdio transport requires 'command'")
+        if self.transport == "http" and not self.url:
+            raise ValueError(f"MCP server {self.name!r}: http transport requires 'url'")
+        return self
+
 
 class HomeAssistantReflexSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -139,6 +176,15 @@ class AppSettings(BaseModel):
     reflexes: ReflexSettings = ReflexSettings()
     mcp_servers: list[McpServerConfig] = []
 
+    @field_validator("mcp_servers")
+    @classmethod
+    def _unique_mcp_names(cls, v: list[McpServerConfig]) -> list[McpServerConfig]:
+        names = [s.name for s in v]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            raise ValueError(f"duplicate MCP server name(s): {', '.join(dupes)}")
+        return v
+
 
 def load_settings() -> AppSettings:
     """Load settings from data/settings.json, filling in defaults for any missing fields."""
@@ -151,6 +197,29 @@ def load_settings() -> AppSettings:
 def save_settings(settings: AppSettings) -> None:
     """Persist settings to data/settings.json."""
     write_data_file(_SETTINGS_FILE, json.dumps(settings.model_dump(), indent=2))
+
+
+# A single process-wide lock serializes every settings read-modify-write so two
+# concurrent mutations (e.g. two installs) can never both load a stale snapshot
+# and clobber each other's save — see update_settings().
+_settings_lock = asyncio.Lock()
+
+
+@asynccontextmanager
+async def update_settings() -> AsyncIterator[AppSettings]:
+    """Serialized read-modify-write: reload the current file under a lock, let
+    the caller mutate it, then save — so the check that decides whether to
+    write (e.g. "is this name already configured?") is never based on a
+    snapshot another concurrent writer has since made stale.
+
+        async with update_settings() as s:
+            if not any(x.name == name for x in s.mcp_servers):
+                s.mcp_servers.append(cfg)
+    """
+    async with _settings_lock:
+        settings = load_settings()
+        yield settings
+        save_settings(settings)
 
 
 def _migrate(data: dict) -> dict:
