@@ -10,6 +10,7 @@ represented. Docker-based packages are skipped — see the MCP PRD, "Out of
 scope" (v1 has no Docker socket access).
 """
 
+import hashlib
 import logging
 import re
 from typing import Literal
@@ -28,7 +29,9 @@ _DEFAULT_LIMIT = 10
 # template referencing some other input this v1 install flow has no way to
 # resolve — see _split_inputs.
 _TEMPLATE_RE = re.compile(r"\{[^{}]+\}")
-_SLUG_INVALID_CHARS_RE = re.compile(r"[^a-z0-9_-]+")
+# Length of the namespace-hash suffix in `McpRegistryServer.slug` — see its
+# docstring for why a hash beats folding the namespace path in as text.
+_SLUG_HASH_LEN = 6
 
 
 class McpRegistryServer(BaseModel):
@@ -66,24 +69,19 @@ class McpRegistryServer(BaseModel):
         "server-postgres") — a slug built from the tail alone would silently
         collide, and installing the second would read as "already
         configured" instead of the different server it actually is. Folding
-        in only the namespace's last dot-segment isn't enough either: two
-        unrelated root namespaces can share that same final segment (e.g.
-        "io.github.acme" and "com.acme"), so the *entire* namespace path is
-        folded in instead (e.g. "io-github-acme-server-echo").
+        the namespace path into the slug as dashed text doesn't fix this
+        either: two distinct namespaces can fold to the same string (e.g.
+        "io.github.acme" with tail "foo" and "io.github.acme-foo" with tail
+        "foo" both fold to "io-github-acme-foo"). A short hash of the full
+        namespace, kept separate from the human-readable tail, disambiguates
+        without that risk.
         """
         tail = self.name.rsplit("/", 1)[-1]
         tail = tail.removeprefix("server-") if tail.startswith("server-") else tail
-        account = _SLUG_INVALID_CHARS_RE.sub("-", self.namespace.lower()).strip("-")
-        if not account:
+        if not self.namespace:
             return tail
-        # The namespace's own tail already names this account (e.g. "postgres"
-        # publishing "server-postgres") — appending the tail again would just
-        # produce a redundant "...-postgres-postgres".
-        if account == tail or account.endswith(f"-{tail}"):
-            return account
-        if tail.startswith(f"{account}-"):
-            return tail
-        return f"{account}-{tail}"
+        suffix = hashlib.sha256(self.namespace.encode()).hexdigest()[:_SLUG_HASH_LEN]
+        return f"{tail}-{suffix}"
 
     def to_config(self, bindings: dict[str, str]) -> McpServerConfig:
         """Build the settings.json entry for this server.

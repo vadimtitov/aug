@@ -220,7 +220,7 @@ async def test_install_mcp_server_already_configured():
     mcp_tools._state.last_search[""] = [_server(name="io.github.x/server-postgres")]
     settings = AppSettings(
         mcp_servers=[
-            McpServerConfig(name="io-github-x-postgres", transport="stdio", command="npx", args=[])
+            McpServerConfig(name="postgres-0650d2", transport="stdio", command="npx", args=[])
         ]
     )
     load_p, save_p = _patch_no_plans()
@@ -268,7 +268,7 @@ async def test_install_mcp_server_shows_existing_secret_binding_for_approval():
     ):
         resource, operation = await mcp_tools._describe_install(1)
 
-    assert resource == "io-github-x-github"
+    assert resource == "github-0650d2"
     assert "GITHUB_TOKEN" in operation
     assert "existing hushed secret" in operation
 
@@ -304,9 +304,9 @@ async def test_install_mcp_server_succeeds_when_secrets_present():
     saved_cfg = save_calls[0].mcp_servers[0]
     assert saved_cfg.env == {"GITHUB_TOKEN": "hushed:GITHUB_TOKEN"}
     mock_record.assert_called_once_with(
-        "install", "io-github-x-github", "saved", interface="", thread_id=""
+        "install", "github-0650d2", "saved", interface="", thread_id=""
     )
-    assert schedule_calls == [("op1", "io-github-x-github", "", "")]
+    assert schedule_calls == [("op1", "github-0650d2", "", "")]
 
 
 @pytest.mark.asyncio
@@ -402,7 +402,7 @@ async def test_install_mcp_server_rechecks_duplicates_inside_lock():
     # By the time update_settings() reloads under the lock, another writer
     # has already installed the same server.
     installed = AppSettings(
-        mcp_servers=[McpServerConfig(name="io-github-x-simple", transport="stdio", command="npx")]
+        mcp_servers=[McpServerConfig(name="simple-0650d2", transport="stdio", command="npx")]
     )
 
     with (
@@ -447,7 +447,7 @@ async def test_get_or_build_plan_reuses_persisted_plan_across_a_different_search
     ):
         plan = await mcp_tools._get_or_build_plan("thread-a", 1)
         assert plan is not None
-        assert plan.slug == "io-github-x-postgres"
+        assert plan.slug == "postgres-0650d2"
 
         # Another conversation now searches and would, if scoping were
         # broken, shadow thread-a's in-flight install.

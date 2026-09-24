@@ -242,7 +242,7 @@ async def test_install_plan_survives_a_concurrent_search_in_another_conversation
         output = await mcp_tools.install_mcp_server.ainvoke({"index": 1}, config=cfg_a)
 
     assert "postgres" in output.lower()
-    assert saved[0].mcp_servers[0].name == "io-github-x-postgres"
+    assert saved[0].mcp_servers[0].name == "postgres-0650d2"
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +284,7 @@ async def test_concurrent_installs_of_different_servers_both_persist():
         )
 
     names = {s.name for s in store["settings"].mcp_servers}
-    assert names == {"io-github-x-postgres", "io-github-x-mysql"}
+    assert names == {"postgres-0650d2", "mysql-0650d2"}
 
 
 # ---------------------------------------------------------------------------

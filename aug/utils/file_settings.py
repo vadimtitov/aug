@@ -179,7 +179,12 @@ class ReflexSettings(BaseModel):
 
 
 class AppSettings(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    # hide_input_in_errors: a nested McpServerConfig's own validators
+    # deliberately never echo a rejected env/header value (see its docstring),
+    # but a top-level ValidationError raised while validating AppSettings as a
+    # whole still renders every nested error, framework echo included, unless
+    # this is also set here.
+    model_config = ConfigDict(extra="ignore", hide_input_in_errors=True)
 
     conversations: dict[str, ConversationSettings] = {}
     consolidation: ConsolidationSettings = ConsolidationSettings()

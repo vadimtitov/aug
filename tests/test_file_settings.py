@@ -435,6 +435,29 @@ def test_app_settings_rejects_duplicate_mcp_names():
         )
 
 
+def test_app_settings_validation_message_never_echoes_the_rejected_value():
+    """hide_input_in_errors must be set on AppSettings itself, not just on the
+    nested McpServerConfig — otherwise a ValidationError raised while
+    validating the whole settings document (the shape load_settings() hits on
+    every hand-edited settings.json) still lets Pydantic's own
+    input_value=... echo the plaintext secret back in, undoing the nested
+    model's own suppression."""
+    with pytest.raises(ValidationError) as excinfo:
+        AppSettings.model_validate(
+            {
+                "mcp_servers": [
+                    {
+                        "name": "x",
+                        "transport": "stdio",
+                        "command": "npx",
+                        "env": {"TOKEN": "super-secret-plaintext"},
+                    }
+                ]
+            }
+        )
+    assert "super-secret-plaintext" not in str(excinfo.value)
+
+
 def test_migration_tolerates_malformed_legacy_shapes():
     """A hand-edited file must surface as a validation error, not an AttributeError."""
     for raw in (
