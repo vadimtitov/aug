@@ -3,10 +3,14 @@
 import json
 from unittest.mock import patch
 
+import pytest
+from pydantic import ValidationError
+
 from aug.utils.file_settings import (
     ApprovalRule,
     AppSettings,
     ConversationSettings,
+    McpServerConfig,
     SshTarget,
     load_settings,
     save_settings,
@@ -293,6 +297,165 @@ def test_migration_is_idempotent_without_an_intervening_save():
         second = load_settings()
     assert first.model_dump() == second.model_dump()
     assert second.conversations["tg-123"].agent == "v2_claude"
+
+
+def test_load_returns_no_mcp_servers_by_default():
+    with patch("aug.utils.file_settings.read_data_file", return_value=""):
+        s = load_settings()
+    assert s.mcp_servers == []
+
+
+def test_load_mcp_server_stdio():
+    raw = json.dumps(
+        {
+            "mcp_servers": [
+                {
+                    "name": "github",
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-github@1.0.0"],
+                    "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "hushed:GITHUB_PERSONAL_ACCESS_TOKEN"},
+                    "enabled": True,
+                }
+            ]
+        }
+    )
+    with patch("aug.utils.file_settings.read_data_file", return_value=raw):
+        s = load_settings()
+    assert len(s.mcp_servers) == 1
+    cfg = s.mcp_servers[0]
+    assert cfg.name == "github"
+    assert cfg.command == "npx"
+    assert cfg.args == ["-y", "@modelcontextprotocol/server-github@1.0.0"]
+    assert cfg.env == {"GITHUB_PERSONAL_ACCESS_TOKEN": "hushed:GITHUB_PERSONAL_ACCESS_TOKEN"}
+    assert cfg.enabled is True
+
+
+def test_load_mcp_server_http():
+    raw = json.dumps(
+        {
+            "mcp_servers": [
+                {
+                    "name": "sentry",
+                    "transport": "http",
+                    "url": "https://mcp.sentry.dev/mcp",
+                    "headers": {"Authorization": "hushed:SENTRY_BEARER_TOKEN"},
+                }
+            ]
+        }
+    )
+    with patch("aug.utils.file_settings.read_data_file", return_value=raw):
+        s = load_settings()
+    cfg = s.mcp_servers[0]
+    assert cfg.transport == "http"
+    assert cfg.url == "https://mcp.sentry.dev/mcp"
+    assert cfg.headers == {"Authorization": "hushed:SENTRY_BEARER_TOKEN"}
+    assert cfg.enabled is True  # default
+
+
+def test_save_round_trips_mcp_servers():
+    written: list[str] = []
+    s = AppSettings()
+    s.mcp_servers.append(
+        McpServerConfig(
+            name="postgres",
+            transport="stdio",
+            command="npx",
+            args=["-y", "@modelcontextprotocol/server-postgres@1.2.0"],
+            env={"DATABASE_URL": "hushed:DATABASE_URL"},
+        )
+    )
+
+    with patch(
+        "aug.utils.file_settings.write_data_file",
+        side_effect=lambda _f, d: written.append(d),
+    ):
+        save_settings(s)
+
+    loaded = AppSettings.model_validate(json.loads(written[0]))
+    assert loaded.mcp_servers[0].name == "postgres"
+    assert loaded.mcp_servers[0].env == {"DATABASE_URL": "hushed:DATABASE_URL"}
+
+
+def test_mcp_server_config_never_stores_plaintext_secrets_by_convention():
+    """Documents that env/headers are references; enforced by a field validator."""
+    cfg = McpServerConfig(name="x", transport="stdio", command="npx", env={"TOKEN": "hushed:TOKEN"})
+    assert cfg.env["TOKEN"].startswith("hushed:")
+
+
+def test_mcp_server_config_rejects_plaintext_secret_value():
+    with pytest.raises(ValidationError, match="hushed:NAME"):
+        McpServerConfig(
+            name="x", transport="stdio", command="npx", env={"TOKEN": "plaintext-value"}
+        )
+
+
+def test_mcp_server_config_rejects_empty_credential_reference():
+    with pytest.raises(ValidationError, match="hushed:NAME"):
+        McpServerConfig(name="x", transport="stdio", command="npx", env={"TOKEN": ""})
+
+
+def test_mcp_server_config_validation_message_never_echoes_the_rejected_value():
+    """The validator's own message must never repeat the rejected value — a
+    hand-edited settings.json can easily hold a real plaintext secret here.
+    hide_input_in_errors=True also suppresses Pydantic's own input_value=...
+    echo, so str(exc) — what actually reaches a log line — must be checked
+    too, not just the individual error messages."""
+    with pytest.raises(ValidationError) as excinfo:
+        McpServerConfig(
+            name="x", transport="stdio", command="npx", env={"TOKEN": "super-secret-plaintext"}
+        )
+    messages = " ".join(e["msg"] for e in excinfo.value.errors())
+    assert "super-secret-plaintext" not in messages
+    assert "super-secret-plaintext" not in str(excinfo.value)
+
+
+def test_mcp_server_config_rejects_missing_command_for_stdio():
+    with pytest.raises(ValidationError, match="requires 'command'"):
+        McpServerConfig(name="x", transport="stdio")
+
+
+def test_mcp_server_config_rejects_missing_url_for_http():
+    with pytest.raises(ValidationError, match="requires 'url'"):
+        McpServerConfig(name="x", transport="http")
+
+
+def test_mcp_server_config_rejects_invalid_name():
+    with pytest.raises(ValidationError, match="invalid MCP server name"):
+        McpServerConfig(name="Not Valid!", transport="stdio", command="npx")
+
+
+def test_app_settings_rejects_duplicate_mcp_names():
+    with pytest.raises(ValidationError, match="duplicate MCP server name"):
+        AppSettings(
+            mcp_servers=[
+                McpServerConfig(name="postgres", transport="stdio", command="npx"),
+                McpServerConfig(name="postgres", transport="stdio", command="uvx"),
+            ]
+        )
+
+
+def test_app_settings_validation_message_never_echoes_the_rejected_value():
+    """hide_input_in_errors must be set on AppSettings itself, not just on the
+    nested McpServerConfig — otherwise a ValidationError raised while
+    validating the whole settings document (the shape load_settings() hits on
+    every hand-edited settings.json) still lets Pydantic's own
+    input_value=... echo the plaintext secret back in, undoing the nested
+    model's own suppression."""
+    with pytest.raises(ValidationError) as excinfo:
+        AppSettings.model_validate(
+            {
+                "mcp_servers": [
+                    {
+                        "name": "x",
+                        "transport": "stdio",
+                        "command": "npx",
+                        "env": {"TOKEN": "super-secret-plaintext"},
+                    }
+                ]
+            }
+        )
+    assert "super-secret-plaintext" not in str(excinfo.value)
 
 
 def test_migration_tolerates_malformed_legacy_shapes():

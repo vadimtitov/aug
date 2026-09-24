@@ -39,11 +39,15 @@ from aug.api.routers import (
     threads,
 )
 from aug.config import get_settings
+from aug.core.app_registry import set_app as register_app
 from aug.core.browser_view import BrowserViewHub
-from aug.core.dispatch import broadcast
+from aug.core.dispatch import broadcast, fire_push
 from aug.core.dispatch import set_app as set_push_app
+from aug.core.mcp_manager import MCPManager, McpOperationOutcome
+from aug.core.mcp_manager import set_manager as set_mcp_manager
 from aug.core.memory import init_memory_files, start_consolidation_scheduler
 from aug.core.oauth.providers import PROVIDERS_FILE, ProviderRegistry
+from aug.core.registry import configure_mcp_tools, v12_base_tool_names
 from aug.core.skill_deps import warm_all_skills
 from aug.utils.db import create_pool, set_pool
 from aug.utils.logging import configure_logging, set_correlation_id
@@ -83,15 +87,49 @@ async def _checkpointer_context(dsn: str):
         yield checkpointer
 
 
-async def _announce_startup(app: FastAPI) -> None:
-    """Tell every interface with a push channel that AUG is back up.
+async def _announce_startup(app: FastAPI, mcp_outcomes: list[McpOperationOutcome]) -> None:
+    """Tell every interface with a push channel that AUG is back up, and
+    deliver any MCP install/remove outcome a previous boot left mid-restart
+    (see MCPManager.reconcile_operations) back to whoever requested it.
 
-    Runs as a background task: broadcast is best-effort and swallows its own
-    delivery failures, so an unreachable chat can neither delay nor fail the boot.
+    Runs as a background task: both broadcast and the per-conversation
+    deliveries are best-effort and swallow their own failures, so an
+    unreachable chat can neither delay nor fail the boot.
+
+    Per-conversation delivery isn't gated on STARTUP_ANNOUNCEMENT — that
+    setting exists to silence "yet another reload" spam in local dev, not to
+    withhold the answer to something a user actually asked AUG to do.
+    Outcomes recorded before ``interface``/``thread_id`` existed fall back to
+    riding along on the general announcement instead.
     """
+    fallback_summaries = []
+    for outcome in mcp_outcomes:
+        if not (outcome.interface and outcome.thread_id):
+            fallback_summaries.append(outcome.summary)
+            continue
+        try:
+            await fire_push(
+                app,
+                interface=outcome.interface,
+                thread_id=outcome.thread_id,
+                message=outcome.summary,
+                push_type="forward",
+            )
+        except Exception:
+            logger.warning(
+                "mcp outcome delivery failed server=%s interface=%s",
+                outcome.server_name,
+                outcome.interface,
+                exc_info=True,
+            )
+            fallback_summaries.append(outcome.summary)
+
     if not get_settings().STARTUP_ANNOUNCEMENT:
         return
-    delivered = await broadcast(app, f"🟢 AUG {get_settings().APP_VERSION} is up.")
+    message = f"🟢 AUG {get_settings().APP_VERSION} is up."
+    if fallback_summaries:
+        message = "\n".join([message, *fallback_summaries])
+    delivered = await broadcast(app, message)
     logger.info("startup announcement delivered to %d thread(s)", delivered)
 
 
@@ -133,7 +171,19 @@ async def lifespan(app: FastAPI):
         telegram = TelegramInterface(checkpointer)
         await telegram.start_polling(app)
 
+        # MCP servers — connects before v12_claude's tool list is finalized, so
+        # the agent that gets built (or resumed from a checkpoint) sees whichever
+        # servers were actually reachable this boot. Bounded by its own overall
+        # deadline; a server that never comes up just isn't in the tool list.
+        mcp_manager = MCPManager()
+        await mcp_manager.load_all(base_tool_names=v12_base_tool_names())
+        configure_mcp_tools(mcp_manager.tools)
+        set_mcp_manager(mcp_manager)
+        app.state.mcp_manager = mcp_manager
+        mcp_outcomes = await mcp_manager.reconcile_operations()
+
         set_push_app(app)
+        register_app(app)
         consolidation_task = await start_consolidation_scheduler()
         scheduler_task = await start_scheduler(app)
 
@@ -145,19 +195,24 @@ async def lifespan(app: FastAPI):
         # Loopback token gateway — lets the agent use OAuth credentials it cannot read.
         gateway_task = asyncio.create_task(serve_gateway(app.state))
 
-        announce_task = asyncio.create_task(_announce_startup(app))
+        announce_task = asyncio.create_task(_announce_startup(app, mcp_outcomes))
 
         sys.stdout.flush()
         sys.stdout.write(_BANNER)
         sys.stdout.flush()
         settings = get_settings()
+        mcp_active = sum(1 for h in mcp_manager.health.values() if h.status == "active")
         logger.info(
-            "AUG startup complete — version=%s telegram=%s brave=%s gmail=%s portainer=%s",
+            "AUG startup complete — version=%s telegram=%s brave=%s gmail=%s portainer=%s "
+            "mcp_servers=%d/%d mcp_tools=%d",
             settings.APP_VERSION,
             bool(settings.TELEGRAM_BOT_TOKEN),
             bool(settings.BRAVE_API_KEY),
             bool(settings.GMAIL_CLIENT_ID),
             bool(settings.PORTAINER_URL),
+            mcp_active,
+            len(mcp_manager.health),
+            len(mcp_manager.tools),
         )
         yield
 
@@ -169,6 +224,7 @@ async def lifespan(app: FastAPI):
         await stop_scheduler(app)
         await telegram.stop_polling(app)
         await app.state.browser_view_hub.aclose()
+        await mcp_manager.aclose()
 
     # Shutdown
     await pool.close()

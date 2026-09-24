@@ -427,6 +427,27 @@ LOCATION_SHARE_TEMPLATE = (
 # Used when the interface supplies no name for the sharer.
 LOCATION_SHARE_UNKNOWN_SENDER = "User"
 
+# install_mcp_server's approval preview and "still missing secrets" follow-up
+# (aug/core/tools/mcp.py's _render_plan) — the full install plan an approval
+# decision binds to, including exactly which credential backs each input.
+MCP_INSTALL_PLAN_HEADER = "Install plan: {name}@{version} ({transport})"
+MCP_INSTALL_PLAN_DESTINATION_STDIO = "Command: {command} {args}"
+MCP_INSTALL_PLAN_DESTINATION_HTTP = "URL: {url}"
+MCP_INSTALL_PLAN_CREDENTIALS_HEADER = "Credentials:"
+MCP_INSTALL_PLAN_NO_CREDENTIALS = "Credentials: none required."
+MCP_INSTALL_PLAN_CREDENTIAL_BOUND = (
+    "  {target_name} -> existing hushed secret '{secret_name}' will be used"
+)
+MCP_INSTALL_PLAN_CREDENTIAL_MISSING = (
+    "  {target_name} -> hushed secret '{secret_name}' is NOT set yet"
+)
+MCP_INSTALL_PLAN_MISSING_FOOTER = (
+    "Set the missing secret(s) on musya (hushed add NAME <value>), "
+    "then install result #{index} again."
+)
+MCP_INSTALL_PLAN_DEFAULTS_HEADER = "Defaults (from the registry, not secret):"
+MCP_INSTALL_PLAN_DEFAULT_LINE = "  {target_name} = {value}"
+
 IMAGE_DESCRIPTION_PROMPT = """\
 You are describing an image to a language model that cannot see it.
 Answer the following question about the image as specifically and concisely as possible.

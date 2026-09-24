@@ -21,6 +21,7 @@ Anchor with ^ / $ for stricter matching.
 ``target`` and ``tool`` support ``"*"`` as a wildcard that matches anything.
 """
 
+import inspect
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -76,7 +77,7 @@ class ApprovalDecision(Enum):
 # ---------------------------------------------------------------------------
 
 
-def requires_approval(fn=None, *, describe=None):
+def requires_approval(fn=None, *, describe=None, on_denied=None):
     """Decorator: pause via LangGraph interrupt() if no saved rule approves the operation.
 
     Apply BEFORE @tool so LangGraph wraps the already-decorated function:
@@ -86,8 +87,8 @@ def requires_approval(fn=None, *, describe=None):
         async def run_ssh(target: str, command: str) -> str:
             ...
 
-    ``describe`` is a callable that receives the tool's kwargs as keyword
-    arguments and returns either:
+    ``describe`` is a callable (sync or async) that receives the tool's
+    kwargs as keyword arguments and returns either:
       - a ``(resource, operation)`` tuple for structured display, or
       - a plain string used as the ``operation`` (resource will be empty).
 
@@ -99,10 +100,17 @@ def requires_approval(fn=None, *, describe=None):
         async def run_ssh(target: str, command: str) -> str:
             ...
 
+    ``on_denied``, when given, is called (sync or async) with the tool's
+    kwargs when the user denies the operation — before the denial string is
+    returned and ``fn`` is skipped. Use it to clean up state the ``describe``
+    call may have durably persisted (e.g. an install plan) that would
+    otherwise linger as if still pending.
+
     On resume the decorator acts on the user's ApprovalDecision:
       - APPROVED_ONCE   → execute immediately, no rule saved
       - APPROVED_ALWAYS → save exact-match rule, then execute
-      - DENIED          → return a clear denial string, do NOT execute
+      - DENIED          → run on_denied (if any), return a clear denial
+                          string, do NOT execute
     """
 
     def decorator(fn):
@@ -112,6 +120,8 @@ def requires_approval(fn=None, *, describe=None):
         async def wrapper(*args, **kwargs):
             if describe is not None:
                 result = describe(**kwargs)
+                if inspect.isawaitable(result):
+                    result = await result
                 if isinstance(result, tuple):
                     resource, operation = result
                 else:
@@ -127,6 +137,10 @@ def requires_approval(fn=None, *, describe=None):
                     return _SUBAGENT_APPROVAL_UNAVAILABLE
                 decision: ApprovalDecision = interrupt(request)
                 if decision == ApprovalDecision.DENIED:
+                    if on_denied is not None:
+                        outcome = on_denied(**kwargs)
+                        if inspect.isawaitable(outcome):
+                            await outcome
                     return (
                         f"Operation denied by user. "
                         f"[{tool_name}] '{request.description}' was NOT executed."

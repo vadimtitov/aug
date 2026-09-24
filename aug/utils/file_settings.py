@@ -17,13 +17,25 @@ Conversation IDs are interface-scoped and stable across context resets — see
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from aug.utils.data import read_data_file, write_data_file
 
 _SETTINGS_FILE = "settings.json"
+
+# MCP server config names double as tool-namespace prefixes and directory-safe
+# identifiers, so they're restricted the same way env-var-derived slugs are.
+_MCP_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+# env/header values are always hushed references, never plaintext — see
+# McpServerConfig's docstring.
+_HUSHED_REF_RE = re.compile(r"^hushed:[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class ConversationSettings(BaseModel):
@@ -95,6 +107,65 @@ class ToolSettings(BaseModel):
     image_gen: ImageGenToolSettings = ImageGenToolSettings()
 
 
+class McpServerConfig(BaseModel):
+    """One configured MCP server. Loaded by MCPManager at startup.
+
+    ``env`` / ``headers`` values are ``hushed:KEY_NAME`` references, never plaintext
+    secrets — see ``aug/core/mcp_manager.py`` for how they're resolved. ``args``
+    carries the pinned package version for stdio servers (e.g.
+    ``["-y", "@modelcontextprotocol/server-github@1.0.0"]``) so an install never
+    silently picks up a newer, unreviewed release on restart.
+    """
+
+    # hide_input_in_errors: the env/headers validator below deliberately never
+    # echoes a rejected value in its own message (a hand-edited settings.json
+    # can hold a real plaintext secret there) — but Pydantic's default error
+    # rendering appends the raw input value regardless of what the validator's
+    # message says, undoing that. This suppresses that framework-level echo.
+    model_config = ConfigDict(extra="ignore", hide_input_in_errors=True)
+
+    name: str
+    transport: Literal["stdio", "http"]
+    command: str = ""  # stdio only
+    args: list[str] = []  # stdio only
+    env: dict[str, str] = {}  # stdio only — hushed:KEY references
+    env_static: dict[str, str] = {}  # stdio only — literal, non-secret defaults
+    url: str = ""  # http only
+    headers: dict[str, str] = {}  # http only — hushed:KEY references
+    headers_static: dict[str, str] = {}  # http only — literal, non-secret defaults
+    enabled: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, v: str) -> str:
+        if not _MCP_NAME_RE.match(v):
+            raise ValueError(f"invalid MCP server name {v!r} — must match {_MCP_NAME_RE.pattern}")
+        return v
+
+    @field_validator("env", "headers")
+    @classmethod
+    def _validate_refs(cls, v: dict[str, str]) -> dict[str, str]:
+        # Never echo `ref` back in the error — a hand-edited settings.json can
+        # easily hold a real plaintext secret here instead of a reference, and
+        # that value must not be repeated into a validation error message that
+        # ends up in logs. Empty is rejected too: it's neither a valid
+        # reference nor a value this model is meant to carry.
+        for target_name in v:
+            if not _HUSHED_REF_RE.match(v[target_name]):
+                raise ValueError(
+                    f"invalid credential reference for {target_name!r} — must be 'hushed:NAME'"
+                )
+        return v
+
+    @model_validator(mode="after")
+    def _validate_transport_fields(self) -> McpServerConfig:
+        if self.transport == "stdio" and not self.command:
+            raise ValueError(f"MCP server {self.name!r}: stdio transport requires 'command'")
+        if self.transport == "http" and not self.url:
+            raise ValueError(f"MCP server {self.name!r}: http transport requires 'url'")
+        return self
+
+
 class HomeAssistantReflexSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -108,12 +179,27 @@ class ReflexSettings(BaseModel):
 
 
 class AppSettings(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    # hide_input_in_errors: a nested McpServerConfig's own validators
+    # deliberately never echo a rejected env/header value (see its docstring),
+    # but a top-level ValidationError raised while validating AppSettings as a
+    # whole still renders every nested error, framework echo included, unless
+    # this is also set here.
+    model_config = ConfigDict(extra="ignore", hide_input_in_errors=True)
 
     conversations: dict[str, ConversationSettings] = {}
     consolidation: ConsolidationSettings = ConsolidationSettings()
     tools: ToolSettings = ToolSettings()
     reflexes: ReflexSettings = ReflexSettings()
+    mcp_servers: list[McpServerConfig] = []
+
+    @field_validator("mcp_servers")
+    @classmethod
+    def _unique_mcp_names(cls, v: list[McpServerConfig]) -> list[McpServerConfig]:
+        names = [s.name for s in v]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            raise ValueError(f"duplicate MCP server name(s): {', '.join(dupes)}")
+        return v
 
 
 def load_settings() -> AppSettings:
@@ -127,6 +213,29 @@ def load_settings() -> AppSettings:
 def save_settings(settings: AppSettings) -> None:
     """Persist settings to data/settings.json."""
     write_data_file(_SETTINGS_FILE, json.dumps(settings.model_dump(), indent=2))
+
+
+# A single process-wide lock serializes every settings read-modify-write so two
+# concurrent mutations (e.g. two installs) can never both load a stale snapshot
+# and clobber each other's save — see update_settings().
+_settings_lock = asyncio.Lock()
+
+
+@asynccontextmanager
+async def update_settings() -> AsyncIterator[AppSettings]:
+    """Serialized read-modify-write: reload the current file under a lock, let
+    the caller mutate it, then save — so the check that decides whether to
+    write (e.g. "is this name already configured?") is never based on a
+    snapshot another concurrent writer has since made stale.
+
+        async with update_settings() as s:
+            if not any(x.name == name for x in s.mcp_servers):
+                s.mcp_servers.append(cfg)
+    """
+    async with _settings_lock:
+        settings = load_settings()
+        yield settings
+        save_settings(settings)
 
 
 def _migrate(data: dict) -> dict:
