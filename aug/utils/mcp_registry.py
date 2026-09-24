@@ -65,17 +65,23 @@ class McpRegistryServer(BaseModel):
         identically-named package (e.g. two accounts both shipping
         "server-postgres") — a slug built from the tail alone would silently
         collide, and installing the second would read as "already
-        configured" instead of the different server it actually is. The
-        namespace's last dot-segment (the publishing account, e.g. "acme" in
-        "io.github.acme") is what actually distinguishes them, so it's
-        folded in; the registry's generic domain prefix ("io.github.") is
-        not, since it says nothing about who published it.
+        configured" instead of the different server it actually is. Folding
+        in only the namespace's last dot-segment isn't enough either: two
+        unrelated root namespaces can share that same final segment (e.g.
+        "io.github.acme" and "com.acme"), so the *entire* namespace path is
+        folded in instead (e.g. "io-github-acme-server-echo").
         """
         tail = self.name.rsplit("/", 1)[-1]
         tail = tail.removeprefix("server-") if tail.startswith("server-") else tail
-        account = self.namespace.rsplit(".", 1)[-1].lower()
-        account = _SLUG_INVALID_CHARS_RE.sub("-", account).strip("-")
-        if not account or tail == account or tail.startswith(f"{account}-"):
+        account = _SLUG_INVALID_CHARS_RE.sub("-", self.namespace.lower()).strip("-")
+        if not account:
+            return tail
+        # The namespace's own tail already names this account (e.g. "postgres"
+        # publishing "server-postgres") — appending the tail again would just
+        # produce a redundant "...-postgres-postgres".
+        if account == tail or account.endswith(f"-{tail}"):
+            return account
+        if tail.startswith(f"{account}-"):
             return tail
         return f"{account}-{tail}"
 

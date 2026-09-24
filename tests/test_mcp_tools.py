@@ -11,7 +11,7 @@ from aug.core.mcp_manager import McpServerHealth
 from aug.core.tools.approval import ApprovalDecision
 from aug.utils.file_settings import ApprovalRule, AppSettings, McpServerConfig, ToolSettings
 from aug.utils.mcp_registry import McpRegistryServer
-from aug.utils.state import AppState
+from aug.utils.state import AppState, McpCredentialBinding, McpInstallPlan
 
 _P_APPROVAL = "aug.core.tools.approval.load_settings"
 _APPROVE_ALL = AppSettings(tools=ToolSettings(approvals=[ApprovalRule(pattern=".*")]))
@@ -66,11 +66,23 @@ def _reset_state():
 
 def _patch_no_plans():
     """Most tests don't care about install-plan persistence — this keeps
-    _get_or_build_plan/_clear_plan's load_state/save_state calls in-memory."""
+    _get_or_build_plan (via aug.utils.state.update_state) and _clear_plan
+    (aug.core.tools.mcp's own load_state/save_state binding) both operating
+    on the same in-memory state instead of touching disk — two independent
+    bindings to the same underlying functions after `from ... import` (see
+    _patch_settings above), so both modules need patching."""
     st = AppState()
     return (
-        patch("aug.core.tools.mcp.load_state", return_value=st),
-        patch("aug.core.tools.mcp.save_state"),
+        patch.multiple(
+            "aug.core.tools.mcp",
+            load_state=MagicMock(return_value=st),
+            save_state=MagicMock(),
+        ),
+        patch.multiple(
+            "aug.utils.state",
+            load_state=MagicMock(return_value=st),
+            save_state=MagicMock(),
+        ),
     )
 
 
@@ -207,7 +219,9 @@ async def test_install_mcp_server_invalid_index():
 async def test_install_mcp_server_already_configured():
     mcp_tools._state.last_search[""] = [_server(name="io.github.x/server-postgres")]
     settings = AppSettings(
-        mcp_servers=[McpServerConfig(name="x-postgres", transport="stdio", command="npx", args=[])]
+        mcp_servers=[
+            McpServerConfig(name="io-github-x-postgres", transport="stdio", command="npx", args=[])
+        ]
     )
     load_p, save_p = _patch_no_plans()
     with patch(_P_APPROVAL, return_value=_APPROVE_ALL), _patch_settings(settings), load_p, save_p:
@@ -254,7 +268,7 @@ async def test_install_mcp_server_shows_existing_secret_binding_for_approval():
     ):
         resource, operation = await mcp_tools._describe_install(1)
 
-    assert resource == "x-github"
+    assert resource == "io-github-x-github"
     assert "GITHUB_TOKEN" in operation
     assert "existing hushed secret" in operation
 
@@ -289,8 +303,10 @@ async def test_install_mcp_server_succeeds_when_secrets_present():
     assert len(save_calls) == 1
     saved_cfg = save_calls[0].mcp_servers[0]
     assert saved_cfg.env == {"GITHUB_TOKEN": "hushed:GITHUB_TOKEN"}
-    mock_record.assert_called_once_with("install", "x-github", "saved", interface="", thread_id="")
-    assert schedule_calls == [("op1", "x-github", "", "")]
+    mock_record.assert_called_once_with(
+        "install", "io-github-x-github", "saved", interface="", thread_id=""
+    )
+    assert schedule_calls == [("op1", "io-github-x-github", "", "")]
 
 
 @pytest.mark.asyncio
@@ -356,9 +372,15 @@ async def test_install_mcp_server_denial_clears_the_plan():
     mcp_tools._state.last_search[""] = [_server(name="io.github.x/server-postgres")]
     state = AppState()
 
+    # _get_or_build_plan (via aug.utils.state.update_state) and _clear_plan
+    # (aug.core.tools.mcp's own load_state/save_state binding) must see the
+    # same in-memory state — see _patch_settings's docstring for why both
+    # modules' bindings need patching.
     with (
         patch("aug.core.tools.mcp.load_state", return_value=state),
         patch("aug.core.tools.mcp.save_state"),
+        patch("aug.utils.state.load_state", return_value=state),
+        patch("aug.utils.state.save_state"),
         patch("aug.core.tools.mcp._list_hushed_secrets", return_value=set()),
         patch(_P_APPROVAL, return_value=AppSettings()),  # no saved rule -> triggers interrupt
         patch("aug.core.tools.approval.interrupt", return_value=ApprovalDecision.DENIED),
@@ -380,7 +402,7 @@ async def test_install_mcp_server_rechecks_duplicates_inside_lock():
     # By the time update_settings() reloads under the lock, another writer
     # has already installed the same server.
     installed = AppSettings(
-        mcp_servers=[McpServerConfig(name="x-simple", transport="stdio", command="npx")]
+        mcp_servers=[McpServerConfig(name="io-github-x-simple", transport="stdio", command="npx")]
     )
 
     with (
@@ -419,13 +441,13 @@ async def test_get_or_build_plan_reuses_persisted_plan_across_a_different_search
 
     state = AppState()
     with (
-        patch("aug.core.tools.mcp.load_state", return_value=state),
-        patch("aug.core.tools.mcp.save_state"),
+        patch("aug.utils.state.load_state", return_value=state),
+        patch("aug.utils.state.save_state"),
         patch("aug.core.tools.mcp._list_hushed_secrets", return_value=set()),
     ):
         plan = await mcp_tools._get_or_build_plan("thread-a", 1)
         assert plan is not None
-        assert plan.slug == "x-postgres"
+        assert plan.slug == "io-github-x-postgres"
 
         # Another conversation now searches and would, if scoping were
         # broken, shadow thread-a's in-flight install.
@@ -441,8 +463,6 @@ async def test_get_or_build_plan_reuses_persisted_plan_across_a_different_search
 async def test_get_or_build_plan_survives_missing_live_snapshot():
     """Simulates a process restart while approval was pending: the in-memory
     search cache is gone, but the persisted plan (state.json) is not."""
-    from aug.utils.state import McpCredentialBinding, McpInstallPlan
-
     plan = McpInstallPlan(
         id="p1",
         thread_id="thread-a",
@@ -459,10 +479,12 @@ async def test_get_or_build_plan_survives_missing_live_snapshot():
     state.mcp.install_plans["thread-a"] = plan
 
     # No live snapshot at all (mcp_tools._state.last_search left empty by the fixture).
-    # Secret "X" still present so revalidation doesn't flip `bound` and force
-    # an (unmocked) save_state call.
+    # Secret "X" still present, so revalidation is a no-op on the plan itself
+    # (update_state() still persists unconditionally on every call, same as
+    # every other update_state() user in the codebase).
     with (
-        patch("aug.core.tools.mcp.load_state", return_value=state),
+        patch("aug.utils.state.load_state", return_value=state),
+        patch("aug.utils.state.save_state"),
         patch("aug.core.tools.mcp._list_hushed_secrets", return_value={"X"}),
     ):
         resolved = await mcp_tools._get_or_build_plan("thread-a", 1)
@@ -476,8 +498,6 @@ async def test_get_or_build_plan_revalidates_bound_status_on_retry():
     must notice once the user adds it and retries the same index — the old
     behavior reused the stale persisted plan forever, reporting the secret as
     still missing even after `hushed add` made it available."""
-    from aug.utils.state import McpCredentialBinding, McpInstallPlan
-
     plan = McpInstallPlan(
         id="p1",
         thread_id="thread-a",
@@ -499,8 +519,8 @@ async def test_get_or_build_plan_revalidates_bound_status_on_retry():
     saved = []
 
     with (
-        patch("aug.core.tools.mcp.load_state", return_value=state),
-        patch("aug.core.tools.mcp.save_state", side_effect=lambda s: saved.append(s)),
+        patch("aug.utils.state.load_state", return_value=state),
+        patch("aug.utils.state.save_state", side_effect=lambda s: saved.append(s)),
         patch("aug.core.tools.mcp._list_hushed_secrets", return_value={"GITHUB_TOKEN"}),
     ):
         resolved = await mcp_tools._get_or_build_plan("thread-a", 1)

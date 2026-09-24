@@ -185,7 +185,7 @@ async def test_resolve_stdio_env_only_includes_default_and_declared_vars():
         ),
         patch("aug.core.mcp_manager._read_hushed_secret", return_value="tok-value"),
     ):
-        env = await _resolve_stdio_env({"GITHUB_PERSONAL_ACCESS_TOKEN": "hushed:GH_TOKEN"})
+        env = await _resolve_stdio_env({}, {"GITHUB_PERSONAL_ACCESS_TOKEN": "hushed:GH_TOKEN"})
 
     assert env == {
         "PATH": "/usr/bin",
@@ -200,8 +200,31 @@ async def test_resolve_stdio_env_only_includes_default_and_declared_vars():
 @pytest.mark.asyncio
 async def test_resolve_stdio_env_empty_declared_still_scrubbed():
     with patch("aug.core.mcp_manager.get_default_environment", return_value={"PATH": "/usr/bin"}):
-        env = await _resolve_stdio_env({})
+        env = await _resolve_stdio_env({}, {})
     assert env == {"PATH": "/usr/bin"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_stdio_env_precedence_secret_beats_static_beats_inherited():
+    """Item 5: a hand-set PATH/HOME must never shadow a registry default, and
+    a registry default must never shadow an explicitly bound secret."""
+    with (
+        patch(
+            "aug.core.mcp_manager.get_default_environment",
+            return_value={"PATH": "/usr/bin", "SHARED": "inherited"},
+        ),
+        patch("aug.core.mcp_manager._read_hushed_secret", return_value="secret-value"),
+    ):
+        env = await _resolve_stdio_env(
+            {"SHARED": "static-default", "OTHER": "static-only"},
+            {"SHARED": "hushed:SHARED_KEY"},
+        )
+
+    assert env == {
+        "PATH": "/usr/bin",
+        "SHARED": "secret-value",
+        "OTHER": "static-only",
+    }
 
 
 # ---------------------------------------------------------------------------

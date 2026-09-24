@@ -57,7 +57,13 @@ from aug.core.tools.approval import requires_approval
 from aug.utils.file_settings import McpServerConfig, load_settings, update_settings
 from aug.utils.mcp_registry import McpRegistryClient, McpRegistryServer
 from aug.utils.portainer import PortainerClient
-from aug.utils.state import McpCredentialBinding, McpInstallPlan, load_state, save_state
+from aug.utils.state import (
+    McpCredentialBinding,
+    McpInstallPlan,
+    load_state,
+    save_state,
+    update_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -280,26 +286,28 @@ async def _get_or_build_plan(thread_id: str, index: int) -> McpInstallPlan | Non
     list. Without this, a plan built while a secret was still missing would
     say so forever: the user adds the secret and retries the same index, but
     the persisted plan's stale snapshot never notices.
+
+    ``_list_hushed_secrets`` is awaited *before* the state read-modify-write
+    below, not after: it's the only await in this function, and awaiting it
+    with state already loaded would let a concurrent writer save in between,
+    making this write clobber their change with a stale snapshot.
     """
-    state = load_state()
     known_secrets = await _list_hushed_secrets()
-    existing = state.mcp.install_plans.get(thread_id)
-    if existing is not None and existing.search_index == index:
-        refreshed = _revalidate_plan(existing, known_secrets)
-        if refreshed is not existing:
+    async with update_state() as state:
+        existing = state.mcp.install_plans.get(thread_id)
+        if existing is not None and existing.search_index == index:
+            refreshed = _revalidate_plan(existing, known_secrets)
             state.mcp.install_plans[thread_id] = refreshed
-            save_state(state)
-        return refreshed
+            return refreshed
 
-    snapshot = _state.last_search.get(thread_id) or []
-    if not (1 <= index <= len(snapshot)):
-        return None
+        snapshot = _state.last_search.get(thread_id) or []
+        if not (1 <= index <= len(snapshot)):
+            return None
 
-    server = snapshot[index - 1]
-    plan = _build_plan(thread_id, index, server, known_secrets)
-    state.mcp.install_plans[thread_id] = plan
-    save_state(state)
-    return plan
+        server = snapshot[index - 1]
+        plan = _build_plan(thread_id, index, server, known_secrets)
+        state.mcp.install_plans[thread_id] = plan
+        return plan
 
 
 def _revalidate_plan(plan: McpInstallPlan, known_secrets: set[str]) -> McpInstallPlan:
@@ -496,6 +504,18 @@ async def _deliver_restart_outcome(interface: str, thread_id: str, message: str)
     delivery ``fire_push``'s ``push_type="forward"`` does.
     """
     if not (interface and thread_id):
+        return
+    if interface == "rest_api":
+        # AUG is a personal, Telegram-first assistant — REST has no push
+        # channel (send_proactive() is a no-op) and isn't used to drive MCP
+        # install/remove in practice. Log it explicitly rather than silently
+        # falling through the interface lookup below and looking identical
+        # to a real misconfiguration.
+        logger.info(
+            "mcp restart outcome not delivered: REST has no push channel (thread_id=%s): %s",
+            thread_id,
+            message,
+        )
         return
     app = get_app()
     if app is None:

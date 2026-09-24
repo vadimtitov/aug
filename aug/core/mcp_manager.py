@@ -44,6 +44,8 @@ from langchain_mcp_adapters.sessions import create_session
 from langchain_mcp_adapters.tools import load_mcp_tools
 from mcp import ClientSession, StdioServerParameters, stdio_client
 from mcp.client.stdio import get_default_environment
+from mcp.shared.exceptions import McpError
+from mcp.types import CONNECTION_CLOSED
 
 from aug.utils.file_settings import McpServerConfig, load_settings
 from aug.utils.state import McpOperation, load_state, update_state
@@ -73,6 +75,17 @@ _MAX_ERROR_LEN = 300
 # health finds out the server actually died, rather than staying "active"
 # until the next restart.
 _TRANSPORT_DEAD_EXCEPTIONS = (anyio.ClosedResourceError, anyio.BrokenResourceError)
+
+
+def _is_connection_closed(exc: BaseException) -> bool:
+    """True for an ``McpError`` the session's own receive loop raised because
+    the read stream closed (e.g. the server process exited) — mcp's
+    ``BaseSession._receive_loop`` resolves in-flight requests with this error
+    itself rather than letting a raw ``anyio`` stream error reach the caller,
+    so it needs its own transport-death check alongside
+    ``_TRANSPORT_DEAD_EXCEPTIONS``."""
+    return isinstance(exc, McpError) and exc.error.code == CONNECTION_CLOSED
+
 
 # A tiny, argv-driven reader: `hushed run` injects the secret into this child's
 # environment under NAME, and it writes the raw bytes straight to the fd number
@@ -471,9 +484,10 @@ def _namespace_tool(
     emit a normal error ToolMessage rather than re-raising.
 
     ``on_transport_death``, when given, is called on ``ClosedResourceError``/
-    ``BrokenResourceError`` — MCPManager wires this to mark the server's
-    health failed, since a tool call is the only place that ever observes a
-    dead pipe (see ``MCPManager._mark_transport_dead``).
+    ``BrokenResourceError``, and on an ``McpError`` signalling the connection
+    itself closed (see ``_is_connection_closed``) — MCPManager wires this to
+    mark the server's health failed, since a tool call is the only place that
+    ever observes a dead pipe (see ``MCPManager._mark_transport_dead``).
 
     Every string this returns — success or failure — is run through
     ``_redact`` first: a resolved secret can just as easily come back in a
@@ -500,6 +514,14 @@ def _namespace_tool(
         except ToolException as exc:
             raise ToolException(_redact(str(exc))) from exc
         except Exception as exc:
+            # A dead child process (e.g. an MCP server calling os._exit) is not
+            # always observed as a raw anyio stream error — the session's own
+            # receive loop can resolve the in-flight request with an McpError
+            # carrying CONNECTION_CLOSED instead (see mcp.shared.session._receive_loop).
+            # That must be recognized as transport death too, or health stays
+            # "active" until the next restart.
+            if on_transport_death is not None and _is_connection_closed(exc):
+                on_transport_death(exc)
             raise ToolException(
                 f"Tool '{new_name}' did NOT complete: {_sanitize_error(exc)}"
             ) from exc
@@ -612,10 +634,11 @@ async def _open_session(cfg: McpServerConfig) -> AsyncIterator[ClientSession]:
     ``async with`` — the caller (``MCPManager._run_session``) is what makes
     this the owner task for the session's whole lifetime."""
     if cfg.transport == "stdio":
-        # Static (literal, non-secret) values first, then the scrubbed
-        # defaults + resolved hushed secrets on top — a registry-declared
-        # default never shadows an explicitly bound secret.
-        resolved_env = {**cfg.env_static, **await _resolve_stdio_env(cfg.env)}
+        # Inherited defaults (PATH, HOME, ...) first, then the registry's
+        # static (literal, non-secret) values on top, then resolved hushed
+        # secrets last — so an explicitly bound credential always wins over
+        # both the inherited environment and a registry-declared default.
+        resolved_env = await _resolve_stdio_env(cfg.env_static, cfg.env)
         pump = _StderrPump(cfg.name, resolved_env.values())
         params = StdioServerParameters(command=cfg.command, args=cfg.args, env=resolved_env)
         try:
@@ -636,11 +659,15 @@ async def _open_session(cfg: McpServerConfig) -> AsyncIterator[ClientSession]:
             yield session
 
 
-async def _resolve_stdio_env(declared: dict[str, str]) -> dict[str, str]:
-    """Build a scrubbed subprocess env: the safe subset MCP itself would default
-    to (PATH, HOME, ...) plus only the declared, hushed-resolved secrets.
-    Never AUG's own process environment (API_KEY, DATABASE_URL, ...)."""
+async def _resolve_stdio_env(static: dict[str, str], declared: dict[str, str]) -> dict[str, str]:
+    """Build a scrubbed subprocess env: the safe subset MCP itself would
+    default to (PATH, HOME, ...), overlaid with the registry's literal
+    defaults, overlaid with the declared hushed-resolved secrets last — so an
+    explicitly bound credential always wins over both the inherited
+    environment and a registry-declared default. Never AUG's own process
+    environment (API_KEY, DATABASE_URL, ...)."""
     env = get_default_environment()
+    env.update(static)
     env.update(await _resolve_refs(declared))
     return env
 

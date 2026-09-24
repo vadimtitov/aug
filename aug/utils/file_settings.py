@@ -117,7 +117,12 @@ class McpServerConfig(BaseModel):
     silently picks up a newer, unreviewed release on restart.
     """
 
-    model_config = ConfigDict(extra="ignore")
+    # hide_input_in_errors: the env/headers validator below deliberately never
+    # echoes a rejected value in its own message (a hand-edited settings.json
+    # can hold a real plaintext secret there) — but Pydantic's default error
+    # rendering appends the raw input value regardless of what the validator's
+    # message says, undoing that. This suppresses that framework-level echo.
+    model_config = ConfigDict(extra="ignore", hide_input_in_errors=True)
 
     name: str
     transport: Literal["stdio", "http"]

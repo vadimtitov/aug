@@ -37,7 +37,7 @@ def test_parse_server_npm_package():
     assert server.args == ["-y", "@modelcontextprotocol/server-postgres@1.2.0"]
     assert server.required_inputs == ["DATABASE_URL"]
     assert server.namespace == "io.github.modelcontextprotocol"
-    assert server.slug == "modelcontextprotocol-postgres"
+    assert server.slug == "io-github-modelcontextprotocol-postgres"
 
 
 def test_parse_server_pypi_package():
@@ -338,7 +338,7 @@ def test_slug_strips_server_prefix():
         command="npx",
         args=["-y", "pkg@1.0.0"],
     )
-    assert server.slug == "x-github"
+    assert server.slug == "io-github-x-github"
 
 
 def test_slug_keeps_name_without_server_prefix():
@@ -351,7 +351,7 @@ def test_slug_keeps_name_without_server_prefix():
         command="npx",
         args=["-y", "pkg@1.0.0"],
     )
-    assert server.slug == "x-dbhub"
+    assert server.slug == "io-github-x-dbhub"
 
 
 def test_slug_disambiguates_identically_named_packages_from_different_accounts():
@@ -378,14 +378,14 @@ def test_slug_disambiguates_identically_named_packages_from_different_accounts()
         args=["-y", "pkg@1.0.0"],
     )
     assert alice.slug != bob.slug
-    assert alice.slug == "alice-postgres"
-    assert bob.slug == "bob-postgres"
+    assert alice.slug == "io-github-alice-postgres"
+    assert bob.slug == "io-github-bob-postgres"
 
 
 def test_slug_skips_the_account_prefix_when_it_matches_the_tail():
-    """A namespace whose own account name equals the tail (e.g. an org named
-    "postgres" shipping a package also called "postgres") would otherwise
-    slug to the useless "postgres-postgres"."""
+    """A namespace whose own tail segment equals the package tail (e.g. an
+    org named "postgres" shipping a package also called "postgres") would
+    otherwise slug to the redundant "io-github-postgres-postgres"."""
     server = McpRegistryServer(
         name="io.github.postgres/postgres",
         namespace="io.github.postgres",
@@ -395,7 +395,7 @@ def test_slug_skips_the_account_prefix_when_it_matches_the_tail():
         command="npx",
         args=["-y", "pkg@1.0.0"],
     )
-    assert server.slug == "postgres"
+    assert server.slug == "io-github-postgres"
 
 
 def test_to_config_stdio():
@@ -412,7 +412,7 @@ def test_to_config_stdio():
     )
     cfg = server.to_config({"GITHUB_PERSONAL_ACCESS_TOKEN": "hushed:GITHUB_PERSONAL_ACCESS_TOKEN"})
     assert isinstance(cfg, McpServerConfig)
-    assert cfg.name == "x-github"
+    assert cfg.name == "io-github-x-github"
     assert cfg.transport == "stdio"
     assert cfg.command == "npx"
     assert cfg.env == {"GITHUB_PERSONAL_ACCESS_TOKEN": "hushed:GITHUB_PERSONAL_ACCESS_TOKEN"}
@@ -478,7 +478,7 @@ async def test_search_returns_parsed_servers():
         results = await McpRegistryClient().search("postgres")
 
     assert len(results) == 1
-    assert results[0].slug == "x-postgres"
+    assert results[0].slug == "io-github-x-postgres"
 
 
 @pytest.mark.asyncio

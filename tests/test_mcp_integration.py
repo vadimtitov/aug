@@ -19,6 +19,7 @@ import pytest
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.tools import ToolException
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
@@ -26,12 +27,12 @@ from typing_extensions import TypedDict
 
 import aug.core.tools.mcp as mcp_tools
 from aug.core.agents.chat_agent import ChatAgent
-from aug.core.mcp_manager import MCPManager
+from aug.core.mcp_manager import MCPManager, _read_hushed_secret
 from aug.core.state import AgentState
 from aug.core.tools.approval import ApprovalDecision
 from aug.utils.file_settings import ApprovalRule, AppSettings, McpServerConfig, ToolSettings
 from aug.utils.mcp_registry import McpRegistryServer
-from aug.utils.state import AppState
+from aug.utils.state import AppState, McpOperation
 
 _APPROVE_ALL = AppSettings(tools=ToolSettings(approvals=[ApprovalRule(pattern=".*")]))
 _P_APPROVAL = "aug.core.tools.approval.load_settings"
@@ -181,8 +182,6 @@ def test_hushed_secret_resolves_past_descriptor_9(tmp_path, monkeypatch):
     past descriptor 9 on Debian's dash. This never touches a shell — a fake
     `hushed` on PATH execs straight through to the real reader, and we force
     the allocated fd well past 9 before calling it."""
-    from aug.core.mcp_manager import _read_hushed_secret
-
     monkeypatch.setenv("MY_TOKEN", "actual-secret-value")
     fake_hushed = tmp_path / "hushed"
     fake_hushed.write_text('#!/bin/sh\nshift 2\nexec "$@"\n')
@@ -219,6 +218,8 @@ async def test_install_plan_survives_a_concurrent_search_in_another_conversation
         patch(_P_APPROVAL, return_value=_APPROVE_ALL),
         patch("aug.core.tools.mcp.load_state", return_value=state),
         patch("aug.core.tools.mcp.save_state"),
+        patch("aug.utils.state.load_state", return_value=state),
+        patch("aug.utils.state.save_state"),
         patch("aug.core.tools.mcp.load_settings", return_value=settings),
         patch("aug.utils.file_settings.load_settings", return_value=settings),
         patch("aug.utils.file_settings.save_settings", side_effect=lambda s: saved.append(s)),
@@ -241,7 +242,7 @@ async def test_install_plan_survives_a_concurrent_search_in_another_conversation
         output = await mcp_tools.install_mcp_server.ainvoke({"index": 1}, config=cfg_a)
 
     assert "postgres" in output.lower()
-    assert saved[0].mcp_servers[0].name == "x-postgres"
+    assert saved[0].mcp_servers[0].name == "io-github-x-postgres"
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +268,8 @@ async def test_concurrent_installs_of_different_servers_both_persist():
         ),
         patch("aug.core.tools.mcp.load_state", return_value=AppState()),
         patch("aug.core.tools.mcp.save_state"),
+        patch("aug.utils.state.load_state", return_value=AppState()),
+        patch("aug.utils.state.save_state"),
         patch("aug.core.tools.mcp._list_hushed_secrets", return_value=set()),
         patch("aug.core.tools.mcp.record_operation", AsyncMock(return_value="op1")),
         patch("aug.core.tools.mcp._schedule_restart"),
@@ -281,7 +284,7 @@ async def test_concurrent_installs_of_different_servers_both_persist():
         )
 
     names = {s.name for s in store["settings"].mcp_servers}
-    assert names == {"x-postgres", "x-mysql"}
+    assert names == {"io-github-x-postgres", "io-github-x-mysql"}
 
 
 # ---------------------------------------------------------------------------
@@ -291,8 +294,6 @@ async def test_concurrent_installs_of_different_servers_both_persist():
 
 @pytest.mark.asyncio
 async def test_slow_mcp_server_times_out_as_tool_error_not_exception(tmp_path):
-    from langchain_core.tools import ToolException
-
     cfg = _stdio_cfg("slow", _SLOW_SERVER, tmp_path)
     manager = MCPManager()
     try:
@@ -313,8 +314,6 @@ async def test_slow_mcp_server_times_out_as_tool_error_not_exception(tmp_path):
 
 @pytest.mark.asyncio
 async def test_removed_server_reconciles_as_success():
-    from aug.utils.state import McpOperation
-
     manager = MCPManager()  # nothing connected — the server is gone, as intended
     state = AppState()
     state.mcp.operations.append(
@@ -605,8 +604,6 @@ async def test_tool_execution_error_redacts_a_resolved_secret(tmp_path):
     with patch("aug.core.mcp_manager._read_hushed_secret", return_value="super-secret-token-xyz"):
         await manager._load_one(cfg)
         try:
-            from langchain_core.tools import ToolException
-
             boom = next(t for t in manager.tools if t.name == "secretecho__boom")
             with pytest.raises(ToolException) as excinfo:
                 await boom.coroutine()
