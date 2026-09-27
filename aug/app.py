@@ -39,16 +39,15 @@ from aug.api.routers import (
     threads,
 )
 from aug.config import get_settings
-from aug.core.app_registry import set_app as register_app
 from aug.core.browser_view import BrowserViewHub
 from aug.core.dispatch import broadcast, fire_push
-from aug.core.dispatch import set_app as set_push_app
 from aug.core.mcp_manager import MCPManager, McpOperationOutcome
 from aug.core.mcp_manager import set_manager as set_mcp_manager
 from aug.core.memory import init_memory_files, start_consolidation_scheduler
 from aug.core.oauth.providers import PROVIDERS_FILE, ProviderRegistry
 from aug.core.registry import configure_mcp_tools, v12_base_tool_names
 from aug.core.skill_deps import warm_all_skills
+from aug.utils.app_ref import set_app
 from aug.utils.db import create_pool, set_pool
 from aug.utils.logging import configure_logging, set_correlation_id
 from aug.utils.ratelimit import RateLimiter
@@ -88,19 +87,11 @@ async def _checkpointer_context(dsn: str):
 
 
 async def _announce_startup(app: FastAPI, mcp_outcomes: list[McpOperationOutcome]) -> None:
-    """Tell every interface with a push channel that AUG is back up, and
-    deliver any MCP install/remove outcome a previous boot left mid-restart
-    (see MCPManager.reconcile_operations) back to whoever requested it.
-
-    Runs as a background task: both broadcast and the per-conversation
-    deliveries are best-effort and swallow their own failures, so an
-    unreachable chat can neither delay nor fail the boot.
-
-    Per-conversation delivery isn't gated on STARTUP_ANNOUNCEMENT — that
-    setting exists to silence "yet another reload" spam in local dev, not to
-    withhold the answer to something a user actually asked AUG to do.
-    Outcomes recorded before ``interface``/``thread_id`` existed fall back to
-    riding along on the general announcement instead.
+    """Tell every interface with a push channel that AUG is back up, and deliver
+    any MCP install/remove outcome a previous boot left mid-restart back to
+    whoever requested it. Best-effort, runs as a background task. Per-conversation
+    delivery isn't gated on STARTUP_ANNOUNCEMENT — that only silences reload
+    spam in local dev, not an answer to something the user actually asked for.
     """
     fallback_summaries = []
     for outcome in mcp_outcomes:
@@ -182,8 +173,7 @@ async def lifespan(app: FastAPI):
         app.state.mcp_manager = mcp_manager
         mcp_outcomes = await mcp_manager.reconcile_operations()
 
-        set_push_app(app)
-        register_app(app)
+        set_app(app)
         consolidation_task = await start_consolidation_scheduler()
         scheduler_task = await start_scheduler(app)
 

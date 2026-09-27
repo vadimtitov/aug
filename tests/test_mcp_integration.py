@@ -216,16 +216,16 @@ async def test_install_plan_survives_a_concurrent_search_in_another_conversation
 
     with (
         patch(_P_APPROVAL, return_value=_APPROVE_ALL),
-        patch("aug.core.tools.mcp.load_state", return_value=state),
-        patch("aug.core.tools.mcp.save_state"),
+        patch("aug.core.mcp_install.load_state", return_value=state),
+        patch("aug.core.mcp_install.save_state"),
         patch("aug.utils.state.load_state", return_value=state),
         patch("aug.utils.state.save_state"),
         patch("aug.core.tools.mcp.load_settings", return_value=settings),
         patch("aug.utils.file_settings.load_settings", return_value=settings),
         patch("aug.utils.file_settings.save_settings", side_effect=lambda s: saved.append(s)),
-        patch("aug.core.tools.mcp._list_hushed_secrets", return_value=set()),
+        patch("aug.core.mcp_install.list_secret_names", return_value=set()),
         patch("aug.core.tools.mcp.record_operation", AsyncMock(return_value="op1")),
-        patch("aug.core.tools.mcp._schedule_restart"),
+        patch("aug.core.tools.mcp.schedule_restart"),
     ):
         with patch(
             "aug.core.tools.mcp.McpRegistryClient.search",
@@ -266,13 +266,13 @@ async def test_concurrent_installs_of_different_servers_both_persist():
             "aug.utils.file_settings.save_settings",
             side_effect=lambda s: store.__setitem__("settings", s),
         ),
-        patch("aug.core.tools.mcp.load_state", return_value=AppState()),
-        patch("aug.core.tools.mcp.save_state"),
+        patch("aug.core.mcp_install.load_state", return_value=AppState()),
+        patch("aug.core.mcp_install.save_state"),
         patch("aug.utils.state.load_state", return_value=AppState()),
         patch("aug.utils.state.save_state"),
-        patch("aug.core.tools.mcp._list_hushed_secrets", return_value=set()),
+        patch("aug.core.mcp_install.list_secret_names", return_value=set()),
         patch("aug.core.tools.mcp.record_operation", AsyncMock(return_value="op1")),
-        patch("aug.core.tools.mcp._schedule_restart"),
+        patch("aug.core.tools.mcp.schedule_restart"),
     ):
         await asyncio.gather(
             mcp_tools.install_mcp_server.ainvoke(
@@ -495,7 +495,7 @@ async def test_mcp_tool_approval_survives_a_real_checkpoint_interrupt_and_resume
         patch("aug.utils.file_settings.load_settings", return_value=settings),
         patch("aug.utils.file_settings.save_settings", side_effect=lambda s: saved.append(s)),
         patch("aug.core.tools.mcp.record_operation", AsyncMock(return_value="op1")),
-        patch("aug.core.tools.mcp._schedule_restart"),
+        patch("aug.core.tools.mcp.schedule_restart"),
     ):
         await compiled.ainvoke({"result": ""}, config)
         paused = await compiled.aget_state(config)

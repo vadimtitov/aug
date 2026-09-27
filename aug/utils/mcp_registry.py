@@ -1,13 +1,9 @@
-"""Typed client for the official MCP Registry API.
+"""Typed client for the official MCP Registry API (registry.modelcontextprotocol.io).
 
-https://registry.modelcontextprotocol.io lists publicly published MCP servers.
-Parsing is deliberately tolerant: the registry is a young, evolving public API,
-and a field it renames or drops should degrade one listing rather than crash
-the whole search — see ``_parse_server``.
-
-Only stdio (npm/pypi packages run via npx/uvx) and remote HTTP servers are
-represented. Docker-based packages are skipped — see the MCP PRD, "Out of
-scope" (v1 has no Docker socket access).
+Parsing is deliberately tolerant — a field the registry renames or drops should
+degrade one listing, not crash the whole search. Only stdio (npm/pypi via
+npx/uvx) and remote HTTP servers are represented; Docker-based packages are
+out of scope for v1 (no Docker socket access).
 """
 
 import hashlib
@@ -35,13 +31,9 @@ _SLUG_HASH_LEN = 6
 
 
 class McpRegistryServer(BaseModel):
-    """One search result, reduced to what installing it needs.
-
-    ``required_inputs`` names the runtime inputs the server needs — env var
-    names for stdio, HTTP header names for http. These are the literal names
-    the server reads; they are never themselves hushed secret names (a header
-    like "X-API-Key" isn't a valid one) — see ``to_config``'s ``bindings``
-    parameter for how a caller maps each to an actual secret.
+    """One search result, reduced to what installing it needs. ``required_inputs``
+    names the runtime inputs the server needs (env vars for stdio, HTTP headers
+    for http) — never themselves hushed secret names, see ``to_config``.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -63,18 +55,9 @@ class McpRegistryServer(BaseModel):
     @property
     def slug(self) -> str:
         """Config + tool-namespace-safe short name, disambiguated by publisher.
-
-        Two different registry namespaces can legitimately publish an
-        identically-named package (e.g. two accounts both shipping
-        "server-postgres") — a slug built from the tail alone would silently
-        collide, and installing the second would read as "already
-        configured" instead of the different server it actually is. Folding
-        the namespace path into the slug as dashed text doesn't fix this
-        either: two distinct namespaces can fold to the same string (e.g.
-        "io.github.acme" with tail "foo" and "io.github.acme-foo" with tail
-        "foo" both fold to "io-github-acme-foo"). A short hash of the full
-        namespace, kept separate from the human-readable tail, disambiguates
-        without that risk.
+        Two namespaces can publish identically-named packages, and folding the
+        namespace into the slug as text can itself collide — a hash suffix of
+        the full namespace disambiguates without that risk.
         """
         tail = self.name.rsplit("/", 1)[-1]
         tail = tail.removeprefix("server-") if tail.startswith("server-") else tail
@@ -84,14 +67,8 @@ class McpRegistryServer(BaseModel):
         return f"{tail}-{suffix}"
 
     def to_config(self, bindings: dict[str, str]) -> McpServerConfig:
-        """Build the settings.json entry for this server.
-
-        ``bindings`` maps each entry in ``required_inputs`` (an env var or
-        header name) to its ``hushed:KEY`` reference — built by the caller
-        once it has decided which secret backs each input. ``literal_inputs``
-        rides along separately since those are plain values, never secret
-        references.
-        """
+        """Build the settings.json entry for this server. ``bindings`` maps each
+        ``required_inputs`` name to its ``hushed:KEY`` reference."""
         if self.transport == "stdio":
             return McpServerConfig(
                 name=self.slug,
@@ -140,15 +117,9 @@ class McpRegistryClient:
 
 
 def _parse_server(raw: dict) -> McpRegistryServer | None:
-    """Best-effort parse of one registry entry. Returns None if it can't be installed.
-
-    Prefers a stdio package (npm -> npx, pypi -> uvx) when present, otherwise
-    falls back to the first remote HTTP entry. An entry with neither, one whose
-    package registry type we don't recognize (e.g. "oci", "nuget" — no Docker
-    socket access and no .NET runtime in this container), or one whose package
-    itself listens over HTTP rather than stdio (needs port allocation we don't
-    do in v1), is skipped rather than raising — one unsupported listing must
-    never sink the whole search.
+    """Best-effort parse of one registry entry. Prefers a stdio package (npm ->
+    npx, pypi -> uvx), falls back to the first remote HTTP entry, else skips —
+    one unsupported listing must never sink the whole search.
     """
     name = raw.get("name")
     if not isinstance(name, str) or not name:
@@ -194,13 +165,8 @@ def _pick_package(
     packages: list[dict], server_version: str
 ) -> tuple[str, list[str], list[str], dict[str, str]] | None:
     """Return (command, args, required_inputs, literal_inputs) for the first
-    supported package.
-
-    Only npm (-> npx) and pypi (-> uvx) registry types are supported, and only
-    when the package itself runs over stdio (a package whose own transport is
-    http/sse expects a locally-allocated port — out of scope for v1). A
-    package version of "latest" is not a pin at all, so falls back to the
-    server's own version field, which is a real release number.
+    supported package — npm/pypi over stdio only. A "latest" version isn't a
+    real pin, so falls back to the server's own version field.
     """
     for pkg in packages:
         transport_type = (pkg.get("transport") or {}).get("type", "stdio")
@@ -244,12 +210,8 @@ def _pick_package(
 
 def _pick_remote(remotes: list[dict]) -> tuple[str, list[str], dict[str, str]] | None:
     """Return (url, required_header_names, literal_headers) for the first
-    streamable-HTTP remote.
-
-    SSE remotes are skipped explicitly rather than folded into "http" — v1
-    only ever connects over streamable HTTP (see ``mcp_manager._connect``),
-    and silently mislabeling an SSE-only server as "http" would produce a
-    config that looks installed but can never actually connect.
+    streamable-HTTP remote. SSE remotes are skipped explicitly rather than
+    folded into "http" — v1 only ever connects over streamable HTTP.
     """
     for remote in remotes:
         transport_type = remote.get("type") or remote.get("transport_type")
@@ -273,19 +235,10 @@ def _pick_remote(remotes: list[dict]) -> tuple[str, list[str], dict[str, str]] |
 
 
 def _split_inputs(entries: list[dict] | None) -> tuple[list[str], dict[str, str]] | None:
-    """Split declared env vars / headers into ones needing a hushed secret at
-    install time vs. ones with a literal, usable value.
-
-    An entry carrying its own concrete ``value``/``default`` doesn't need a
-    secret — even when marked required — since prompting for one would ask
-    for a hushed binding on an input that already has a working value. That
-    literal must still reach the installed server rather than being dropped
-    on the floor, unless it's an unresolvable template like ``"{other_var}"``
-    (a reference to some other input this v1 install flow has no way to
-    substitute) — a *required* entry stuck in that state means the whole
-    package/remote can't be installed as configured, so this returns None to
-    signal "skip it entirely", matching ``_literal_args``' handling of an
-    unsuppliable required argument.
+    """Split declared env vars / headers into ones needing a hushed secret vs.
+    ones with a literal, usable value. A *required* entry stuck with an
+    unresolvable template default (e.g. "{other_var}") means the whole
+    package/remote can't be installed, so this returns None to skip it.
     """
     if not entries:
         return [], {}
@@ -314,13 +267,8 @@ def _split_inputs(entries: list[dict] | None) -> tuple[list[str], dict[str, str]
 
 
 def _literal_args(entries: list[dict] | None) -> list[str] | None:
-    """Flatten a package's runtimeArguments/packageArguments into argv.
-
-    Only entries with a fixed ``value`` or ``default`` can be represented —
-    there's no v1 mechanism to collect an arbitrary user-supplied argument at
-    install time. Returns None (skip the whole package) if a *required*
-    argument has neither, since launching without it is known to be broken
-    rather than merely incomplete.
+    """Flatten a package's runtimeArguments/packageArguments into argv. Returns
+    None (skip the whole package) if a *required* argument has no fixed value.
     """
     if not entries:
         return []

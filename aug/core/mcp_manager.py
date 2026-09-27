@@ -1,27 +1,12 @@
 """MCPManager — connects to configured MCP servers at startup and exposes their
-tools as native LangChain tools.
+tools as native LangChain tools. Only stdio (npx/uvx) and streamable-HTTP
+transports are supported; a bad server config is isolated (logged + skipped),
+never blocking the others or AUG's own startup.
 
-Startup flow (see ``aug/app.py`` ``lifespan()``)::
-
-    manager = MCPManager()
-    await manager.load_all(base_tool_names=...)
-    configure_mcp_tools(manager.tools)   # aug/core/registry.py
-    set_manager(manager)                 # so tools/mcp.py can read health/trigger restarts
-
-Only stdio (npx/uvx) and streamable-HTTP transports are supported — Docker-based
-MCP servers are out of scope for v1 (no Docker socket access; see the PRD).
-
-Failures are isolated per server: one bad config logs a warning and is skipped,
-it never blocks the others or aborts AUG's own startup. If every server fails,
-AUG boots normally with just its base tools.
-
-Each server owns exactly one task for its whole connected lifetime (see
-``_ServerConnection`` / ``MCPManager._run_session``): that task is the only one
-that ever enters or exits the session's context manager, because AnyIO task
-groups (which stdio/streamable-HTTP sessions open internally) require the task
-that enters a cancel scope to be the one that exits it. Everything else —
-``load_all``, tool calls, ``aclose`` — talks to the session by reference or by
-signalling the owner task, never by touching its context manager directly.
+Each server owns exactly one task for its whole connected lifetime: AnyIO task
+groups (opened internally by stdio/streamable-HTTP sessions) require the task
+that enters a cancel scope to be the one that exits it, so only that owner
+task ever touches the session's context manager directly.
 """
 
 import asyncio
@@ -78,11 +63,8 @@ _TRANSPORT_DEAD_EXCEPTIONS = (anyio.ClosedResourceError, anyio.BrokenResourceErr
 
 
 def _is_connection_closed(exc: BaseException) -> bool:
-    """True for an ``McpError`` the session's own receive loop raised because
-    the read stream closed (e.g. the server process exited) — mcp's
-    ``BaseSession._receive_loop`` resolves in-flight requests with this error
-    itself rather than letting a raw ``anyio`` stream error reach the caller,
-    so it needs its own transport-death check alongside
+    """True for an ``McpError`` raised because the read stream closed (e.g. the
+    server process exited) — a second transport-death check alongside
     ``_TRANSPORT_DEAD_EXCEPTIONS``."""
     return isinstance(exc, McpError) and exc.error.code == CONNECTION_CLOSED
 
@@ -170,12 +152,8 @@ class MCPManager:
             logger.warning("mcp_manager: startup deadline (%.0fs) exceeded", _OVERALL_TIMEOUT)
 
     async def aclose(self) -> None:
-        """Close every open MCP session. Call once during app shutdown.
-
-        Each connection is closed by signalling and awaiting its own owner
-        task — never by reaching into its session's context manager from this
-        (different) task.
-        """
+        """Close every open MCP session. Call once during app shutdown — each
+        connection is closed by signalling and awaiting its own owner task."""
         connections = list(self._connections.values())
         self._connections.clear()
         await asyncio.gather(
@@ -184,15 +162,9 @@ class MCPManager:
 
     async def reconcile_operations(self) -> list[McpOperationOutcome]:
         """Resolve any install/remove operation a previous boot left unresolved
-        — at ``restart_pending`` because the restart it triggered crashed AUG
-        before it could record the outcome, or even still at ``saved`` because
-        AUG died (for any reason) in the few seconds between saving config and
-        triggering that restart, before ``_trigger_restart`` ever got to mark
-        it pending. Either way the config is already on disk and will have been
-        attempted this boot, so both states are resolved the same way here.
-        Returns one outcome per resolved operation, for the caller to deliver
-        back to whoever requested it (and to fold into the general startup
-        announcement as a fallback).
+        (``saved`` or ``restart_pending`` — either way the config change is
+        already on disk and was attempted this boot). Returns one outcome per
+        resolved operation, for the caller to deliver back to whoever requested it.
         """
         # Cheap, lock-free fast path: the overwhelmingly common case (no
         # install/remove ever ran) must not perform a write on every single
@@ -384,14 +356,8 @@ class MCPManager:
         return namespaced
 
     def _mark_transport_dead(self, server_name: str, exc: BaseException) -> None:
-        """A tool call just observed the transport is gone. ``conn.stop.wait()``
-        in ``_run_session`` has no way to notice a dead pipe on its own —
-        nothing signals it — so a tool call catching ``ClosedResourceError``/
-        ``BrokenResourceError`` is the only place able to tell health the
-        server actually died, instead of it reading "active" until the next
-        restart. Also wakes the owner task so it unwinds the (already broken)
-        session instead of sitting on a stop event nobody will ever set.
-        """
+        """A tool call just observed the transport is gone — mark health failed
+        and wake the owner task so it unwinds the broken session."""
         prior = self.health.get(server_name)
         transport = prior.transport if prior else ""
         logger.warning(
@@ -477,21 +443,11 @@ def _namespace_tool(
     *,
     on_transport_death: Callable[[BaseException], None] | None = None,
 ) -> BaseTool:
-    """Rename an MCP-derived tool, bound to the per-call timeout, and turn
-    expected failures (timeout, transport/connection errors) into an explicit
-    tool-error response instead of letting them escape the compiled graph —
-    ToolException + handle_tool_error=True is what makes LangGraph's ToolNode
-    emit a normal error ToolMessage rather than re-raising.
-
-    ``on_transport_death``, when given, is called on ``ClosedResourceError``/
-    ``BrokenResourceError``, and on an ``McpError`` signalling the connection
-    itself closed (see ``_is_connection_closed``) — MCPManager wires this to
-    mark the server's health failed, since a tool call is the only place that
-    ever observes a dead pipe (see ``MCPManager._mark_transport_dead``).
-
-    Every string this returns — success or failure — is run through
-    ``_redact`` first: a resolved secret can just as easily come back in a
-    successful tool result (a server echoing a header) as in an exception.
+    """Rename an MCP-derived tool, bound to the per-call timeout, and turn expected
+    failures (timeout, transport errors) into a ToolException instead of letting
+    them escape the graph. ``on_transport_death``, when given, fires on a dead
+    connection so MCPManager can mark the server's health failed. Every returned
+    string is redacted — a resolved secret can echo back in a success result too.
     """
     original_coroutine = t.coroutine
 
@@ -539,12 +495,9 @@ def _namespace_tool(
 
 
 def _redact_result(result):
-    """Scrub a successful tool result the same way an error message is
-    scrubbed — a server can echo a resolved secret back just as easily as an
-    exception can (e.g. confirming a header/token it received). MCP results
-    are nested — content blocks are dicts inside a list inside a
-    ``(content, artifact)`` tuple — so this walks the whole structure rather
-    than assuming a bare string.
+    """Scrub a successful tool result the same way an error message is scrubbed.
+    MCP results nest content blocks inside a list inside a (content, artifact)
+    tuple, so this walks the whole structure rather than assuming a bare string.
     """
     if isinstance(result, str):
         return _redact(result)
@@ -577,29 +530,19 @@ def _redact(text: str) -> str:
 
 
 def _sanitize_error(exc: BaseException) -> str:
-    """A short, safe-to-log-or-return summary of *exc*.
-
-    Deliberately ``str(exc)``, never ``%r``/``repr`` — a transport exception's
-    repr can carry a whole request (headers, URL, body) verbatim, which is
-    exactly where a resolved secret would show up. Redacted against every
-    secret this process has resolved (see ``_redact``), then capped in length
-    so one verbose error (e.g. an HTML error page a broken proxy returned)
-    can't flood logs or a tool result.
+    """A short, safe-to-log-or-return summary of *exc* — redacted and length-capped.
+    Deliberately ``str(exc)``, never repr: a transport exception's repr can carry
+    a whole request (headers, URL, body), exactly where a secret would show up.
     """
     text = str(exc) or exc.__class__.__name__
     return _redact(text)[:_MAX_ERROR_LEN]
 
 
 class _StderrPump:
-    """Captures a stdio MCP server's stderr and forwards redacted lines to
-    our own logger, instead of letting the SDK pipe it straight to AUG's
-    stderr fd.
-
-    ``stdio_client``'s ``errlog`` only ever reaches ``subprocess.Popen`` as a
-    raw file descriptor for OS-level ``dup2`` — the child writes directly to
-    that descriptor, so nothing written there ever passes through a Python
-    object's ``write()``, wrapping ``sys.stderr`` in one does nothing.
-    Redaction has to happen on our own end of a pipe instead.
+    """Captures a stdio MCP server's stderr and forwards redacted lines to our own
+    logger. ``stdio_client``'s ``errlog`` reaches the child as a raw fd via
+    ``dup2``, so redaction has to happen on our end of the pipe, not by wrapping
+    ``sys.stderr``.
     """
 
     def __init__(self, server_name: str, secrets: Iterable[str]) -> None:
@@ -660,12 +603,9 @@ async def _open_session(cfg: McpServerConfig) -> AsyncIterator[ClientSession]:
 
 
 async def _resolve_stdio_env(static: dict[str, str], declared: dict[str, str]) -> dict[str, str]:
-    """Build a scrubbed subprocess env: the safe subset MCP itself would
-    default to (PATH, HOME, ...), overlaid with the registry's literal
-    defaults, overlaid with the declared hushed-resolved secrets last — so an
-    explicitly bound credential always wins over both the inherited
-    environment and a registry-declared default. Never AUG's own process
-    environment (API_KEY, DATABASE_URL, ...)."""
+    """Scrubbed subprocess env: MCP's own safe defaults (PATH, HOME, ...), then
+    registry literal defaults, then hushed-resolved secrets — later wins. Never
+    AUG's own process environment (API_KEY, DATABASE_URL, ...)."""
     env = get_default_environment()
     env.update(static)
     env.update(await _resolve_refs(declared))
@@ -692,27 +632,10 @@ async def _resolve_hushed_ref(ref: str) -> str:
 
 
 def _read_hushed_secret(name: str) -> str:
-    """Fetch one secret's value from hushed without it ever passing through this
-    process's stdout/stderr — ``hushed run`` redacts secret values from the
-    wrapped command's output, so printing it to stdout comes back as
-    "[REDACTED]" rather than the value. Instead, a private pipe is inherited
-    into the wrapped process, which writes the value there directly — a
-    channel hushed never inspects — and we read it back once the (bounded,
-    non-interactive) process has exited.
-
-    The reader is a tiny Python child, not ``sh -c '... >&{fd}'``: the file
-    descriptor is passed as a plain argv string and turned into an int, not
-    shell redirection syntax, so it works for any descriptor number — `sh`'s
-    ``>&N`` redirection only accepts single-digit N on Debian's dash, which
-    silently broke every secret above descriptor 9 (AUG already has several
-    open — DB pool, sockets — before MCP servers load).
-
-    ``name`` is passed as an argv element, never interpolated into a command
-    string, so it can't reach a shell unescaped regardless of where it came
-    from (settings.json, ultimately sourced from an MCP registry listing).
-    It's still validated up front as a normal env-var name — not for shell
-    safety, but so a malformed name fails clearly instead of hushed silently
-    not finding it.
+    """Fetch one secret's value from hushed via a private inherited pipe, since
+    `hushed run` redacts secret values from stdout. The reader is a tiny Python
+    child (fd passed as a plain argv int, not shell ``>&N`` redirection, which
+    breaks past descriptor 9 on Debian's dash).
     """
     if not _ENV_VAR_NAME_RE.match(name):
         raise McpSecretError(f"invalid secret name {name!r} — must be a valid env var name")

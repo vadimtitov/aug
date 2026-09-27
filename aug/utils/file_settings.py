@@ -108,13 +108,9 @@ class ToolSettings(BaseModel):
 
 
 class McpServerConfig(BaseModel):
-    """One configured MCP server. Loaded by MCPManager at startup.
-
-    ``env`` / ``headers`` values are ``hushed:KEY_NAME`` references, never plaintext
-    secrets — see ``aug/core/mcp_manager.py`` for how they're resolved. ``args``
-    carries the pinned package version for stdio servers (e.g.
-    ``["-y", "@modelcontextprotocol/server-github@1.0.0"]``) so an install never
-    silently picks up a newer, unreviewed release on restart.
+    """One configured MCP server, loaded by MCPManager at startup. ``env``/``headers``
+    values are ``hushed:KEY_NAME`` references, never plaintext secrets. ``args``
+    carries the pinned package version so a restart never silently upgrades it.
     """
 
     # hide_input_in_errors: the env/headers validator below deliberately never
@@ -223,10 +219,9 @@ _settings_lock = asyncio.Lock()
 
 @asynccontextmanager
 async def update_settings() -> AsyncIterator[AppSettings]:
-    """Serialized read-modify-write: reload the current file under a lock, let
-    the caller mutate it, then save — so the check that decides whether to
-    write (e.g. "is this name already configured?") is never based on a
-    snapshot another concurrent writer has since made stale.
+    """Serialized read-modify-write: reload under a lock, let the caller mutate,
+    then save — so a "does this already exist?" check is never based on a
+    snapshot a concurrent writer has since made stale.
 
         async with update_settings() as s:
             if not any(x.name == name for x in s.mcp_servers):

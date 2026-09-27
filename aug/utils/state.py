@@ -94,16 +94,10 @@ class ConsolidationState(BaseModel):
 
 
 class McpOperation(BaseModel):
-    """One install/remove operation, tracked across the restart it triggers.
-
-    A restart that crashes AUG before the next boot can update this record
-    leaves it at ``restart_pending`` — that's exactly the state
-    ``MCPManager.reconcile_operations`` looks for and resolves on the next
-    successful startup, so an operation is never silently lost.
-
-    ``interface``/``thread_id`` name the conversation that requested the
-    operation, so its outcome can be delivered back there specifically
-    instead of only riding along on the general startup announcement.
+    """One install/remove operation, tracked across the restart it triggers — a
+    crash leaves it at ``restart_pending``, which ``reconcile_operations``
+    resolves on the next boot. ``interface``/``thread_id`` say which
+    conversation to deliver the outcome back to.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -133,13 +127,9 @@ class McpCredentialBinding(BaseModel):
 
 
 class McpInstallPlan(BaseModel):
-    """An immutable, durable snapshot of one install decision.
-
-    Built once, the moment ``install_mcp_server`` first resolves a search
-    result to an index, and persisted before the approval interrupt pauses
-    the graph — so resuming (even from a different process, after a crash)
-    approves and installs exactly what was previewed, never a result a
-    later search happened to reorder into that slot.
+    """An immutable, durable snapshot of one install decision — built once and
+    persisted before the approval interrupt pauses the graph, so resuming (even
+    after a crash) installs exactly what was previewed.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -203,8 +193,8 @@ _state_lock = asyncio.Lock()
 
 @asynccontextmanager
 async def update_state() -> AsyncIterator[AppState]:
-    """Serialized read-modify-write: reload the current file under a lock, let
-    the caller mutate it, then save.
+    """Serialized read-modify-write: reload under a lock, let the caller mutate,
+    then save.
 
         async with update_state() as st:
             st.mcp.operations.append(...)

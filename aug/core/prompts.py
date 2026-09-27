@@ -442,8 +442,7 @@ MCP_INSTALL_PLAN_CREDENTIAL_MISSING = (
     "  {target_name} -> hushed secret '{secret_name}' is NOT set yet"
 )
 MCP_INSTALL_PLAN_MISSING_FOOTER = (
-    "Set the missing secret(s) on musya (hushed add NAME <value>), "
-    "then install result #{index} again."
+    "Set the missing secret(s) (hushed add NAME <value>), then install result #{index} again."
 )
 MCP_INSTALL_PLAN_DEFAULTS_HEADER = "Defaults (from the registry, not secret):"
 MCP_INSTALL_PLAN_DEFAULT_LINE = "  {target_name} = {value}"
