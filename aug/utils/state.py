@@ -15,8 +15,12 @@ Not for user-facing configuration — use aug/utils/file_settings.py for that.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -89,6 +93,73 @@ class ConsolidationState(BaseModel):
     last_deep_run: str | None = None
 
 
+class McpOperation(BaseModel):
+    """One install/remove operation, tracked across the restart it triggers — a
+    crash leaves it at ``restart_pending``, which ``reconcile_operations``
+    resolves on the next boot. ``interface``/``thread_id`` say which
+    conversation to deliver the outcome back to.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    action: Literal["install", "remove"]
+    server_name: str
+    state: Literal["saved", "restart_pending", "active", "failed"]
+    detail: str = ""
+    created_at: float = 0.0
+    interface: str = ""
+    thread_id: str = ""
+
+
+class McpCredentialBinding(BaseModel):
+    """One requested credential input and how the plan proposes to satisfy it."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    # The name the server actually reads at runtime — an env var name for
+    # stdio, an HTTP header name for http. Never itself a hushed secret name.
+    target_name: str
+    # The hushed secret name this will be bound to, e.g. "SENTRY_BEARER_TOKEN".
+    secret_name: str
+    # Whether `secret_name` already existed in hushed at plan-build time.
+    bound: bool
+
+
+class McpInstallPlan(BaseModel):
+    """An immutable, durable snapshot of one install decision — built once and
+    persisted before the approval interrupt pauses the graph, so resuming (even
+    after a crash) installs exactly what was previewed.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    thread_id: str
+    search_index: int
+    server_name: str  # registry name, e.g. "io.github.x/server-postgres"
+    slug: str  # config name this will be saved under, e.g. "postgres"
+    version: str
+    transport: Literal["stdio", "http"]
+    command: str = ""
+    args: list[str] = []
+    url: str = ""
+    credentials: list[McpCredentialBinding] = []
+    # Literal, non-secret env vars / headers the registry declared with a
+    # concrete value or default — see McpRegistryServer.literal_inputs.
+    literal_inputs: dict[str, str] = {}
+    created_at: float = 0.0
+
+
+class McpState(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    operations: list[McpOperation] = []
+    # Keyed by thread_id — at most one pending install plan per conversation,
+    # since LangGraph fully pauses that thread while it awaits approval.
+    install_plans: dict[str, McpInstallPlan] = {}
+
+
 class AppState(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -97,6 +168,7 @@ class AppState(BaseModel):
     # Keyed by BaseInterface.conversation_id — interface-namespaced, so this is shared
     # by every frontend rather than living under any one of them.
     locations: dict[str, ConversationLocationState] = {}
+    mcp: McpState = McpState()
 
 
 def load_state() -> AppState:
@@ -110,3 +182,24 @@ def load_state() -> AppState:
 def save_state(state: AppState) -> None:
     """Persist runtime state to data/state.json."""
     write_data_file(_STATE_FILE, json.dumps(state.model_dump(), indent=2))
+
+
+# Serializes concurrent read-modify-write cycles against state.json — the same
+# hazard file_settings.update_settings() guards against, applied here for
+# things like McpManager's install-plan bookkeeping, where two conversations
+# can otherwise both load a stale snapshot and clobber each other's save.
+_state_lock = asyncio.Lock()
+
+
+@asynccontextmanager
+async def update_state() -> AsyncIterator[AppState]:
+    """Serialized read-modify-write: reload under a lock, let the caller mutate,
+    then save.
+
+        async with update_state() as st:
+            st.mcp.operations.append(...)
+    """
+    async with _state_lock:
+        state = load_state()
+        yield state
+        save_state(state)

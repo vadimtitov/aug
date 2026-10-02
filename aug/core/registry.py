@@ -3,6 +3,8 @@
 To add a new agent, instantiate a BaseAgent subclass and add it to _REGISTRY.
 """
 
+from langchain_core.tools import BaseTool
+
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.agents.chat_agent import AugAgent
 from aug.core.agents.fake_agent import FakeAgent
@@ -12,6 +14,12 @@ from aug.core.tools.browser import browser
 from aug.core.tools.fetch_page import fetch_page
 from aug.core.tools.gmail import gmail_draft, gmail_read_thread, gmail_search, gmail_send
 from aug.core.tools.image_gen import edit_image, generate_image
+from aug.core.tools.mcp import (
+    install_mcp_server,
+    list_mcp_servers,
+    remove_mcp_server,
+    search_mcp_servers,
+)
 from aug.core.tools.note import note
 from aug.core.tools.portainer import (
     portainer_container_action,
@@ -349,6 +357,36 @@ _V11_KIMI_TOOLS = [
     make_run_subagent_tool(_subagent_kimi),
 ]
 
+# v12_claude = v11_claude's tools + MCP management tools + whatever MCP servers
+# are actually reachable at startup. V11 agents are immutable and untouched —
+# this is a new version, not a modification of _V11_CLAUDE_TOOLS.
+_V12_BASE_TOOLS = [
+    *_V11_CLAUDE_TOOLS,
+    search_mcp_servers,
+    install_mcp_server,
+    list_mcp_servers,
+    remove_mcp_server,
+]
+
+
+def v12_base_tool_names() -> set[str]:
+    """Names of v12_claude's non-MCP tools — seeds MCPManager's collision check
+    so a server can never shadow a native AUG tool."""
+    return {t.name for t in _V12_BASE_TOOLS}
+
+
+def configure_mcp_tools(tools: list[BaseTool]) -> None:
+    """Rebuild v12_claude with the MCP tools MCPManager actually connected.
+
+    Called once from aug/app.py's lifespan(), after MCPManager.load_all()
+    resolves which configured servers are reachable. Before this runs (e.g. in
+    tests, or if a server config exists but the app hasn't booted through
+    lifespan) v12_claude simply has no MCP-sourced tools yet — same graceful
+    degradation as "every MCP server failed to connect".
+    """
+    _REGISTRY["v12_claude"] = _build_v12_claude(tools)
+
+
 _REGISTRY: dict[str, BaseAgent] = {
     "fake": FakeAgent(),
     "subagent": _subagent_claude,
@@ -525,3 +563,21 @@ def get_agent(name: str) -> BaseAgent:
         registered = ", ".join(_REGISTRY)
         raise ValueError(f"Unknown agent '{name}'. Registered agents: {registered}")
     return _REGISTRY[name]
+
+
+def _build_v12_claude(mcp_tools: list[BaseTool]) -> AugAgent:
+    return AugAgent(
+        model="claude-sonnet-4-6",
+        tools=[*_V12_BASE_TOOLS, *mcp_tools],
+        temperature=0.0,
+        recursion_limit=100,
+        compaction_model="claude-haiku-4-5",
+        compaction_threshold=0.7,
+        context_window=500_000,
+        max_summary_tokens=2000,
+    )
+
+
+# Seeds v12_claude with no MCP tools until aug/app.py's lifespan() calls
+# configure_mcp_tools() again with whatever MCPManager actually connected.
+configure_mcp_tools([])
