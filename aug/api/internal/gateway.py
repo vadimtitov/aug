@@ -10,7 +10,6 @@ unreachable from the internet, rather than being defended by a reverse-proxy rul
 
 import asyncio
 import logging
-import os
 import secrets
 import socket
 
@@ -31,6 +30,7 @@ from aug.core.oauth.store import (
     list_connections,
     load_token,
 )
+from aug.utils.hushed import read_secret
 from aug.utils.oauth import OAuthClient
 
 logger = logging.getLogger(__name__)
@@ -279,8 +279,8 @@ async def _revoke(state, config: ProviderConfig, provider: str, access_token: st
     """Best-effort revocation.  False when unsupported or the provider refused."""
     if not config.revoke_url:
         return False
-    client_id = os.environ.get(config.client_id_env or f"{provider.upper()}_CLIENT_ID", "")
-    secret = os.environ.get(config.client_secret_env or f"{provider.upper()}_CLIENT_SECRET", "")
+    client_id = read_secret(config.client_id_env or f"{provider.upper()}_CLIENT_ID")
+    secret = read_secret(config.client_secret_env or f"{provider.upper()}_CLIENT_SECRET")
     try:
         async with httpx.AsyncClient(
             transport=state.oauth_transport, timeout=_TIMEOUT, follow_redirects=False
