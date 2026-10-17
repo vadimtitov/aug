@@ -3,7 +3,7 @@
 import json
 from unittest.mock import patch
 
-from aug.utils.state import AppState, TelegramChatState, load_state, save_state
+from aug.utils.state import AppState, McpOperation, TelegramChatState, load_state, save_state
 
 
 def test_load_returns_defaults_when_file_empty():
@@ -73,6 +73,36 @@ def test_save_round_trips_consolidation_timestamps():
     loaded = AppState.model_validate_json(written[0])
     assert loaded.consolidation.last_light_run == "2026-04-13T00:24:51+00:00"
     assert loaded.consolidation.last_deep_run == "2026-04-13T00:26:53+00:00"
+
+
+def test_load_returns_no_mcp_operations_by_default():
+    with patch("aug.utils.state.read_data_file", return_value=""):
+        s = load_state()
+    assert s.mcp.operations == []
+
+
+def test_save_round_trips_mcp_operation():
+    written: list[str] = []
+    s = AppState()
+    s.mcp.operations.append(
+        McpOperation(
+            id="abc123",
+            action="install",
+            server_name="postgres",
+            state="restart_pending",
+            created_at=1700000000.0,
+        )
+    )
+
+    with patch("aug.utils.state.write_data_file", side_effect=lambda _f, d: written.append(d)):
+        save_state(s)
+
+    loaded = AppState.model_validate_json(written[0])
+    op = loaded.mcp.operations[0]
+    assert op.id == "abc123"
+    assert op.action == "install"
+    assert op.server_name == "postgres"
+    assert op.state == "restart_pending"
 
 
 def test_save_writes_to_state_file():

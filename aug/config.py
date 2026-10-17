@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     PORTAINER_URL: str | None = None
     PORTAINER_API_TOKEN: str | None = None
 
+    # This AUG instance's own container + Portainer environment name, so the MCP
+    # install/remove flow can restart it (optional — falls back to a manual-restart
+    # message if either is absent).
+    AUG_CONTAINER: str | None = None
+    AUG_ENVIRONMENT: str | None = None
+
     # Base URL used for OAuth redirect URIs and auth links sent to users.
     # Defaults to auto-detected LAN IP on port 8012.
     BASE_URL: str = ""

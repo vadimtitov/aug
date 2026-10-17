@@ -39,7 +39,7 @@ def client():
         patch("aug.app.init_memory_files"),
         patch("aug.app.start_consolidation_scheduler", new=AsyncMock(return_value=MagicMock())),
         patch("aug.app.start_scheduler", new=AsyncMock(return_value=MagicMock())),
-        patch("aug.app.set_push_app"),
+        patch("aug.app.set_app"),
         patch("aug.app.set_pool"),
         patch("aug.app.serve_gateway", new=AsyncMock()),
         patch.object(TelegramInterface, "start_polling", new=AsyncMock()),

@@ -203,15 +203,13 @@ async def test_reconcile_still_schedules_future_and_recurring_tasks():
 @pytest.fixture()
 def fired():
     """Patch fire_task's collaborators; yield (mark_fired mock, fire_push mock)."""
-    from aug.core import dispatch
-
     conn = MagicMock()
     pool = MagicMock()
     pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
     pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
 
     with (
-        patch.object(dispatch, "_app", MagicMock()),
+        patch("aug.core.dispatch.get_app", return_value=MagicMock()),
         patch("aug.core.dispatch.get_pool", return_value=pool),
         patch("aug.core.dispatch.fire_push", new=AsyncMock()) as fire_push,
         patch("aug.core.dispatch.mark_fired", new=AsyncMock()) as mark_fired,

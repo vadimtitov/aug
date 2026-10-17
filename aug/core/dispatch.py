@@ -38,6 +38,7 @@ from aug.core.agents.base_agent import BaseAgent
 from aug.core.events import AgentEvent
 from aug.core.registry import get_agent
 from aug.core.state import AgentState
+from aug.utils.app_ref import get_app
 from aug.utils.db import get_pool
 from aug.utils.tasks import ScheduledTask, get_task, mark_fired
 
@@ -57,16 +58,6 @@ TASK_RETRY_JOB_PREFIX = "retry-"
 # Regex to extract the chat_id portion from a tg-{chat_id}-… thread ID.
 _TG_CHAT_ID_RE = re.compile(r"^tg-(-?\d+)-")
 
-# FastAPI app reference stored at startup so APScheduler job functions can
-# reach app state without needing it as a serialisable argument.
-_app: FastAPI | None = None
-
-
-def set_app(app: FastAPI) -> None:
-    """Store the FastAPI app for use by APScheduler job functions."""
-    global _app
-    _app = app
-
 
 async def fire_task(task_id: str, retry_count: int = 0) -> None:
     """Entry point called by APScheduler when a scheduled task fires.
@@ -75,7 +66,8 @@ async def fire_task(task_id: str, retry_count: int = 0) -> None:
     fire_push.  On delivery failure, schedules an exponential-backoff retry job
     (up to _MAX_TASK_RETRIES attempts) before dead-lettering.
     """
-    if _app is None:
+    app = get_app()
+    if app is None:
         logger.error("fire_task: app not registered (task_id=%s)", task_id)
         return
 
@@ -94,7 +86,7 @@ async def fire_task(task_id: str, retry_count: int = 0) -> None:
     logger.info("fire_task: firing task_id=%s name=%s attempt=%d", task_id, task.name, retry_count)
     try:
         await fire_push(
-            _app,
+            app,
             interface=task.interface,
             thread_id=task.thread_id,
             message=task.message,
@@ -274,7 +266,7 @@ def _schedule_task_retry(task_id: str, retry_count: int) -> None:
     retry_at = datetime.now(UTC) + timedelta(minutes=delay)
     next_attempt = retry_count + 1
     job_id = f"{TASK_RETRY_JOB_PREFIX}{task_id}-{next_attempt}"
-    _app.state.scheduler.add_job(  # type: ignore[union-attr]
+    get_app().state.scheduler.add_job(  # type: ignore[union-attr]
         fire_task,
         "date",
         run_date=retry_at,
