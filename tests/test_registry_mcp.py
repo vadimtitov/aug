@@ -64,7 +64,18 @@ def test_v12_base_tool_names_excludes_mcp_sourced_tools():
     assert "_fake_mcp_tool" not in names
 
 
-def test_v11_claude_tools_list_is_a_strict_prefix_of_v12_base():
-    """Documents the intended relationship: v12 = v11 + MCP management tools."""
+def test_v12_base_is_v11_without_browser_plus_mcp_management_tools():
+    """Documents the intended relationship: v12 = v11 - browser + MCP management tools."""
     v11_names = {t.name for t in _V11_CLAUDE_TOOLS}
-    assert v11_names.issubset(v12_base_tool_names())
+    assert v12_base_tool_names() == (v11_names - {"browser"}) | {
+        "search_mcp_servers",
+        "install_mcp_server",
+        "list_mcp_servers",
+        "remove_mcp_server",
+    }
+
+
+def test_v12_claude_has_no_browser_tool_but_v11_keeps_it():
+    configure_mcp_tools([])
+    assert "browser" not in {t.name for t in get_agent("v12_claude").tools}
+    assert "browser" in {t.name for t in get_agent("v11_claude").tools}

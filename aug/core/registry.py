@@ -357,11 +357,12 @@ _V11_KIMI_TOOLS = [
     make_run_subagent_tool(_subagent_kimi),
 ]
 
-# v12_claude = v11_claude's tools + MCP management tools + whatever MCP servers
-# are actually reachable at startup. V11 agents are immutable and untouched —
+# v12_claude = v11_claude's tools minus browser + MCP management tools + whatever
+# MCP servers are actually reachable at startup. Browsing comes from an MCP
+# server (e.g. @playwright/mcp) instead. V11 agents are immutable and untouched —
 # this is a new version, not a modification of _V11_CLAUDE_TOOLS.
 _V12_BASE_TOOLS = [
-    *_V11_CLAUDE_TOOLS,
+    *(t for t in _V11_CLAUDE_TOOLS if t is not browser),
     search_mcp_servers,
     install_mcp_server,
     list_mcp_servers,
