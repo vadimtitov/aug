@@ -204,6 +204,17 @@ def test_load_image_gen_model():
     assert s.tools.image_gen.model == "dall-e-3"
 
 
+def test_knowledge_base_models_default_and_load():
+    assert (
+        AppSettings().knowledge_base.extraction_model == "accounts/fireworks/models/glm-5p3-flash"
+    )
+    raw = json.dumps({"knowledge_base": {"vision_model": "v", "embedding_model": "ignored"}})
+    with patch("aug.utils.file_settings.read_data_file", return_value=raw):
+        s = load_settings()
+    assert s.knowledge_base.vision_model == "v"
+    assert "embedding_model" not in s.model_dump()["knowledge_base"]
+
+
 def test_load_bash_blacklist():
     raw = json.dumps({"tools": {"bash": {"blacklist": ["rm -rf", "sudo"]}}})
     with patch("aug.utils.file_settings.read_data_file", return_value=raw):

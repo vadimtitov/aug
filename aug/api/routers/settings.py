@@ -1,12 +1,14 @@
-"""Settings router — GET/PUT /settings and GET /models."""
+"""Settings router — GET/PUT /settings, GET /models, GET /settings/knowledge-base/fixed."""
 
 import logging
+from dataclasses import asdict
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from aug.api.security import require_api_key
 from aug.config import get_settings
+from aug.core.kb.service import KB_FIXED_MODELS
 from aug.utils.file_settings import AppSettings, load_settings, save_settings
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,13 @@ async def write_settings(data: dict) -> dict:
     """Overwrite the full user settings object."""
     save_settings(AppSettings.model_validate(data))
     return data
+
+
+@router.get("/settings/knowledge-base/fixed")
+async def knowledge_base_fixed_models() -> dict[str, str]:
+    """The KB models that cannot be picked, for read-only display.  Kept out of
+    /settings so they are never written to settings.json."""
+    return asdict(KB_FIXED_MODELS)
 
 
 @router.get("/models")

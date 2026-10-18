@@ -264,6 +264,7 @@ only when there is a clear, immediate reason.
 | `LLM_API_KEY` | Yes | Passed to OpenAI client (dummy string if LiteLLM handles auth) |
 | `LLM_BASE_URL` | Yes | LiteLLM proxy URL, e.g. `http://litellm:4000` |
 | `DATABASE_URL` | Yes | `postgresql+asyncpg://user:pass@host:5432/dbname` |
+| `KB_DATABASE_URL` | No | Knowledge base DB — a separate Postgres with pgvector, e.g. `postgresql+asyncpg://user:pass@host:5433/aug_kb` |
 | `TELEGRAM_BOT_TOKEN` | No | Bot disabled if absent |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | No | Comma-separated chat IDs allowed to use the bot. If unset, all chats are allowed. Get your ID from `@userinfobot` |
 | `BRAVE_API_KEY` | No | Web search tool disabled if absent |

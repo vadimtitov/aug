@@ -1262,6 +1262,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             interface="telegram",
             decision=decision,
             context=update,
+            user_id=str(query.from_user.id) if query.from_user else "",
         )
 
     @restricted

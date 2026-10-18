@@ -1,0 +1,270 @@
+# Knowledge-base eval dataset. Everything here is invented.
+#
+# events: sent in order, each in its own fresh chat, then backdated to `at`.
+#   save      — should the agent call kb_write (default true)
+#   file      — a fixture from fixtures.py, sent as an attachment
+#   facts     — strings that must appear in a live, current fact afterwards
+#   stored    — strings that must appear in the stored, searchable text
+#   closed    — strings that must appear in a superseded (closed) fact
+#   forget    — strings that must no longer be findable afterwards
+#   ask       — the write should come back asking which entity was meant
+#
+# questions: each asked in a brand-new chat, after all events.
+#   must      — every item must appear in the answer; a list item is any-of
+#   must_not  — none may appear
+#   evidence  — must appear in what kb_query / kb_get returned (default: must[0])
+#   file      — the fixture respond_with_file should send back
+#   judge     — what a correct answer does, for the LLM judge
+
+persona: >-
+  Max Orlov, 34, lives in London, speaks English and Russian. Partner Lena Orlova,
+  daughter Sofia (born Feb 2026), sister Katya. Works at Northwind Fintech.
+
+events:
+  # ── April ──────────────────────────────────────────────────────────────
+  - {id: d02, kind: text_pdf, at: 2026-04-02, file: tenancy_agreement.pdf,
+     message: "our tenancy agreement, keep it somewhere",
+     stored: ["1,850", "Whitlock"]}
+  - {id: f01, kind: fact, at: 2026-04-03,
+     message: "Anna Logunova's phone number is +44 7700 900123",
+     facts: ["+44 7700 900123"]}
+  - {id: f02, kind: fact, at: 2026-04-05,
+     message: "Anna Schmidt is my colleague at Northwind, she runs the payments team. Her email is anna.schmidt@northwind.example",
+     facts: ["anna.schmidt@northwind.example"]}
+  - {id: f03, kind: fact, at: 2026-04-08,
+     message: "our home wifi password is KettleDrum42",
+     facts: ["KettleDrum42"]}
+  - {id: f04, kind: fact, at: 2026-04-12,
+     message: "John Bakker lives at 14 Elm Road, Bristol BS3 4QT",
+     facts: ["14 Elm Road"]}
+  - {id: f05, kind: fact, at: 2026-04-15,
+     message: "Lena's number is +44 7700 900456",
+     facts: ["+44 7700 900456"]}
+  - {id: f06, kind: fact, at: 2026-04-20,
+     message: "for the record: my partner is Lena Orlova and our daughter Sofia was born on 2 February 2026",
+     facts: [["2026-02-02", "2 February 2026"]]}
+  - {id: f07, kind: fact, at: 2026-04-25,
+     message: "my sister Katya lives in Berlin, Kastanienallee 45",
+     facts: ["Kastanienallee 45"]}
+  - {id: f13, kind: fact, at: 2026-04-28,
+     message: "my manager at Northwind is David Chen",
+     facts: []}
+  # ── May ────────────────────────────────────────────────────────────────
+  - {id: f08, kind: fact, at: 2026-05-02,
+     message: "note: the staging database for project Atlas runs on host atlas-stg.internal, port 6543",
+     facts: ["6543"]}
+  - {id: r01, kind: russian, at: 2026-05-05,
+     message: "у Кати день рождения 12 марта",
+     facts: [["03-12", "12 March", "March 12", "12 марта"]]}
+  - {id: f09, kind: fact, at: 2026-05-10,
+     message: "sourdough recipe I like: 500g flour, 350g water, 100g starter, 10g salt, bake at 240C for 40 minutes",
+     stored: ["350g water"]}
+  - {id: f14, kind: fact, at: 2026-05-14,
+     message: "David Okafor is Lena's brother, he lives in Leeds",
+     facts: ["Leeds"]}
+  - {id: f10, kind: fact, at: 2026-05-18,
+     message: "my car is a blue VW Golf, reg LK19 XRT",
+     facts: ["LK19 XRT"]}
+  - {id: f11, kind: fact, at: 2026-05-25,
+     message: "my GP is Dr Hannah Moss at Ferndale Medical Centre",
+     facts: []}
+  - {id: n01, kind: no_save, at: 2026-05-27, save: false,
+     message: "how many ounces in a kilogram?"}
+  # ── June ───────────────────────────────────────────────────────────────
+  - {id: f12, kind: fact, at: 2026-06-01,
+     message: "a line from Thinking in Systems worth keeping: a stock is the memory of the history of changing flows within the system",
+     stored: ["memory of the history"]}
+  - {id: r02, kind: russian, at: 2026-06-03,
+     message: "мамин телефон +7 916 555-12-34",
+     facts: ["555-12-34"]}
+  - {id: p01, kind: passing, at: 2026-06-05,
+     message: "ugh, dentist again on Thursday 3pm, Dr Patel on Clapham High St",
+     facts: []}
+  - {id: n02, kind: no_save, at: 2026-06-07, save: false,
+     message: "tell me a joke"}
+  - {id: p02, kind: passing, at: 2026-06-10,
+     message: "just back from Anna Logunova's housewarming, her new flat in Hackney is amazing",
+     facts: ["Hackney"]}
+  - {id: p03, kind: passing, at: 2026-06-14,
+     message: "lol John says his cat Biscuit knocked the plant over again",
+     facts: ["Biscuit"]}
+  - {id: d06, kind: text_pdf, at: 2026-06-15, file: car_insurance.pdf,
+     message: "car insurance renewal",
+     stored: ["AV-55128-K"]}
+  - {id: n03, kind: no_save, at: 2026-06-18, save: false,
+     message: "honestly pineapple on pizza is fine, fight me"}
+  - {id: p05, kind: passing, at: 2026-06-28,
+     message: "btw Sofia's nursery, Little Acorns, closes at 6pm on Fridays so I need to leave early",
+     facts: []}
+  # ── July ───────────────────────────────────────────────────────────────
+  - {id: r03, kind: russian, at: 2026-07-01, file: garage_rent_ru.pdf,
+     message: "договор на гараж",
+     stored: ["15 000"]}
+  - {id: p06, kind: passing, at: 2026-07-04,
+     message: "Lena has her heart set on the green Hyde sofa from Habitat, £1,299, ouch",
+     facts: []}
+  - {id: p07, kind: passing, at: 2026-07-12,
+     message: "my bike lock code is 4471, I always forget it",
+     facts: ["4471"]}
+  - {id: p08, kind: passing, at: 2026-07-20,
+     message: "had lunch with Anna Schmidt, she's moving to the Lisbon office in January",
+     facts: ["Lisbon"]}
+  - {id: d01, kind: text_pdf, at: 2026-07-28, file: klm_eticket.pdf,
+     message: "my flight to Amsterdam for August",
+     stored: ["KX7Q2P", "412.80"]}
+  # ── August ─────────────────────────────────────────────────────────────
+  - {id: u01, kind: update, at: 2026-08-02,
+     message: "John Bakker moved — his new address is 7 Canal Street, Manchester M1 3HE",
+     facts: ["7 Canal Street"], closed: ["14 Elm Road"]}
+  - {id: u02, kind: update, at: 2026-08-09,
+     message: "Lena got a new phone number: +44 7700 900789",
+     facts: ["+44 7700 900789"], closed: ["+44 7700 900456"]}
+  - {id: i01, kind: image, at: 2026-08-14, file: boarding_pass.png,
+     message: "boarding pass",
+     stored: ["D7", "14C"]}
+  - {id: d04, kind: text_pdf, at: 2026-08-20, file: hotel_invoice.pdf,
+     message: "hotel invoice from the Amsterdam trip",
+     stored: ["640.00"]}
+  - {id: i03, kind: image, at: 2026-08-25, file: office_wifi.png,
+     message: "office guest wifi",
+     stored: ["Ledger#2026"]}
+  - {id: a01, kind: ambiguous, at: 2026-08-30, ask: true,
+     message: "Anna's birthday is on 9 November"}
+  # ── September ──────────────────────────────────────────────────────────
+  - {id: u03, kind: update, at: 2026-09-01,
+     message: "we sold the Golf. now driving a red Toyota Yaris, reg MV23 PLK",
+     facts: ["MV23 PLK"]}
+  - {id: d05, kind: text_pdf, at: 2026-09-05, file: sofia_vaccinations.pdf,
+     message: "Sofia's vaccination record",
+     stored: ["MMR"]}
+  - {id: s01, kind: scan, at: 2026-09-12, file: hardware_receipt_scan.pdf,
+     message: "receipt for the shelves",
+     stored: ["37.40"]}
+  - {id: u04, kind: update, at: 2026-09-15,
+     message: "changed the home wifi password to OtterLamp77",
+     facts: ["OtterLamp77"], closed: ["KettleDrum42"]}
+  - {id: u05, kind: update, at: 2026-09-20,
+     message: "Katya moved from Berlin to Vienna, she's at Praterstraße 12 now",
+     facts: ["Praterstraße 12"]}
+  - {id: i02, kind: image, at: 2026-09-21, file: restaurant_receipt.png,
+     message: "dinner last night",
+     stored: ["86.50"]}
+  - {id: a02, kind: ambiguous, at: 2026-09-25, ask: true,
+     message: "David is coming for dinner on Saturday, he's vegetarian"}
+  - {id: n04, kind: no_save, at: 2026-09-26, save: false,
+     message: "thanks!"}
+  - {id: d03, kind: text_pdf, at: 2026-09-30, file: payslip_2026_09.pdf,
+     message: "september payslip",
+     stored: ["4,210.55"]}
+  # ── October ────────────────────────────────────────────────────────────
+  - {id: s02, kind: scan, at: 2026-10-02, file: council_letter_scan.pdf,
+     message: "letter from the council",
+     stored: ["9917-3342", "Band D"]}
+  - {id: i04, kind: image, at: 2026-10-03, file: parking_ticket.png,
+     message: "got a parking ticket, ugh",
+     stored: ["WB48213977"]}
+  - {id: n05, kind: no_save, at: 2026-10-04, save: false,
+     message: "what's the weather usually like in Lisbon in January?"}
+  - {id: i05, kind: image, at: 2026-10-06, file: atlas_whiteboard.png,
+     message: "whiteboard from today's Atlas planning",
+     stored: ["30 Nov"]}
+  - {id: n06, kind: no_save, at: 2026-10-07, save: false,
+     message: "I'm so tired today"}
+  - {id: g01, kind: forget, at: 2026-10-08,
+     message: "forget the parking ticket I sent you",
+     forget: ["WB48213977"]}
+  - {id: g02, kind: forget, at: 2026-10-09,
+     message: "please forget Katya's old Berlin address",
+     forget: ["Kastanienallee"]}
+
+questions:
+  # ── direct fact ────────────────────────────────────────────────────────
+  - {id: q01, cat: direct, ask: "what's Anna Logunova's number again?", must: ["900123"]}
+  - {id: q02, cat: direct, ask: "what's Lena's phone number?", must: ["900789"], must_not: ["900456"]}
+  - {id: q03, cat: direct, ask: "who's my GP?", must: ["Moss"]}
+  - {id: q04, cat: direct, ask: "which port is the Atlas staging db on?", must: ["6543"]}
+  - {id: q05, cat: direct, ask: "remind me my bike lock code", must: ["4471"]}
+  - {id: q06, cat: direct, ask: "what's Anna Schmidt's email?", must: ["anna.schmidt@northwind.example"]}
+  - {id: q07, cat: direct, ask: "when was Sofia born?", must: [["2 February", "February 2", "2026-02-02", "02/02/2026", "2nd February", "Feb 2"]], evidence: "02"}
+  - {id: q08, cat: direct, ask: "what time does the nursery close on Fridays?", must: [["6pm", "6 pm", "18:00", "6:00"]], evidence: "6"}
+  - {id: q09, cat: direct, ask: "which sofa did Lena want?", must: ["Hyde"]}
+  - {id: q10, cat: direct, ask: "in my sourdough recipe, how much water?", must: ["350"]}
+  # ── exact token ────────────────────────────────────────────────────────
+  - {id: q11, cat: exact_token, ask: "find the booking with KX7Q2P", must: ["Amsterdam"], evidence: "KX7Q2P"}
+  - {id: q12, cat: exact_token, ask: "what's LK19 XRT?", must: ["Golf"]}
+  - {id: q13, cat: exact_token, ask: "what's policy AV-55128-K for?", must: [["car", "Golf", "motor", "vehicle"]], evidence: "AV-55128-K"}
+  - {id: q14, cat: exact_token, ask: "what's account 9917-3342 about?", must: ["council tax"], evidence: "9917-3342"}
+  - {id: q15, cat: exact_token, ask: "which seat did I have on KL1006?", must: ["14C"]}
+  - {id: q16, cat: exact_token, ask: "what runs on atlas-stg.internal?", must: ["staging"], evidence: "atlas-stg"}
+  # ── current vs old ─────────────────────────────────────────────────────
+  - {id: q17, cat: current_vs_old, ask: "where does John live now?", must: ["Canal Street"]}
+  - {id: q18, cat: current_vs_old, ask: "where did John Bakker live before?", must: ["Elm Road"]}
+  - {id: q19, cat: current_vs_old, ask: "what car do I drive?", must: ["Yaris"]}
+  - {id: q20, cat: current_vs_old, ask: "what was my previous car?", must: ["Golf"]}
+  - {id: q21, cat: current_vs_old, ask: "what's the home wifi password?", must: ["OtterLamp77"]}
+  - {id: q22, cat: current_vs_old, ask: "where does Katya live?", must: ["Vienna"]}
+  # ── get the file back ──────────────────────────────────────────────────
+  - {id: q23, cat: file, ask: "send me that plane ticket to Amsterdam", file: klm_eticket.pdf}
+  - {id: q24, cat: file, ask: "can you send me the tenancy agreement again?", file: tenancy_agreement.pdf}
+  - {id: q25, cat: file, ask: "send me my September payslip", file: payslip_2026_09.pdf}
+  - {id: q26, cat: file, ask: "I need the Amsterdam hotel invoice, send it over", file: hotel_invoice.pdf}
+  - {id: q27, cat: file, ask: "send me Sofia's vaccination record", file: sofia_vaccinations.pdf}
+  - {id: q28, cat: file, ask: "send me the letter from the council", file: council_letter_scan.pdf}
+  - {id: q29, cat: file, ask: "send me the boarding pass", file: boarding_pass.png}
+  - {id: q30, cat: file, ask: "send me the photo of the Atlas whiteboard", file: atlas_whiteboard.png}
+  # ── time filter ────────────────────────────────────────────────────────
+  - {id: q31, cat: time, ask: "what receipts did I send you in September?", must: [["hardware", "shelves", "37.40"], ["Lupa", "86.50", "dinner"]], evidence: "37.40"}
+  - {id: q32, cat: time, ask: "what did I send you in August?", must: [["hotel", "640"], ["boarding", "KL1006"]], evidence: "640"}
+  - {id: q33, cat: time, ask: "what documents or photos did I send in October?", must: [["council", "9917"], ["whiteboard", "Atlas"]], must_not: ["WB48213977", "parking"], evidence: "9917-3342"}
+  - {id: q34, cat: time, ask: "which of my documents are about things happening in August 2026?", must: [["ticket", "flight", "KX7Q2P"], ["hotel", "invoice"]], evidence: "KX7Q2P"}
+  - {id: q35, cat: time, ask: "what did I save about my car back in June?", must: [["insurance", "AV-55128-K"]], evidence: "AV-55128-K"}
+  - {id: q36, cat: time, ask: "anything from July?", must: [["garage", "гараж"], ["ticket", "flight", "Amsterdam"]], evidence: "KX7Q2P"}
+  # ── relationship ───────────────────────────────────────────────────────
+  - {id: q37, cat: relationship, ask: "which trip was that 640 euro hotel invoice for?", must: ["Amsterdam"], evidence: "640"}
+  - {id: q38, cat: relationship, ask: "who is Anna Schmidt?", must: [["colleague", "Northwind", "payments"]], evidence: "Schmidt"}
+  - {id: q39, cat: relationship, ask: "who's my manager?", must: ["David Chen"]}
+  - {id: q40, cat: relationship, ask: "who is David Okafor?", must: [["brother", "Lena"]], evidence: "Okafor"}
+  - {id: q41, cat: relationship, ask: "what's my landlord's name?", must: ["Whitlock"]}
+  - {id: q42, cat: relationship, ask: "who owns the Atlas launch?", must: ["Anna Schmidt"], evidence: "Schmidt"}
+  - {id: q43, cat: relationship, ask: "what's John's cat called?", must: ["Biscuit"]}
+  - {id: q44, cat: relationship, ask: "which office is Anna Schmidt moving to?", must: ["Lisbon"]}
+  # ── paraphrase (answer lives inside a document) ────────────────────────
+  - {id: q45, cat: paraphrase, ask: "how much is our rent?", must: [["1,850", "1850"]]}
+  - {id: q46, cat: paraphrase, ask: "how much did I take home in September?", must: [["4,210.55", "4210.55"]]}
+  - {id: q47, cat: paraphrase, ask: "what council tax band are we?", must: ["D"], evidence: "Band D"}
+  - {id: q48, cat: paraphrase, ask: "what did the Amsterdam hotel cost in total?", must: ["640"]}
+  - {id: q49, cat: paraphrase, ask: "how much was dinner at Lupa?", must: ["86.50"]}
+  - {id: q50, cat: paraphrase, ask: "which jab did Sofia get in September?", must: ["MMR"]}
+  - {id: q51, cat: paraphrase, ask: "how much do I pay for the garage?", must: [["15 000", "15000", "15,000"]]}
+  - {id: q52, cat: paraphrase, ask: "what's the Atlas launch deadline?", must: [["30 Nov", "November 30", "30th Nov"]]}
+  - {id: q53, cat: paraphrase, ask: "what did the shelf stuff from the hardware shop cost?", must: ["37.40"]}
+  - {id: q54, cat: paraphrase, ask: "when did our tenancy start?", must: [["1 January 2026", "January 1", "2026-01-01", "1st January"]], evidence: "January 2026"}
+  # ── cross-language ─────────────────────────────────────────────────────
+  - {id: q55, cat: cross_language, ask: "когда у Кати день рождения?", must: [["12 марта", "12.03", "12 March", "March 12"]], evidence: "03-12"}
+  - {id: q56, cat: cross_language, ask: "what's my mum's phone number?", must: ["555-12-34"]}
+  - {id: q57, cat: cross_language, ask: "where is the garage I rent?", must: [["Ленина", "Lenina", "Tver", "Тверь"]], evidence: "Ленина"}
+  - {id: q58, cat: cross_language, ask: "какой сейчас пароль от домашнего wifi?", must: ["OtterLamp77"]}
+  # ── images ─────────────────────────────────────────────────────────────
+  - {id: q59, cat: image, ask: "what's the office guest wifi password?", must: ["Ledger#2026"]}
+  - {id: q60, cat: image, ask: "which gate did my Amsterdam flight leave from?", must: ["D7"]}
+  - {id: q61, cat: image, ask: "what's the guest network called at the office?", must: ["NWF-Guest"]}
+  - {id: q62, cat: image, ask: "when was boarding for the Amsterdam flight?", must: ["07:25"]}
+  - {id: q63, cat: image, ask: "when is the go/no-go for Atlas?", must: ["27 Nov"]}
+  - {id: q64, cat: image, ask: "what wine did we have at Trattoria Lupa?", must: ["Nero d'Avola"]}
+  # ── never told ─────────────────────────────────────────────────────────
+  - {id: q65, cat: never_told, ask: "what's my passport number?", judge: "says it does not know / has no record; gives no number"}
+  - {id: q66, cat: never_told, ask: "what's Anna Logunova's email?", judge: "says it has no email for Anna Logunova; may offer her phone"}
+  - {id: q67, cat: never_told, ask: "when is Lena's birthday?", judge: "says it does not know Lena's birthday"}
+  - {id: q68, cat: never_told, ask: "what's my National Insurance number?", judge: "says it does not know; gives no number"}
+  - {id: q69, cat: never_told, ask: "what's John Bakker's phone number?", judge: "says it has no phone number for John Bakker"}
+  - {id: q70, cat: never_told, ask: "what's the door code at the office?", judge: "says it does not know the office door code (the guest wifi password is not a door code)"}
+  - {id: q71, cat: never_told, ask: "which hospital was Sofia born in?", judge: "says it does not know"}
+  - {id: q72, cat: never_told, ask: "what's my blood type?", judge: "says it does not know"}
+  # ── forgotten ──────────────────────────────────────────────────────────
+  - {id: q73, cat: forgotten, ask: "what was on that parking ticket?", must_not: ["WB48213977", "Acre Lane"], judge: "says it has no parking ticket on record"}
+  - {id: q74, cat: forgotten, ask: "how much was my parking fine?", must_not: ["32.50"], judge: "says it has no parking fine on record"}
+  - {id: q75, cat: forgotten, ask: "where did Katya live before Vienna?", must_not: ["Kastanienallee"], judge: "does not give the forgotten Berlin street address"}
+  # ── ambiguous ──────────────────────────────────────────────────────────
+  - {id: q76, cat: ambiguous, ask: "what's Anna's address?", judge: "asks which Anna (Logunova or Schmidt) or answers for both clearly separated; never attributes one Anna's details to the other"}
+  - {id: q77, cat: ambiguous, ask: "where does David live?", judge: "asks which David or distinguishes David Okafor (Leeds) from David Chen (unknown); never says David Chen lives in Leeds"}
+  - {id: q78, cat: ambiguous, ask: "when is Anna's birthday?", judge: "asks which Anna or says it doesn't have a birthday it can tie to a specific Anna; never invents a date"}

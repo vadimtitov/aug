@@ -19,6 +19,15 @@ class ChatRequest(BaseModel):
         description="Agent version string. Omit to use the version selected for this thread.",
     )
     attachments: list[Attachment] = Field(default_factory=list)
+    user_id: str | None = Field(
+        default=None,
+        max_length=128,
+        pattern=r"^[\w\-]+$",
+        description=(
+            "Who is talking — owns the knowledge base the agent reads and writes. Omit to "
+            "use the thread id, so each thread is its own user."
+        ),
+    )
 
 
 class ToolCallInfo(BaseModel):

@@ -8,12 +8,14 @@ from langchain_core.tools import BaseTool
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.agents.chat_agent import AugAgent
 from aug.core.agents.fake_agent import FakeAgent
+from aug.core.agents.kb_agent import KbAugAgent
 from aug.core.reflexes.homeassistant import homeassistant_reflex
 from aug.core.tools.brave_search import brave_search
 from aug.core.tools.browser import browser
 from aug.core.tools.fetch_page import fetch_page
 from aug.core.tools.gmail import gmail_draft, gmail_read_thread, gmail_search, gmail_send
 from aug.core.tools.image_gen import edit_image, generate_image
+from aug.core.tools.kb import KB_TOOLS
 from aug.core.tools.mcp import (
     install_mcp_server,
     list_mcp_servers,
@@ -468,6 +470,12 @@ def v12_base_tool_names() -> set[str]:
     }
 
 
+def native_tool_names() -> set[str]:
+    """Every native tool an MCP-enabled agent (v12, v13) carries — MCPManager's
+    collision check, so a server can never shadow a native AUG tool."""
+    return v12_base_tool_names() | {t.name for t in KB_TOOLS}
+
+
 def configure_mcp_tools(tools: list[BaseTool]) -> None:
     """Rebuild the v12 agents with the MCP tools MCPManager actually connected.
 
@@ -478,6 +486,7 @@ def configure_mcp_tools(tools: list[BaseTool]) -> None:
     graceful degradation as "every MCP server failed to connect".
     """
     _REGISTRY.update(_build_v12_agents(tools))
+    _REGISTRY.update(_build_v13_agents(tools))
 
 
 _REGISTRY: dict[str, BaseAgent] = {
@@ -778,6 +787,86 @@ def _build_v12_agents(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:
     }
 
 
-# Seeds the v12 agents with no MCP tools until aug/app.py's lifespan() calls
+def _build_v13_agents(mcp_tools: list[BaseTool]) -> dict[str, KbAugAgent]:
+    """v13 = the matching v12 agent plus the knowledge base (KbAugAgent adds the five
+    KB tools and rebinds them every turn)."""
+    return {
+        "v13_claude": KbAugAgent(
+            model="claude-sonnet-4-6",
+            tools=[*_V12_CLAUDE_TOOLS, *mcp_tools],
+            temperature=0.0,
+            recursion_limit=100,
+            compaction_model="claude-haiku-4-5",
+            compaction_threshold=0.7,
+            context_window=500_000,
+            max_summary_tokens=2000,
+        ),
+        "v13_glm5": KbAugAgent(
+            model="accounts/fireworks/models/glm-5p3",
+            tools=[*_V12_GLM5_TOOLS, *mcp_tools],
+            temperature=0.0,
+            recursion_limit=100,
+            vision_description_model="gemini-2.5-flash",
+            compaction_model="accounts/fireworks/models/glm-5p3",
+            compaction_threshold=0.8,
+            context_window=200_000,
+            max_summary_tokens=2000,
+        ),
+        "v13_kimi": KbAugAgent(
+            model="accounts/fireworks/models/kimi-k3",
+            tools=[*_V12_KIMI_TOOLS, *mcp_tools],
+            temperature=0.0,
+            recursion_limit=100,
+            compaction_model="accounts/fireworks/models/kimi-k3",
+            compaction_threshold=0.8,
+            context_window=200_000,
+            max_summary_tokens=2000,
+        ),
+        "v13_deepseek": KbAugAgent(
+            model="accounts/fireworks/models/deepseek-v4p1-flash",
+            tools=[*_V12_DEEPSEEK_TOOLS, *mcp_tools],
+            temperature=0.0,
+            recursion_limit=100,
+            compaction_model="accounts/fireworks/models/deepseek-v4p1-flash",
+            compaction_threshold=0.8,
+            context_window=200_000,
+            max_summary_tokens=2000,
+        ),
+        "v13_glm5_flash": KbAugAgent(
+            model="accounts/fireworks/models/glm-5p3-flash",
+            tools=[*_V12_GLM5_FLASH_TOOLS, *mcp_tools],
+            temperature=0.0,
+            recursion_limit=100,
+            compaction_model="accounts/fireworks/models/glm-5p3-flash",
+            compaction_threshold=0.8,
+            context_window=200_000,
+            max_summary_tokens=2000,
+        ),
+        "v13_glm5_fast": KbAugAgent(
+            model="accounts/fireworks/routers/glm-5p3-fast",
+            tools=[*_V12_GLM5_FAST_TOOLS, *mcp_tools],
+            temperature=0.0,
+            recursion_limit=100,
+            vision_description_model="gemini-2.5-flash",
+            compaction_model="accounts/fireworks/routers/glm-5p3-fast",
+            compaction_threshold=0.8,
+            context_window=200_000,
+            max_summary_tokens=2000,
+        ),
+        "v13_kimi_fast": KbAugAgent(
+            model="accounts/fireworks/routers/kimi-k3-fast",
+            tools=[*_V12_KIMI_FAST_TOOLS, *mcp_tools],
+            temperature=0.0,
+            recursion_limit=100,
+            vision_description_model="gemini-2.5-flash",
+            compaction_model="accounts/fireworks/routers/kimi-k3-fast",
+            compaction_threshold=0.8,
+            context_window=200_000,
+            max_summary_tokens=2000,
+        ),
+    }
+
+
+# Seeds the v12 / v13 agents with no MCP tools until aug/app.py's lifespan() calls
 # configure_mcp_tools() again with whatever MCPManager actually connected.
 configure_mcp_tools([])

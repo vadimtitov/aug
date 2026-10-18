@@ -27,6 +27,8 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str  # postgresql+asyncpg://user:password@host:5432/dbname
+    # Knowledge base: a separate Postgres with the pgvector extension.
+    KB_DATABASE_URL: str | None = None
 
     # Telegram (all optional — bot is disabled if token is absent)
     TELEGRAM_BOT_TOKEN: str | None = None

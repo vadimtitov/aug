@@ -497,6 +497,143 @@ When in doubt, return empty actions. The main agent will handle it.\
 """
 
 
+# ---------------------------------------------------------------------------
+# Knowledge base
+# ---------------------------------------------------------------------------
+
+KB_VISION_PROMPT = """\
+You are reading an image so its contents can be stored in a searchable archive.
+First transcribe ALL visible text exactly as written — every number, code, name, date, \
+amount, identifier and label, keeping the original language and spelling. Then, under a \
+line "Description:", describe in 2-3 sentences what the image is and anything \
+significant in it that is not text. No commentary, no markdown headings.\
+"""
+
+KB_EXTRACTION_SYSTEM = """\
+You index a general-purpose knowledge base. It holds any kind of information — notes, \
+documents, images, records, references — about any subject. For each item you produce \
+a title, a summary, the entities it is about, and atomic facts.
+
+Facts are subject / predicate / value triples:
+- subject: "me" (the user, when the fact is about the user), "this" (the item itself), \
+or the ref of an entity you list.
+- predicate: a short snake_case relationship name. REUSE a KNOWN PREDICATE whenever one \
+means the same thing — never coin a synonym of an existing one — and use one predicate \
+per concept across all subjects.
+- value: the plain value, copied exactly as written (numbers, codes, identifiers and \
+spellings untouched); dates as YYYY-MM-DD when unambiguous. When the value is itself an \
+entity, set value_ref to that entity's ref.
+- single_valued: true when a new value replaces the old one, false when values accumulate.
+- still_true: false for a value the text says no longer holds (a former address, an old \
+number, something sold or ended); its replacement, if given, is a separate fact.
+- quote: the exact words the fact came from.
+
+Entities are the distinct things the item is about — people, organisations, places, \
+events, projects, products, concepts, anything with an identity of its own. Give each \
+its fullest name. A vague or generic reference ("work", "home", "the shop") is not an \
+entity unless it is identified.
+- If it is one of the KNOWN ENTITIES, set existing_id to that id. A shorter name or \
+alias matching exactly one known entity is that entity.
+- If a name could be more than one known entity and the item does not settle which, do \
+NOT guess: leave existing_id empty and list every possible id in candidates.
+- The same entity written in different languages or scripts is one entity.
+
+Facts describing the item itself (its identifiers, totals, dates, origin, purpose) take \
+subject "this". Facts about the world take the entity they are about.
+
+Extract what is informative and durable. Skip pleasantries, filler and transient \
+remarks. Never state a fact the text does not support.
+
+title: short and specific, in English.
+summary: one or two sentences, in English, naming the key specifics.
+dated_at: the date the content is about, YYYY-MM-DD, or null when there is none.
+chunk_contexts: only when CHUNKS are given — one sentence per chunk, in order, that \
+situates the chunk within the whole item.\
+"""
+
+KB_EXTRACTION_USER = """\
+Today is {today}.
+
+{body}
+
+Everything below is REFERENCE ONLY — the knowledge base's existing vocabulary, for \
+naming what the content above states. None of it is a fact about this item. Extract \
+only what the content above actually says.
+
+KNOWN ENTITIES (id | type | name | aliases):
+{entities}
+
+KNOWN PREDICATES (name | value type | single-valued | description):
+{predicates}\
+"""
+
+KB_EXTRACTION_NOTE_BODY = """\
+NOTE:
+{knowledge}\
+"""
+
+KB_EXTRACTION_FILE_BODY = """\
+FILE: {filename} ({mime})
+ACCOMPANYING NOTE: {knowledge}
+
+CONTENT ({n_chunks} CHUNKS, each starts with a [[chunk N]] marker):
+{chunked_text}\
+"""
+
+KB_AMBIGUOUS_ASK = (
+    'Which {name} is meant — {options}? Everything else was saved, but not this: "{quote}".'
+)
+
+KB_SYSTEM_PROMPT = """\
+You have a knowledge base (KB) — tools kb_write, kb_relate, kb_query, kb_get, \
+kb_forget. It is long-term memory for any information, and it outlives every \
+conversation: what is not in the KB is gone when this chat ends.
+
+Saving:
+- When you are given information worth keeping — a fact, a figure, an identifier, a \
+date, a relationship, a decision, a correction to something earlier — call kb_write \
+with it, stated plainly and self-contained (full names, no unresolved "he" or "it"), \
+even if it was mentioned in passing.
+- When you are given a file with information worth keeping, call kb_write with its \
+filepath and any note that accompanied it. kb_write itself reads PDFs (scanned \
+too), text files, images and audio — pass those as is; don't extract or describe them \
+first. Any other format comes back unsupported: the file is kept but findable only \
+by its name, so if you can read its content another way, kb_write that text as \
+knowledge.
+- kb_write extracts the facts itself. Use kb_relate only for a single fact it did \
+not capture, and never to re-check or re-enter what it already returned.
+- Updates and corrections also go through kb_write; the KB keeps prior values as history.
+- Other note or memory tools are not searchable through kb_query. Whatever is worth \
+keeping goes to kb_write, whether or not you also note it elsewhere or act on it \
+(a reminder, a task).
+- Don't save small talk, questions, or transient remarks.
+- If kb_write returns ask, relay that question. If it returns failed, say it was not \
+saved.
+- Confirm saves briefly; don't recite what was stored.
+
+Answering:
+- For anything that may have been shared before — facts, people, things, documents, \
+past messages — call kb_query (or kb_get when you have an id) BEFORE answering. Never \
+answer such a question from memory alone, and never say you don't know without having \
+searched.
+- Search with the request's distinctive words: names, identifiers, places, kinds of \
+item. If the first search misses, retry once with different words or filters.
+- Hits carry a snippet; kb_get a hit for its full facts or text when the snippet does \
+not settle it. Current facts answer "now"; prior values (or kb_get with as_of) answer \
+"before".
+- To hand back a stored file, kb_get it with with_text=false and pass its filepath to \
+respond_with_file.
+- If the KB has nothing, say so plainly. NEVER guess or invent a value.
+- If a name matches more than one entity, ask which is meant unless the question \
+settles it.
+
+Forgetting: when asked to forget something, find it, then kb_forget the node that \
+holds it — the item it came from, or the entity itself if the whole thing should go.\
+"""
+
+KB_INDEX_HEADER = "Entities already in the KB ({count}):"
+
+
 def _section(tag: str, content: str) -> str:
     indented = "\n".join(
         "  " + line if line.strip() else "" for line in content.strip().splitlines()

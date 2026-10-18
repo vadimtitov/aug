@@ -8,7 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronLeft } from "lucide-react";
-import { getSettings, putSettings } from "../api.ts";
+import { getKbFixedModels, getSettings, putSettings, type KbFixedModels } from "../api.ts";
 import { ModelSelect } from "../components/ModelSelect.tsx";
 import { EditableList } from "../components/EditableList.tsx";
 import { SshTargetList, type SshTarget } from "../components/SshTargetList.tsx";
@@ -57,6 +57,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [kbFixed, setKbFixed] = useState<KbFixedModels | "unavailable" | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -64,6 +65,9 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
     getSettings()
       .then((s) => { if (!cancelled) setSettings(s); })
       .catch((e: Error) => { if (!cancelled) setError(e.message); });
+    getKbFixedModels()
+      .then((m) => { if (!cancelled) setKbFixed(m); })
+      .catch(() => { if (!cancelled) setKbFixed("unavailable"); });
     return () => { cancelled = true; };
   }, []);
 
@@ -121,6 +125,11 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
   const browserModel = (getPath(settings, "tools", "browser", "model") as string) ?? "";
   const consolidationModel = (getPath(settings, "consolidation", "model") as string) ?? "";
   const imageGenModel = (getPath(settings, "tools", "image_gen", "model") as string) ?? "";
+  const kbExtractionModel =
+    (getPath(settings, "knowledge_base", "extraction_model") as string) ?? "";
+  const kbVisionModel = (getPath(settings, "knowledge_base", "vision_model") as string) ?? "";
+  const fixedModel = (key: keyof KbFixedModels) =>
+    kbFixed === null ? "…" : kbFixed === "unavailable" ? "Unavailable" : kbFixed[key];
   const bashBlacklist = (getPath(settings, "tools", "bash", "blacklist") as string[]) ?? [];
   const sshTargets = (getPath(settings, "tools", "ssh", "targets") as SshTarget[]) ?? [];
   const haLabel = (getPath(settings, "reflexes", "homeassistant", "entity_label") as string) ?? "";
@@ -159,6 +168,31 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
               value={imageGenModel}
               onChange={(v) => update(["tools", "image_gen", "model"], v)}
             />
+          </div>
+        </div>
+
+        {/* Knowledge base */}
+        <div className="settings-section">
+          <div className="settings-section-label">Knowledge Base</div>
+          <div className="settings-card">
+            <ModelSelect
+              label="Fact extraction"
+              value={kbExtractionModel}
+              onChange={(v) => update(["knowledge_base", "extraction_model"], v)}
+            />
+            <ModelSelect
+              label="Images and scans"
+              value={kbVisionModel}
+              onChange={(v) => update(["knowledge_base", "vision_model"], v)}
+            />
+            <div className="settings-row">
+              <span className="settings-row-label">Embeddings (fixed)</span>
+              <span className="settings-row-value">{fixedModel("embedding")}</span>
+            </div>
+            <div className="settings-row">
+              <span className="settings-row-label">Audio transcription (fixed)</span>
+              <span className="settings-row-value">{fixedModel("transcription")}</span>
+            </div>
           </div>
         </div>
 
