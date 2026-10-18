@@ -2,13 +2,13 @@
 
 BIN=/usr/bin/chromium
 
-_UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-
 run_chromium() {
   # Cleanup
-  if ! pgrep -x chromium > /dev/null;then
+  if ! pgrep chromium > /dev/null;then
     rm -f $HOME/.config/chromium/Singleton*
   fi
+
+  _UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
   # Run normally on privved containers or modified un non priv
   if grep -q 'Seccomp:.0' /proc/1/status; then
@@ -34,56 +34,20 @@ run_chromium() {
   fi
 }
 
-# Chrome exits when its last tab closes — which a CDP client (an agent closing
-# the tab it finished with) does routinely — and nothing else relaunches it, so
-# CDP would stay dead until the container restarts. The CDP-enabled launch (the
-# desktop autostart) therefore supervises Chrome; any other launch, e.g. the
-# desktop menu's argument-less one, just runs once.
-CDP_PORT=$(sed -n 's/.*--remote-debugging-port=\([0-9]*\).*/\1/p' <<< "$*")
-
-cdp_up() {
-  (exec 3<> "/dev/tcp/127.0.0.1/${CDP_PORT}") 2> /dev/null
-}
-
-# Port 0 (Chrome picks one) can't be probed, so it isn't supervised either.
-if [[ -z "$CDP_PORT" || "$CDP_PORT" == 0 ]]; then
+# Chrome exits when its last tab closes — which CDP clients do routinely — and
+# nothing else relaunches it, so CDP would stay dead until the container
+# restarts. The CDP-enabled launch (the desktop autostart) therefore relaunches
+# Chrome whenever it exits; any other launch, e.g. the desktop menu's, runs once.
+if [[ "$*" != *--remote-debugging-port=* ]]; then
   run_chromium "$@"
   exit
 fi
 
-delay=1
 while true; do
-  started=$(date +%s)
   run_chromium "$@"
-  # The launch can return while a browser is still up: it handed off to one
-  # already running, Chrome relaunched itself (chrome://restart), or child
-  # processes outlive the main one. Relaunch only once none is left, so the
-  # CDP-enabled instance is never spawned twice. A browser that serves CDP is
-  # waited on indefinitely; one that doesn't (a desktop-menu Chrome that took
-  # over in the gap, or a hung child) is killed after 30s rather than leaving
-  # CDP down until someone closes it.
-  waited=0  # seconds since CDP was last seen up
-  while pgrep -x chromium > /dev/null; do
-    if cdp_up; then
-      waited=0
-    elif (( waited >= 30 )); then
-      echo "wrapped-chromium: chromium running without CDP for ${waited}s, killing it" >&2
-      pkill -x chromium
-      sleep 5
-      pkill -KILL -x chromium
-      waited=0
-    fi
-    sleep 2
-    waited=$(( waited + 2 ))
-  done
-  # Back off when Chrome dies right after starting (broken display or profile).
-  if (( $(date +%s) - started < 10 )); then
-    echo "wrapped-chromium: chromium exited right after starting, relaunching in ${delay}s" >&2
-    sleep "$delay"
-    delay=$(( delay * 2 > 60 ? 60 : delay * 2 ))
-  else
-    delay=1
-    echo "wrapped-chromium: chromium exited, relaunching" >&2
-    sleep 1
-  fi
+  # The launch can return while Chrome is still running (it handed off to an
+  # instance already up, or child processes outlive the main one), so relaunch
+  # only once none is left.
+  while pgrep -x chromium > /dev/null; do sleep 2; done
+  sleep 2
 done
