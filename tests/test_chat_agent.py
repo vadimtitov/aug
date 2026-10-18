@@ -1,6 +1,7 @@
 """Tests for chat agent preprocess and image expansion."""
 
 import base64
+import inspect
 from pathlib import Path
 from unittest.mock import patch
 
@@ -198,3 +199,13 @@ def test_with_extra_tools_keeps_settings_and_adds_tools():
     # describe_image is re-added from the settings, not copied, so it appears once.
     assert [t.name for t in extended.tools] == ["_base_tool", "_extra_tool", "describe_image"]
     assert [t.name for t in base.tools] == ["_base_tool", "describe_image"]
+
+
+def test_with_extra_tools_copies_every_constructor_setting():
+    """A new AugAgent parameter must be added to _settings too, or copies drop it."""
+    with patch("aug.core.llm.get_settings") as mock_settings:
+        mock_settings.return_value.LLM_API_KEY = "test-key"
+        mock_settings.return_value.LLM_BASE_URL = "http://localhost:4000"
+        agent = AugAgent(model="gpt-4o")
+    params = set(inspect.signature(AugAgent.__init__).parameters) - {"self", "tools"}
+    assert set(agent._settings) == params

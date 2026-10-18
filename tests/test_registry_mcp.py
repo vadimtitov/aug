@@ -121,6 +121,8 @@ def test_each_v12_is_its_v11_without_browser_plus_mcp_tools(v12, v11):
 def test_each_v12_subagent_is_its_v11_subagent_plus_mcp_tools(v12, v11):
     try:
         configure_mcp_tools([_fake_mcp_tool])
+        v12_names = [t.name for t in get_agent(v12).tools]
+        assert len(v12_names) == len(set(v12_names))  # v11's run_subagent must not linger
         v12_sub, v11_sub = _subagent_of(get_agent(v12)), _subagent_of(get_agent(v11))
         assert v12_sub is not v11_sub
         assert v12_sub._settings == v11_sub._settings
@@ -131,8 +133,8 @@ def test_each_v12_subagent_is_its_v11_subagent_plus_mcp_tools(v12, v11):
         configure_mcp_tools([])
 
 
-@pytest.mark.parametrize(("v12", "v11"), _V12_V11_PAIRS)
-def test_reconfiguring_mcp_tools_replaces_them_in_v12_subagents(v12, v11):
+@pytest.mark.parametrize("v12", [v12 for v12, _ in _V12_V11_PAIRS])
+def test_reconfiguring_mcp_tools_replaces_them_in_v12_subagents(v12):
     configure_mcp_tools([_fake_mcp_tool])
     configure_mcp_tools([])
     assert "_fake_mcp_tool" not in {t.name for t in _subagent_of(get_agent(v12)).tools}

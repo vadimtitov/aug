@@ -153,7 +153,7 @@ class AugAgent(BaseAgent):
         # Everything but the tools, so with_extra_tools() can rebuild this agent.
         self._settings = dict(
             model=model,
-            reflexes=reflexes,
+            reflexes=list(reflexes) if reflexes else None,
             temperature=temperature,
             max_tokens=max_tokens,
             max_retries=max_retries,
