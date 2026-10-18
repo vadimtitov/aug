@@ -150,6 +150,23 @@ class AugAgent(BaseAgent):
         max_summary_tokens: int = 2000,
     ) -> None:
         super().__init__()
+        # Everything but the tools, so with_extra_tools() can rebuild this agent.
+        self._settings = dict(
+            model=model,
+            reflexes=reflexes,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            max_retries=max_retries,
+            timeout=timeout,
+            seed=seed,
+            recursion_limit=recursion_limit,
+            vision_description_model=vision_description_model,
+            compaction_model=compaction_model,
+            compaction_threshold=compaction_threshold,
+            context_window=context_window,
+            max_summary_tokens=max_summary_tokens,
+        )
+        self._base_tools = list(tools or [])
         self._vision_description_model = vision_description_model
         self.tools = list(tools or [])
         if vision_description_model:
@@ -169,6 +186,10 @@ class AugAgent(BaseAgent):
             timeout=timeout,
             seed=seed,
         ).bind_tools(self.tools)
+
+    def with_extra_tools(self, tools: list[BaseTool]) -> "AugAgent":
+        """A new agent with this one's settings and *tools* added to its own."""
+        return AugAgent(tools=[*self._base_tools, *tools], **self._settings)
 
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
         now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")

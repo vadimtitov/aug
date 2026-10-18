@@ -4,18 +4,14 @@ V11 agents are immutable — this only exercises the new v12 factory path
 (configure_mcp_tools / v12_base_tool_names) added for MCP support.
 """
 
+import inspect
+
 import pytest
 from langchain_core.tools import tool
 
 from aug.core.agents.chat_agent import AugAgent
 from aug.core.registry import (
     _V11_CLAUDE_TOOLS,
-    _V11_DEEPSEEK_TOOLS,
-    _V11_GLM5_FAST_TOOLS,
-    _V11_GLM5_FLASH_TOOLS,
-    _V11_GLM5_TOOLS,
-    _V11_KIMI_FAST_TOOLS,
-    _V11_KIMI_TOOLS,
     _subagent_deepseek,
     _subagent_glm5_fast,
     _subagent_glm5_flash,
@@ -121,21 +117,34 @@ def test_each_v12_is_its_v11_without_browser_plus_mcp_tools(v12, v11):
         configure_mcp_tools([])
 
 
-@pytest.mark.parametrize(
-    ("v12", "v11_tools"),
-    [
-        ("v12_claude", _V11_CLAUDE_TOOLS),
-        ("v12_glm5", _V11_GLM5_TOOLS),
-        ("v12_kimi", _V11_KIMI_TOOLS),
-        ("v12_deepseek", _V11_DEEPSEEK_TOOLS),
-        ("v12_glm5_flash", _V11_GLM5_FLASH_TOOLS),
-        ("v12_glm5_fast", _V11_GLM5_FAST_TOOLS),
-        ("v12_kimi_fast", _V11_KIMI_FAST_TOOLS),
-    ],
-)
-def test_each_v12_delegates_to_its_own_v11_subagent(v12, v11_tools):
-    v11_subagent = next(t for t in v11_tools if t.name == "run_subagent")
-    assert v11_subagent in get_agent(v12).tools
+@pytest.mark.parametrize(("v12", "v11"), _V12_V11_PAIRS)
+def test_each_v12_subagent_is_its_v11_subagent_plus_mcp_tools(v12, v11):
+    try:
+        configure_mcp_tools([_fake_mcp_tool])
+        v12_sub, v11_sub = _subagent_of(get_agent(v12)), _subagent_of(get_agent(v11))
+        assert v12_sub is not v11_sub
+        assert v12_sub._settings == v11_sub._settings
+        assert {t.name for t in v12_sub.tools} == {t.name for t in v11_sub.tools} | {
+            "_fake_mcp_tool"
+        }
+    finally:
+        configure_mcp_tools([])
+
+
+@pytest.mark.parametrize(("v12", "v11"), _V12_V11_PAIRS)
+def test_reconfiguring_mcp_tools_replaces_them_in_v12_subagents(v12, v11):
+    configure_mcp_tools([_fake_mcp_tool])
+    configure_mcp_tools([])
+    assert "_fake_mcp_tool" not in {t.name for t in _subagent_of(get_agent(v12)).tools}
+
+
+@pytest.mark.parametrize(("v12", "v11"), _V12_V11_PAIRS)
+def test_v11_subagents_never_get_mcp_tools(v12, v11):
+    try:
+        configure_mcp_tools([_fake_mcp_tool])
+        assert "_fake_mcp_tool" not in {t.name for t in _subagent_of(get_agent(v11)).tools}
+    finally:
+        configure_mcp_tools([])
 
 
 @pytest.mark.parametrize(("v12", "v11"), _V12_V11_PAIRS)
@@ -175,3 +184,9 @@ def test_fast_model_v11_agents_share_their_siblings_tools(name, model, sibling):
 )
 def test_fast_model_subagents_run_on_their_agents_model(subagent, model):
     assert subagent._model_name == model
+
+
+def _subagent_of(agent: AugAgent) -> AugAgent:
+    """The subagent behind *agent*'s run_subagent tool."""
+    run_subagent = next(t for t in agent.tools if t.name == "run_subagent")
+    return inspect.getclosurevars(run_subagent.coroutine).nonlocals["subagent"]

@@ -423,30 +423,41 @@ _V11_KIMI_FAST_TOOLS = [
 # v12 = the matching v11 tool set minus browser + MCP management tools + whatever
 # MCP servers are actually reachable at startup. Browsing comes from an MCP
 # server (e.g. @playwright/mcp) instead. V11 agents are immutable and untouched —
-# these are new versions, not modifications of the _V11_* lists.
+# these are new versions, not modifications of the _V11_* lists. v11's
+# run_subagent is dropped too: _build_v12_agents() adds one whose subagent also
+# gets the MCP tools.
 _MCP_MANAGEMENT_TOOLS = [
     search_mcp_servers,
     install_mcp_server,
     list_mcp_servers,
     remove_mcp_server,
 ]
-_V12_CLAUDE_TOOLS = [*(t for t in _V11_CLAUDE_TOOLS if t is not browser), *_MCP_MANAGEMENT_TOOLS]
-_V12_GLM5_TOOLS = [*(t for t in _V11_GLM5_TOOLS if t is not browser), *_MCP_MANAGEMENT_TOOLS]
-_V12_KIMI_TOOLS = [*(t for t in _V11_KIMI_TOOLS if t is not browser), *_MCP_MANAGEMENT_TOOLS]
+_V12_CLAUDE_TOOLS = [
+    *(t for t in _V11_CLAUDE_TOOLS if t is not browser and t.name != "run_subagent"),
+    *_MCP_MANAGEMENT_TOOLS,
+]
+_V12_GLM5_TOOLS = [
+    *(t for t in _V11_GLM5_TOOLS if t is not browser and t.name != "run_subagent"),
+    *_MCP_MANAGEMENT_TOOLS,
+]
+_V12_KIMI_TOOLS = [
+    *(t for t in _V11_KIMI_TOOLS if t is not browser and t.name != "run_subagent"),
+    *_MCP_MANAGEMENT_TOOLS,
+]
 _V12_DEEPSEEK_TOOLS = [
-    *(t for t in _V11_DEEPSEEK_TOOLS if t is not browser),
+    *(t for t in _V11_DEEPSEEK_TOOLS if t is not browser and t.name != "run_subagent"),
     *_MCP_MANAGEMENT_TOOLS,
 ]
 _V12_GLM5_FLASH_TOOLS = [
-    *(t for t in _V11_GLM5_FLASH_TOOLS if t is not browser),
+    *(t for t in _V11_GLM5_FLASH_TOOLS if t is not browser and t.name != "run_subagent"),
     *_MCP_MANAGEMENT_TOOLS,
 ]
 _V12_GLM5_FAST_TOOLS = [
-    *(t for t in _V11_GLM5_FAST_TOOLS if t is not browser),
+    *(t for t in _V11_GLM5_FAST_TOOLS if t is not browser and t.name != "run_subagent"),
     *_MCP_MANAGEMENT_TOOLS,
 ]
 _V12_KIMI_FAST_TOOLS = [
-    *(t for t in _V11_KIMI_FAST_TOOLS if t is not browser),
+    *(t for t in _V11_KIMI_FAST_TOOLS if t is not browser and t.name != "run_subagent"),
     *_MCP_MANAGEMENT_TOOLS,
 ]
 
@@ -465,7 +476,7 @@ def v12_base_tool_names() -> set[str]:
             *_V12_GLM5_FAST_TOOLS,
             *_V12_KIMI_FAST_TOOLS,
         ]
-    }
+    } | {"run_subagent"}
 
 
 def configure_mcp_tools(tools: list[BaseTool]) -> None:
@@ -704,7 +715,11 @@ def _build_v12_agents(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:
     return {
         "v12_claude": AugAgent(
             model="claude-sonnet-4-6",
-            tools=[*_V12_CLAUDE_TOOLS, *mcp_tools],
+            tools=[
+                *_V12_CLAUDE_TOOLS,
+                make_run_subagent_tool(_subagent_claude.with_extra_tools(mcp_tools)),
+                *mcp_tools,
+            ],
             temperature=0.0,
             recursion_limit=100,
             compaction_model="claude-haiku-4-5",
@@ -714,7 +729,11 @@ def _build_v12_agents(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:
         ),
         "v12_glm5": AugAgent(
             model="accounts/fireworks/models/glm-5p3",
-            tools=[*_V12_GLM5_TOOLS, *mcp_tools],
+            tools=[
+                *_V12_GLM5_TOOLS,
+                make_run_subagent_tool(_subagent_glm5.with_extra_tools(mcp_tools)),
+                *mcp_tools,
+            ],
             temperature=0.0,
             recursion_limit=100,
             vision_description_model="gemini-2.5-flash",
@@ -725,7 +744,11 @@ def _build_v12_agents(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:
         ),
         "v12_kimi": AugAgent(
             model="accounts/fireworks/models/kimi-k3",
-            tools=[*_V12_KIMI_TOOLS, *mcp_tools],
+            tools=[
+                *_V12_KIMI_TOOLS,
+                make_run_subagent_tool(_subagent_kimi.with_extra_tools(mcp_tools)),
+                *mcp_tools,
+            ],
             temperature=0.0,
             recursion_limit=100,
             compaction_model="accounts/fireworks/models/kimi-k3",
@@ -735,7 +758,11 @@ def _build_v12_agents(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:
         ),
         "v12_deepseek": AugAgent(
             model="accounts/fireworks/models/deepseek-v4p1-flash",
-            tools=[*_V12_DEEPSEEK_TOOLS, *mcp_tools],
+            tools=[
+                *_V12_DEEPSEEK_TOOLS,
+                make_run_subagent_tool(_subagent_deepseek.with_extra_tools(mcp_tools)),
+                *mcp_tools,
+            ],
             temperature=0.0,
             recursion_limit=100,
             compaction_model="accounts/fireworks/models/deepseek-v4p1-flash",
@@ -745,7 +772,11 @@ def _build_v12_agents(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:
         ),
         "v12_glm5_flash": AugAgent(
             model="accounts/fireworks/models/glm-5p3-flash",
-            tools=[*_V12_GLM5_FLASH_TOOLS, *mcp_tools],
+            tools=[
+                *_V12_GLM5_FLASH_TOOLS,
+                make_run_subagent_tool(_subagent_glm5_flash.with_extra_tools(mcp_tools)),
+                *mcp_tools,
+            ],
             temperature=0.0,
             recursion_limit=100,
             compaction_model="accounts/fireworks/models/glm-5p3-flash",
@@ -755,7 +786,11 @@ def _build_v12_agents(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:
         ),
         "v12_glm5_fast": AugAgent(
             model="accounts/fireworks/routers/glm-5p3-fast",
-            tools=[*_V12_GLM5_FAST_TOOLS, *mcp_tools],
+            tools=[
+                *_V12_GLM5_FAST_TOOLS,
+                make_run_subagent_tool(_subagent_glm5_fast.with_extra_tools(mcp_tools)),
+                *mcp_tools,
+            ],
             temperature=0.0,
             recursion_limit=100,
             vision_description_model="gemini-2.5-flash",
@@ -766,7 +801,11 @@ def _build_v12_agents(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:
         ),
         "v12_kimi_fast": AugAgent(
             model="accounts/fireworks/routers/kimi-k3-fast",
-            tools=[*_V12_KIMI_FAST_TOOLS, *mcp_tools],
+            tools=[
+                *_V12_KIMI_FAST_TOOLS,
+                make_run_subagent_tool(_subagent_kimi_fast.with_extra_tools(mcp_tools)),
+                *mcp_tools,
+            ],
             temperature=0.0,
             recursion_limit=100,
             vision_description_model="gemini-2.5-flash",

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import tool
 
 from aug.core.agents.chat_agent import AugAgent, TimeAwareChatAgent, _expand_images
 from aug.core.state import AgentState
@@ -158,3 +159,42 @@ async def test_expand_images_no_marker_returns_unchanged():
     messages = [HumanMessage(content="plain text")]
     result = await _expand_images(messages)
     assert result is messages  # same object, no copy made
+
+
+# ---------------------------------------------------------------------------
+# with_extra_tools
+# ---------------------------------------------------------------------------
+
+
+@tool
+def _base_tool() -> str:
+    """A base tool for tests."""
+    return "base"
+
+
+@tool
+def _extra_tool() -> str:
+    """An extra tool for tests."""
+    return "extra"
+
+
+def test_with_extra_tools_keeps_settings_and_adds_tools():
+    with patch("aug.core.llm.get_settings") as mock_settings:
+        mock_settings.return_value.LLM_API_KEY = "test-key"
+        mock_settings.return_value.LLM_BASE_URL = "http://localhost:4000"
+        base = AugAgent(
+            model="gpt-4o",
+            tools=[_base_tool],
+            temperature=0.0,
+            recursion_limit=50,
+            vision_description_model="gemini-2.5-flash",
+            compaction_model="gpt-4o-mini",
+            context_window=500_000,
+        )
+        extended = base.with_extra_tools([_extra_tool])
+
+    assert extended._settings == base._settings
+    assert extended.recursion_limit == 50
+    # describe_image is re-added from the settings, not copied, so it appears once.
+    assert [t.name for t in extended.tools] == ["_base_tool", "_extra_tool", "describe_image"]
+    assert [t.name for t in base.tools] == ["_base_tool", "describe_image"]
