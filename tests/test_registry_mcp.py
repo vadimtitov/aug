@@ -10,8 +10,16 @@ from langchain_core.tools import tool
 from aug.core.agents.chat_agent import AugAgent
 from aug.core.registry import (
     _V11_CLAUDE_TOOLS,
+    _V11_DEEPSEEK_TOOLS,
+    _V11_GLM5_FAST_TOOLS,
+    _V11_GLM5_FLASH_TOOLS,
     _V11_GLM5_TOOLS,
+    _V11_KIMI_FAST_TOOLS,
     _V11_KIMI_TOOLS,
+    _subagent_deepseek,
+    _subagent_glm5_fast,
+    _subagent_glm5_flash,
+    _subagent_kimi_fast,
     configure_mcp_tools,
     get_agent,
     list_agents,
@@ -89,6 +97,10 @@ _V12_V11_PAIRS = [
     ("v12_claude", "v11_claude"),
     ("v12_glm5", "v11_glm5"),
     ("v12_kimi", "v11_kimi"),
+    ("v12_deepseek", "v11_deepseek"),
+    ("v12_glm5_flash", "v11_glm5_flash"),
+    ("v12_glm5_fast", "v11_glm5_fast"),
+    ("v12_kimi_fast", "v11_kimi_fast"),
 ]
 
 
@@ -115,6 +127,10 @@ def test_each_v12_is_its_v11_without_browser_plus_mcp_tools(v12, v11):
         ("v12_claude", _V11_CLAUDE_TOOLS),
         ("v12_glm5", _V11_GLM5_TOOLS),
         ("v12_kimi", _V11_KIMI_TOOLS),
+        ("v12_deepseek", _V11_DEEPSEEK_TOOLS),
+        ("v12_glm5_flash", _V11_GLM5_FLASH_TOOLS),
+        ("v12_glm5_fast", _V11_GLM5_FAST_TOOLS),
+        ("v12_kimi_fast", _V11_KIMI_FAST_TOOLS),
     ],
 )
 def test_each_v12_delegates_to_its_own_v11_subagent(v12, v11_tools):
@@ -127,3 +143,35 @@ def test_each_v12_uses_its_v11_model(v12, v11):
     v12_agent, v11_agent = get_agent(v12), get_agent(v11)
     assert isinstance(v12_agent, AugAgent)
     assert v12_agent._model_name == v11_agent._model_name
+
+
+_FAST_MODEL_AGENTS = [
+    ("v11_deepseek", "accounts/fireworks/models/deepseek-v4p1-flash", "v11_glm5"),
+    ("v11_glm5_flash", "accounts/fireworks/models/glm-5p3-flash", "v11_glm5"),
+    ("v11_glm5_fast", "accounts/fireworks/routers/glm-5p3-fast", "v11_glm5"),
+    ("v11_kimi_fast", "accounts/fireworks/routers/kimi-k3-fast", "v11_kimi"),
+]
+
+
+@pytest.mark.parametrize(("name", "model", "sibling"), _FAST_MODEL_AGENTS)
+def test_fast_model_v11_agents_share_their_siblings_tools(name, model, sibling):
+    """Same tools as the existing v11 Fireworks agent; only the model differs."""
+    agent = get_agent(name)
+    assert isinstance(agent, AugAgent)
+    assert agent._model_name == model
+    names = sorted(t.name for t in agent.tools if t.name != "describe_image")
+    sibling_names = sorted(t.name for t in get_agent(sibling).tools if t.name != "describe_image")
+    assert names == sibling_names
+
+
+@pytest.mark.parametrize(
+    ("subagent", "model"),
+    [
+        (_subagent_deepseek, "accounts/fireworks/models/deepseek-v4p1-flash"),
+        (_subagent_glm5_flash, "accounts/fireworks/models/glm-5p3-flash"),
+        (_subagent_glm5_fast, "accounts/fireworks/routers/glm-5p3-fast"),
+        (_subagent_kimi_fast, "accounts/fireworks/routers/kimi-k3-fast"),
+    ],
+)
+def test_fast_model_subagents_run_on_their_agents_model(subagent, model):
+    assert subagent._model_name == model

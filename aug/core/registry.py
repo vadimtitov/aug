@@ -187,6 +187,51 @@ _subagent_kimi = AugAgent(
     max_summary_tokens=2000,
 )
 
+# Fireworks models added for speed/cost. kimi-k3-fast and glm-5p3-fast reject
+# image input, so they get images described; the two Flash models read them.
+_subagent_deepseek = AugAgent(
+    model="accounts/fireworks/models/deepseek-v4p1-flash",
+    tools=_SUBAGENT_TOOLS,
+    temperature=0.0,
+    recursion_limit=50,
+    compaction_model="accounts/fireworks/models/deepseek-v4p1-flash",
+    compaction_threshold=0.8,
+    context_window=200_000,
+    max_summary_tokens=2000,
+)
+_subagent_glm5_flash = AugAgent(
+    model="accounts/fireworks/models/glm-5p3-flash",
+    tools=_SUBAGENT_TOOLS,
+    temperature=0.0,
+    recursion_limit=50,
+    compaction_model="accounts/fireworks/models/glm-5p3-flash",
+    compaction_threshold=0.8,
+    context_window=200_000,
+    max_summary_tokens=2000,
+)
+_subagent_glm5_fast = AugAgent(
+    model="accounts/fireworks/routers/glm-5p3-fast",
+    tools=_SUBAGENT_TOOLS,
+    temperature=0.0,
+    recursion_limit=50,
+    vision_description_model="gemini-2.5-flash",
+    compaction_model="accounts/fireworks/routers/glm-5p3-fast",
+    compaction_threshold=0.8,
+    context_window=200_000,
+    max_summary_tokens=2000,
+)
+_subagent_kimi_fast = AugAgent(
+    model="accounts/fireworks/routers/kimi-k3-fast",
+    tools=_SUBAGENT_TOOLS,
+    temperature=0.0,
+    recursion_limit=50,
+    vision_description_model="gemini-2.5-flash",
+    compaction_model="accounts/fireworks/routers/kimi-k3-fast",
+    compaction_threshold=0.8,
+    context_window=200_000,
+    max_summary_tokens=2000,
+)
+
 _V11_CLAUDE_TOOLS = [
     brave_search,
     fetch_page,
@@ -357,6 +402,24 @@ _V11_KIMI_TOOLS = [
     make_run_subagent_tool(_subagent_kimi),
 ]
 
+# Same tool set as v11_glm5 / v11_kimi, delegating to a subagent on the agent's own model.
+_V11_DEEPSEEK_TOOLS = [
+    *(t for t in _V11_GLM5_TOOLS if t.name != "run_subagent"),
+    make_run_subagent_tool(_subagent_deepseek),
+]
+_V11_GLM5_FLASH_TOOLS = [
+    *(t for t in _V11_GLM5_TOOLS if t.name != "run_subagent"),
+    make_run_subagent_tool(_subagent_glm5_flash),
+]
+_V11_GLM5_FAST_TOOLS = [
+    *(t for t in _V11_GLM5_TOOLS if t.name != "run_subagent"),
+    make_run_subagent_tool(_subagent_glm5_fast),
+]
+_V11_KIMI_FAST_TOOLS = [
+    *(t for t in _V11_KIMI_TOOLS if t.name != "run_subagent"),
+    make_run_subagent_tool(_subagent_kimi_fast),
+]
+
 # v12 = the matching v11 tool set minus browser + MCP management tools + whatever
 # MCP servers are actually reachable at startup. Browsing comes from an MCP
 # server (e.g. @playwright/mcp) instead. V11 agents are immutable and untouched —
@@ -370,12 +433,39 @@ _MCP_MANAGEMENT_TOOLS = [
 _V12_CLAUDE_TOOLS = [*(t for t in _V11_CLAUDE_TOOLS if t is not browser), *_MCP_MANAGEMENT_TOOLS]
 _V12_GLM5_TOOLS = [*(t for t in _V11_GLM5_TOOLS if t is not browser), *_MCP_MANAGEMENT_TOOLS]
 _V12_KIMI_TOOLS = [*(t for t in _V11_KIMI_TOOLS if t is not browser), *_MCP_MANAGEMENT_TOOLS]
+_V12_DEEPSEEK_TOOLS = [
+    *(t for t in _V11_DEEPSEEK_TOOLS if t is not browser),
+    *_MCP_MANAGEMENT_TOOLS,
+]
+_V12_GLM5_FLASH_TOOLS = [
+    *(t for t in _V11_GLM5_FLASH_TOOLS if t is not browser),
+    *_MCP_MANAGEMENT_TOOLS,
+]
+_V12_GLM5_FAST_TOOLS = [
+    *(t for t in _V11_GLM5_FAST_TOOLS if t is not browser),
+    *_MCP_MANAGEMENT_TOOLS,
+]
+_V12_KIMI_FAST_TOOLS = [
+    *(t for t in _V11_KIMI_FAST_TOOLS if t is not browser),
+    *_MCP_MANAGEMENT_TOOLS,
+]
 
 
 def v12_base_tool_names() -> set[str]:
     """Names of the v12 agents' non-MCP tools — seeds MCPManager's collision
     check so a server can never shadow a native AUG tool."""
-    return {t.name for t in [*_V12_CLAUDE_TOOLS, *_V12_GLM5_TOOLS, *_V12_KIMI_TOOLS]}
+    return {
+        t.name
+        for t in [
+            *_V12_CLAUDE_TOOLS,
+            *_V12_GLM5_TOOLS,
+            *_V12_KIMI_TOOLS,
+            *_V12_DEEPSEEK_TOOLS,
+            *_V12_GLM5_FLASH_TOOLS,
+            *_V12_GLM5_FAST_TOOLS,
+            *_V12_KIMI_FAST_TOOLS,
+        ]
+    }
 
 
 def configure_mcp_tools(tools: list[BaseTool]) -> None:
@@ -548,6 +638,48 @@ _REGISTRY: dict[str, BaseAgent] = {
         context_window=200_000,
         max_summary_tokens=2000,
     ),
+    "v11_deepseek": AugAgent(
+        model="accounts/fireworks/models/deepseek-v4p1-flash",
+        tools=_V11_DEEPSEEK_TOOLS,
+        temperature=0.0,
+        recursion_limit=100,
+        compaction_model="accounts/fireworks/models/deepseek-v4p1-flash",
+        compaction_threshold=0.8,
+        context_window=200_000,
+        max_summary_tokens=2000,
+    ),
+    "v11_glm5_flash": AugAgent(
+        model="accounts/fireworks/models/glm-5p3-flash",
+        tools=_V11_GLM5_FLASH_TOOLS,
+        temperature=0.0,
+        recursion_limit=100,
+        compaction_model="accounts/fireworks/models/glm-5p3-flash",
+        compaction_threshold=0.8,
+        context_window=200_000,
+        max_summary_tokens=2000,
+    ),
+    "v11_glm5_fast": AugAgent(
+        model="accounts/fireworks/routers/glm-5p3-fast",
+        tools=_V11_GLM5_FAST_TOOLS,
+        temperature=0.0,
+        recursion_limit=100,
+        vision_description_model="gemini-2.5-flash",
+        compaction_model="accounts/fireworks/routers/glm-5p3-fast",
+        compaction_threshold=0.8,
+        context_window=200_000,
+        max_summary_tokens=2000,
+    ),
+    "v11_kimi_fast": AugAgent(
+        model="accounts/fireworks/routers/kimi-k3-fast",
+        tools=_V11_KIMI_FAST_TOOLS,
+        temperature=0.0,
+        recursion_limit=100,
+        vision_description_model="gemini-2.5-flash",
+        compaction_model="accounts/fireworks/routers/kimi-k3-fast",
+        compaction_threshold=0.8,
+        context_window=200_000,
+        max_summary_tokens=2000,
+    ),
 }
 
 
@@ -597,6 +729,48 @@ def _build_v12_agents(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:
             temperature=0.0,
             recursion_limit=100,
             compaction_model="accounts/fireworks/models/kimi-k3",
+            compaction_threshold=0.8,
+            context_window=200_000,
+            max_summary_tokens=2000,
+        ),
+        "v12_deepseek": AugAgent(
+            model="accounts/fireworks/models/deepseek-v4p1-flash",
+            tools=[*_V12_DEEPSEEK_TOOLS, *mcp_tools],
+            temperature=0.0,
+            recursion_limit=100,
+            compaction_model="accounts/fireworks/models/deepseek-v4p1-flash",
+            compaction_threshold=0.8,
+            context_window=200_000,
+            max_summary_tokens=2000,
+        ),
+        "v12_glm5_flash": AugAgent(
+            model="accounts/fireworks/models/glm-5p3-flash",
+            tools=[*_V12_GLM5_FLASH_TOOLS, *mcp_tools],
+            temperature=0.0,
+            recursion_limit=100,
+            compaction_model="accounts/fireworks/models/glm-5p3-flash",
+            compaction_threshold=0.8,
+            context_window=200_000,
+            max_summary_tokens=2000,
+        ),
+        "v12_glm5_fast": AugAgent(
+            model="accounts/fireworks/routers/glm-5p3-fast",
+            tools=[*_V12_GLM5_FAST_TOOLS, *mcp_tools],
+            temperature=0.0,
+            recursion_limit=100,
+            vision_description_model="gemini-2.5-flash",
+            compaction_model="accounts/fireworks/routers/glm-5p3-fast",
+            compaction_threshold=0.8,
+            context_window=200_000,
+            max_summary_tokens=2000,
+        ),
+        "v12_kimi_fast": AugAgent(
+            model="accounts/fireworks/routers/kimi-k3-fast",
+            tools=[*_V12_KIMI_FAST_TOOLS, *mcp_tools],
+            temperature=0.0,
+            recursion_limit=100,
+            vision_description_model="gemini-2.5-flash",
+            compaction_model="accounts/fireworks/routers/kimi-k3-fast",
             compaction_threshold=0.8,
             context_window=200_000,
             max_summary_tokens=2000,
