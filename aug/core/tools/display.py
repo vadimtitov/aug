@@ -4,9 +4,13 @@ Each registered tool has a (label, args_formatter) pair.
 format_tool() returns (label, args_preview) suitable for single-line display.
 """
 
+import re
 from urllib.parse import urlparse
 
 _ARG_TRUNCATE = 40
+# MCP tools are named "{server}__{tool}", where the server's config name ends in
+# a 6-hex-char publisher hash (see McpRegistryServer.slug) — noise in a status line.
+_MCP_TOOL_RE = re.compile(r"^(?P<server>.+?)(?:-[0-9a-f]{6})?__(?P<tool>.+)$")
 
 
 def _first_arg(args: dict) -> str:
@@ -73,16 +77,24 @@ _REGISTRY: dict[str, tuple[str, object]] = {
     "write_skill_file": ("⚡ Write skill", _first_arg),
     "delete_skill": ("⚡ Delete skill", _first_arg),
     "run_subagent": ("🤖 Agent", _prompt_fmt),
+    "search_mcp_servers": ("🧩 MCP search", _first_arg),
+    "install_mcp_server": ("🧩 MCP install", _first_arg),
+    "list_mcp_servers": ("🧩 MCP servers", lambda _: ""),
+    "remove_mcp_server": ("🧩 MCP remove", _first_arg),
 }
 
 
 def format_tool(tool_name: str, args: dict) -> tuple[str, str]:
     """Return (label, args_preview) for a tool call.
 
-    Falls back to (tool_name, first_arg_preview) for unregistered tools.
+    MCP tools show as "🧩 {server} · {tool}"; any other unregistered tool falls
+    back to (tool_name, first_arg_preview).
     """
     entry = _REGISTRY.get(tool_name)
     if entry:
         label, formatter = entry
         return label, formatter(args)  # type: ignore[operator]
+    mcp = _MCP_TOOL_RE.match(tool_name)
+    if mcp:
+        return f"🧩 {mcp['server']} · {mcp['tool']}", _first_arg(args)
     return tool_name, _first_arg(args)

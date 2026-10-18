@@ -488,6 +488,9 @@ async def test_search_returns_parsed_servers():
 
     assert len(results) == 1
     assert results[0].slug == "postgres-0650d2"
+    # Only each server's latest version — otherwise old releases crowd the page.
+    params = mock_client.get.call_args.kwargs["params"]
+    assert params == {"search": "postgres", "limit": 10, "version": "latest"}
 
 
 @pytest.mark.asyncio

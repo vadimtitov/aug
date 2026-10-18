@@ -22,6 +22,7 @@ aug/
 │   │   ├── prompts.py          ← build_system_prompt() — assembles full system prompt from memory files + state
 │   │   ├── memory.py           ← Memory file init, append_note(), light + deep consolidation, scheduler
 │   │   ├── registry.py         ← Agent registry + compiled-graph cache
+│   │   ├── mcp/                ← MCP servers: manager (sessions → tools), install plans, restart flow
 │   │   ├── agents/
 │   │   │   ├── base_agent.py   ← BaseAgent ABC with agentic loop in build()
 │   │   │   ├── chat_agent.py   ← ChatAgent, TimeAwareChatAgent, AugAgent

@@ -26,6 +26,25 @@ def test_format_tool_known_tool_returns_label_and_arg_preview():
     assert preview == "weather"
 
 
+def test_format_tool_mcp_tool_shows_server_and_tool_without_hash():
+    label, preview = format_tool(
+        "playwright-mcp-a1b2c3__browser_navigate", {"url": "https://example.com"}
+    )
+    assert label == "🧩 playwright-mcp · browser_navigate"
+    assert preview == "https://example.com"
+
+
+def test_format_tool_mcp_tool_without_hash_suffix_keeps_server_name():
+    # A registry entry with no namespace gets a slug with no hash suffix.
+    label, _ = format_tool("postgres__query", {"sql": "select 1"})
+    assert label == "🧩 postgres · query"
+
+
+def test_format_tool_mcp_management_tools_have_labels():
+    assert format_tool("install_mcp_server", {"index": 3}) == ("🧩 MCP install", "3")
+    assert format_tool("list_mcp_servers", {}) == ("🧩 MCP servers", "")
+
+
 def test_format_tool_unknown_tool_falls_back_to_name_and_first_arg():
     label, preview = format_tool("mystery_tool", {"x": "value"})
     assert label == "mystery_tool"

@@ -41,8 +41,8 @@ from aug.api.routers import (
 from aug.config import get_settings
 from aug.core.browser_view import BrowserViewHub
 from aug.core.dispatch import broadcast, fire_push
-from aug.core.mcp_manager import MCPManager, McpOperationOutcome
-from aug.core.mcp_manager import set_manager as set_mcp_manager
+from aug.core.mcp.manager import MCPManager, McpOperationOutcome
+from aug.core.mcp.manager import set_manager as set_mcp_manager
 from aug.core.memory import init_memory_files, start_consolidation_scheduler
 from aug.core.oauth.providers import PROVIDERS_FILE, ProviderRegistry
 from aug.core.registry import configure_mcp_tools, v12_base_tool_names

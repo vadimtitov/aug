@@ -10,7 +10,7 @@ import asyncio
 import logging
 
 from aug.config import get_settings
-from aug.core.mcp_manager import update_operation_state
+from aug.core.mcp.manager import update_operation_state
 from aug.utils.app_ref import get_app
 from aug.utils.portainer import PortainerClient
 
@@ -37,19 +37,33 @@ def schedule_restart(op_id: str, server_name: str, interface: str, thread_id: st
     task.add_done_callback(_background_tasks.discard)
 
 
+def can_self_restart() -> bool:
+    """Whether trigger_restart can actually restart AUG, rather than only asking
+    for a manual restart — Portainer plus AUG's own container and environment."""
+    settings = get_settings()
+    return bool(
+        PortainerClient().is_configured() and settings.AUG_CONTAINER and settings.AUG_ENVIRONMENT
+    )
+
+
+def can_report_outcome(interface: str) -> bool:
+    """Whether a restart outcome can be pushed back to *interface* once AUG is up."""
+    # AUG is a personal, Telegram-first assistant — REST has no push channel.
+    return bool(interface) and interface != "rest_api"
+
+
 async def trigger_restart(op_id: str, server_name: str) -> str:
     """Restart AUG via Portainer to activate a saved MCP config change."""
-    settings = get_settings()
-    container, environment = settings.AUG_CONTAINER, settings.AUG_ENVIRONMENT
-    client = PortainerClient()
-
-    if not client.is_configured() or not container or not environment:
+    if not can_self_restart():
         await update_operation_state(op_id, "restart_pending")
         return (
             "Portainer (or AUG_CONTAINER/AUG_ENVIRONMENT) is not configured — restart AUG "
             "manually to activate this change."
         )
 
+    settings = get_settings()
+    container, environment = settings.AUG_CONTAINER, settings.AUG_ENVIRONMENT
+    client = PortainerClient()
     try:
         ep = await client.resolve_endpoint(environment)
         container_id = await client.find_container_id(container, ep["Id"])
@@ -74,8 +88,7 @@ async def _deliver_restart_outcome(interface: str, thread_id: str, message: str)
     """Best-effort push of a restart outcome back to whoever triggered it."""
     if not (interface and thread_id):
         return
-    if interface == "rest_api":
-        # AUG is a personal, Telegram-first assistant — REST has no push channel.
+    if not can_report_outcome(interface):
         logger.info(
             "mcp restart outcome not delivered: REST has no push channel (thread_id=%s): %s",
             thread_id,
