@@ -1,4 +1,4 @@
-"""Tests for aug/core/mcp_manager.py — MCPManager, secret resolution, namespacing."""
+"""Tests for aug/core/mcp/manager.py — MCPManager, secret resolution, namespacing."""
 
 import asyncio
 import os
@@ -11,8 +11,8 @@ import pytest
 from langchain_core.tools import StructuredTool, ToolException
 from pydantic import BaseModel
 
-from aug.core import mcp_manager
-from aug.core.mcp_manager import (
+from aug.core.mcp import manager as mcp_manager
+from aug.core.mcp.manager import (
     MCPManager,
     McpOperationOutcome,
     McpSecretError,
@@ -63,7 +63,7 @@ def _fake_run_writes(value: bytes):
 
 def test_read_hushed_secret_success():
     with patch(
-        "aug.core.mcp_manager.subprocess.run", side_effect=_fake_run_writes(b"super-secret")
+        "aug.core.mcp.manager.subprocess.run", side_effect=_fake_run_writes(b"super-secret")
     ):
         value = _read_hushed_secret("MY_TOKEN")
     assert value == "super-secret"
@@ -78,14 +78,14 @@ def test_read_hushed_secret_never_reads_from_stdout():
             os.write(fd, b"the-real-value")
         return subprocess.CompletedProcess(cmd, 0, stdout="[REDACTED]", stderr="")
 
-    with patch("aug.core.mcp_manager.subprocess.run", side_effect=_run):
+    with patch("aug.core.mcp.manager.subprocess.run", side_effect=_run):
         value = _read_hushed_secret("MY_TOKEN")
     assert value == "the-real-value"
 
 
 def test_read_hushed_secret_missing_raises():
     with (
-        patch("aug.core.mcp_manager.subprocess.run", side_effect=_fake_run_writes(b"")),
+        patch("aug.core.mcp.manager.subprocess.run", side_effect=_fake_run_writes(b"")),
         pytest.raises(McpSecretError, match="not set"),
     ):
         _read_hushed_secret("MISSING_TOKEN")
@@ -96,7 +96,7 @@ def test_read_hushed_secret_command_failure_raises():
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="hushed: boom")
 
     with (
-        patch("aug.core.mcp_manager.subprocess.run", side_effect=_run),
+        patch("aug.core.mcp.manager.subprocess.run", side_effect=_run),
         pytest.raises(McpSecretError, match="boom"),
     ):
         _read_hushed_secret("MY_TOKEN")
@@ -107,7 +107,7 @@ def test_read_hushed_secret_rejects_shell_metacharacters_in_name():
     to a Python child), but it's still validated up front so a malformed name
     fails clearly instead of silently not matching anything."""
     with (
-        patch("aug.core.mcp_manager.subprocess.run") as mock_run,
+        patch("aug.core.mcp.manager.subprocess.run") as mock_run,
         pytest.raises(McpSecretError, match="invalid secret name"),
     ):
         _read_hushed_secret('TOKEN"; rm -rf / #')
@@ -117,7 +117,7 @@ def test_read_hushed_secret_rejects_shell_metacharacters_in_name():
 def test_read_hushed_secret_timeout_raises():
     with (
         patch(
-            "aug.core.mcp_manager.subprocess.run",
+            "aug.core.mcp.manager.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="hushed", timeout=15),
         ),
         pytest.raises(McpSecretError),
@@ -138,7 +138,7 @@ def test_read_hushed_secret_passes_fd_as_argv_not_shell_redirection():
             os.write(fd, b"value")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    with patch("aug.core.mcp_manager.subprocess.run", side_effect=_run):
+    with patch("aug.core.mcp.manager.subprocess.run", side_effect=_run):
         _read_hushed_secret("MY_TOKEN")
 
     cmd = captured["cmd"]
@@ -164,7 +164,7 @@ async def test_resolve_hushed_ref_never_echoes_rejected_value():
 @pytest.mark.asyncio
 async def test_resolve_hushed_ref_strips_prefix_and_resolves():
     with patch(
-        "aug.core.mcp_manager._read_hushed_secret", return_value="resolved-value"
+        "aug.core.mcp.manager._read_hushed_secret", return_value="resolved-value"
     ) as mock_read:
         value = await _resolve_hushed_ref("hushed:MY_TOKEN")
     assert value == "resolved-value"
@@ -180,10 +180,10 @@ async def test_resolve_hushed_ref_strips_prefix_and_resolves():
 async def test_resolve_stdio_env_only_includes_default_and_declared_vars():
     with (
         patch(
-            "aug.core.mcp_manager.get_default_environment",
+            "aug.core.mcp.manager.get_default_environment",
             return_value={"PATH": "/usr/bin", "HOME": "/root"},
         ),
-        patch("aug.core.mcp_manager._read_hushed_secret", return_value="tok-value"),
+        patch("aug.core.mcp.manager._read_hushed_secret", return_value="tok-value"),
     ):
         env = await _resolve_stdio_env({}, {"GITHUB_PERSONAL_ACCESS_TOKEN": "hushed:GH_TOKEN"})
 
@@ -199,7 +199,7 @@ async def test_resolve_stdio_env_only_includes_default_and_declared_vars():
 
 @pytest.mark.asyncio
 async def test_resolve_stdio_env_empty_declared_still_scrubbed():
-    with patch("aug.core.mcp_manager.get_default_environment", return_value={"PATH": "/usr/bin"}):
+    with patch("aug.core.mcp.manager.get_default_environment", return_value={"PATH": "/usr/bin"}):
         env = await _resolve_stdio_env({}, {})
     assert env == {"PATH": "/usr/bin"}
 
@@ -210,10 +210,10 @@ async def test_resolve_stdio_env_precedence_secret_beats_static_beats_inherited(
     a registry default must never shadow an explicitly bound secret."""
     with (
         patch(
-            "aug.core.mcp_manager.get_default_environment",
+            "aug.core.mcp.manager.get_default_environment",
             return_value={"PATH": "/usr/bin", "SHARED": "inherited"},
         ),
-        patch("aug.core.mcp_manager._read_hushed_secret", return_value="secret-value"),
+        patch("aug.core.mcp.manager._read_hushed_secret", return_value="secret-value"),
     ):
         env = await _resolve_stdio_env(
             {"SHARED": "static-default", "OTHER": "static-only"},
@@ -273,7 +273,7 @@ async def test_namespace_tool_converts_timeout_to_tool_exception():
     wrapped = _namespace_tool(original, "server__slow")
     assert wrapped.handle_tool_error is True
 
-    with patch("aug.core.mcp_manager._TOOL_CALL_TIMEOUT", 0.05):
+    with patch("aug.core.mcp.manager._TOOL_CALL_TIMEOUT", 0.05):
         with pytest.raises(ToolException, match="did NOT complete"):
             await wrapped.coroutine(text="x")
 
@@ -381,7 +381,7 @@ def _fake_tool(name: str, coroutine=None) -> StructuredTool:
 
 @pytest.mark.asyncio
 async def test_load_all_no_servers_is_a_noop():
-    with patch("aug.core.mcp_manager.load_settings", return_value=AppSettings(mcp_servers=[])):
+    with patch("aug.core.mcp.manager.load_settings", return_value=AppSettings(mcp_servers=[])):
         manager = MCPManager()
         await manager.load_all()
     assert manager.tools == []
@@ -391,7 +391,7 @@ async def test_load_all_no_servers_is_a_noop():
 @pytest.mark.asyncio
 async def test_load_all_skips_disabled_servers():
     settings = AppSettings(mcp_servers=[_stdio_cfg("a", enabled=False)])
-    with patch("aug.core.mcp_manager.load_settings", return_value=settings):
+    with patch("aug.core.mcp.manager.load_settings", return_value=settings):
         manager = MCPManager()
         await manager.load_all()
     assert manager.health == {}
@@ -407,8 +407,8 @@ async def test_connect_and_shutdown_same_task_owns_whole_lifecycle():
     session = _TaskBoundSession()
 
     with (
-        patch("aug.core.mcp_manager.load_settings", return_value=settings),
-        patch("aug.core.mcp_manager._open_session", _session_factory(session)),
+        patch("aug.core.mcp.manager.load_settings", return_value=settings),
+        patch("aug.core.mcp.manager._open_session", _session_factory(session)),
         patch.object(MCPManager, "_namespaced_tools", AsyncMock(return_value=[_fake_tool("x")])),
     ):
         manager = MCPManager()
@@ -432,8 +432,8 @@ async def test_load_all_isolates_per_server_failures():
             yield s
 
     with (
-        patch("aug.core.mcp_manager.load_settings", return_value=settings),
-        patch("aug.core.mcp_manager._open_session", _open),
+        patch("aug.core.mcp.manager.load_settings", return_value=settings),
+        patch("aug.core.mcp.manager._open_session", _open),
         patch.object(MCPManager, "_namespaced_tools", AsyncMock(return_value=[_fake_tool("x")])),
     ):
         manager = MCPManager()
@@ -455,10 +455,10 @@ async def test_load_all_respects_overall_deadline():
         yield _TaskBoundSession()
 
     with (
-        patch("aug.core.mcp_manager.load_settings", return_value=settings),
-        patch("aug.core.mcp_manager._open_session", _open),
-        patch("aug.core.mcp_manager._OVERALL_TIMEOUT", 0.05),
-        patch("aug.core.mcp_manager._PER_SERVER_TIMEOUT", 5),
+        patch("aug.core.mcp.manager.load_settings", return_value=settings),
+        patch("aug.core.mcp.manager._open_session", _open),
+        patch("aug.core.mcp.manager._OVERALL_TIMEOUT", 0.05),
+        patch("aug.core.mcp.manager._PER_SERVER_TIMEOUT", 5),
     ):
         manager = MCPManager()
         await manager.load_all()  # must not raise
@@ -482,8 +482,8 @@ async def test_load_one_timeout_abandons_and_cleans_up_in_owner_task():
 
     manager = MCPManager()
     with (
-        patch("aug.core.mcp_manager._open_session", _open),
-        patch("aug.core.mcp_manager._PER_SERVER_TIMEOUT", 0.05),
+        patch("aug.core.mcp.manager._open_session", _open),
+        patch("aug.core.mcp.manager._PER_SERVER_TIMEOUT", 0.05),
     ):
         await manager._load_one(cfg)
 
@@ -509,7 +509,7 @@ async def test_load_one_cancelled_mid_startup_still_closes_the_owner_task():
             yield s
 
     manager = MCPManager()
-    with patch("aug.core.mcp_manager._open_session", _open):
+    with patch("aug.core.mcp.manager._open_session", _open):
         task = asyncio.create_task(manager._load_one(cfg))
         await asyncio.sleep(0.05)
         task.cancel()
@@ -533,7 +533,7 @@ async def test_connect_namespaces_tools_and_detects_collision():
         return []
 
     with (
-        patch("aug.core.mcp_manager._open_session", _session_factory(session)),
+        patch("aug.core.mcp.manager._open_session", _session_factory(session)),
         patch.object(manager, "_namespaced_tools", side_effect=_fake_namespaced_tools),
     ):
         await manager._load_one(cfg_a)
@@ -549,7 +549,7 @@ async def test_connect_success_namespaces_and_registers_tool():
 
     manager = MCPManager()
     with (
-        patch("aug.core.mcp_manager._open_session", _session_factory(session)),
+        patch("aug.core.mcp.manager._open_session", _session_factory(session)),
         patch.object(
             manager, "_namespaced_tools", AsyncMock(return_value=[_fake_tool("github__search")])
         ),
@@ -568,7 +568,7 @@ async def test_namespaced_tools_skips_overlong_tool_name():
     session = AsyncMock()
 
     with patch(
-        "aug.core.mcp_manager.load_mcp_tools",
+        "aug.core.mcp.manager.load_mcp_tools",
         AsyncMock(return_value=[_fake_tool("x" * 80)]),
     ):
         tools = await manager._namespaced_tools(_stdio_cfg("server"), session)
@@ -586,7 +586,7 @@ async def test_namespaced_tools_skips_tool_name_with_unsupported_characters():
     session = AsyncMock()
 
     with patch(
-        "aug.core.mcp_manager.load_mcp_tools",
+        "aug.core.mcp.manager.load_mcp_tools",
         AsyncMock(return_value=[_fake_tool("weird tool/name")]),
     ):
         tools = await manager._namespaced_tools(_stdio_cfg("server"), session)
@@ -607,7 +607,7 @@ async def test_namespaced_tools_wires_transport_death_to_mark_dead():
         raise anyio.ClosedResourceError()
 
     with patch(
-        "aug.core.mcp_manager.load_mcp_tools",
+        "aug.core.mcp.manager.load_mcp_tools",
         AsyncMock(return_value=[_fake_tool("dead", coroutine=_dead)]),
     ):
         tools = await manager._namespaced_tools(_stdio_cfg("server"), session)
@@ -629,7 +629,7 @@ async def test_load_one_wraps_secret_error_as_failed_health():
         yield  # pragma: no cover
 
     manager = MCPManager()
-    with patch("aug.core.mcp_manager._open_session", _open):
+    with patch("aug.core.mcp.manager._open_session", _open):
         await manager._load_one(cfg)
     assert manager.health["needs-secret"].status == "failed"
     assert "not set" in manager.health["needs-secret"].error
@@ -651,7 +651,7 @@ def _state_with_pending(action: str = "install", state: str = "restart_pending")
 @contextmanager
 def _patch_state(state: AppState, saved: dict | None = None):
     """reconcile_operations() peeks via the module-bound load_state (a direct
-    `from ... import` into mcp_manager.py) before taking the lock, then does
+    `from ... import` into manager.py) before taking the lock, then does
     its real read-modify-write through update_state() — which calls
     aug.utils.state's *own* load_state/save_state internally. Both bindings
     need to agree for a test to see a consistent view."""
@@ -661,7 +661,7 @@ def _patch_state(state: AppState, saved: dict | None = None):
         else patch("aug.utils.state.save_state")
     )
     with (
-        patch("aug.core.mcp_manager.load_state", return_value=state),
+        patch("aug.core.mcp.manager.load_state", return_value=state),
         patch("aug.utils.state.load_state", return_value=state),
         save_target,
     ):
@@ -750,7 +750,7 @@ async def test_reconcile_operations_removal_failure_when_still_configured_but_no
 
     with (
         _patch_state(_state_with_pending(action="remove")),
-        patch("aug.core.mcp_manager.load_settings", return_value=settings),
+        patch("aug.core.mcp.manager.load_settings", return_value=settings),
     ):
         outcomes = await manager.reconcile_operations()
 

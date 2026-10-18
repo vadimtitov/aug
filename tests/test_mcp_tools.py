@@ -3,10 +3,11 @@
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 import aug.core.tools.mcp as mcp_tools
-from aug.core.mcp_manager import McpServerHealth
+from aug.core.mcp.manager import McpServerHealth
 from aug.core.tools.approval import ApprovalDecision
 from aug.utils.file_settings import ApprovalRule, AppSettings, McpServerConfig, ToolSettings
 from aug.utils.mcp_registry import McpRegistryServer
@@ -71,7 +72,7 @@ def _patch_no_plans():
     st = AppState()
     return (
         patch.multiple(
-            "aug.core.mcp_install",
+            "aug.core.mcp.install",
             load_state=MagicMock(return_value=st),
             save_state=MagicMock(),
         ),
@@ -114,6 +115,18 @@ async def test_search_mcp_servers_reports_failure_honestly():
         output = await mcp_tools.search_mcp_servers.ainvoke({"query": "x"})
     assert "did not complete" in output.lower()
     assert "registry unreachable" in output
+
+
+@pytest.mark.asyncio
+async def test_search_mcp_servers_failure_names_errors_with_empty_message():
+    # httpx.ReadTimeout("") stringifies to "" — the agent must still see what failed.
+    with patch(
+        "aug.core.tools.mcp.McpRegistryClient.search",
+        AsyncMock(side_effect=httpx.ReadTimeout("")),
+    ):
+        output = await mcp_tools.search_mcp_servers.ainvoke({"query": "x"})
+    assert "did not complete" in output.lower()
+    assert "ReadTimeout" in output
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +251,7 @@ async def test_install_mcp_server_missing_secrets_returns_plan_without_saving():
     with (
         patch(_P_APPROVAL, return_value=_APPROVE_ALL),
         _patch_settings(settings, save_calls),
-        patch("aug.core.mcp_install.list_secret_names", return_value=set()),
+        patch("aug.core.mcp.install.list_secret_names", return_value=set()),
         load_p,
         save_p,
     ):
@@ -261,7 +274,7 @@ async def test_install_mcp_server_shows_existing_secret_binding_for_approval():
     with (
         load_p,
         save_p,
-        patch("aug.core.mcp_install.list_secret_names", return_value={"GITHUB_TOKEN"}),
+        patch("aug.core.mcp.install.list_secret_names", return_value={"GITHUB_TOKEN"}),
     ):
         resource, operation = await mcp_tools._describe_install(1)
 
@@ -283,7 +296,7 @@ async def test_install_mcp_server_succeeds_when_secrets_present():
     with (
         patch(_P_APPROVAL, return_value=_APPROVE_ALL),
         _patch_settings(settings, save_calls),
-        patch("aug.core.mcp_install.list_secret_names", return_value={"GITHUB_TOKEN"}),
+        patch("aug.core.mcp.install.list_secret_names", return_value={"GITHUB_TOKEN"}),
         patch("aug.core.tools.mcp.record_operation", AsyncMock(return_value="op1")) as mock_record,
         patch(
             "aug.core.tools.mcp.schedule_restart",
@@ -297,6 +310,8 @@ async def test_install_mcp_server_succeeds_when_secrets_present():
         output = await mcp_tools.install_mcp_server.ainvoke({"index": 1})
 
     assert "config saved" in output.lower()
+    # The agent must not report an install as done before the restart proves it.
+    assert "not active yet" in output.lower()
     assert len(save_calls) == 1
     saved_cfg = save_calls[0].mcp_servers[0]
     assert saved_cfg.env == {"GITHUB_TOKEN": "hushed:GITHUB_TOKEN"}
@@ -324,7 +339,7 @@ async def test_install_mcp_server_sanitizes_header_name_into_secret_identifier()
     with (
         patch(_P_APPROVAL, return_value=_APPROVE_ALL),
         _patch_settings(settings, save_calls),
-        patch("aug.core.mcp_install.list_secret_names", return_value={"X_API_KEY"}),
+        patch("aug.core.mcp.install.list_secret_names", return_value={"X_API_KEY"}),
         patch("aug.core.tools.mcp.record_operation", AsyncMock(return_value="op1")),
         patch("aug.core.tools.mcp.schedule_restart"),
         load_p,
@@ -349,7 +364,7 @@ async def test_install_mcp_server_no_required_secrets_installs_directly():
     with (
         patch(_P_APPROVAL, return_value=_APPROVE_ALL),
         _patch_settings(settings, save_calls),
-        patch("aug.core.mcp_install.list_secret_names", return_value=set()),
+        patch("aug.core.mcp.install.list_secret_names", return_value=set()),
         patch("aug.core.tools.mcp.record_operation", AsyncMock(return_value="op1")),
         patch("aug.core.tools.mcp.schedule_restart"),
         load_p,
@@ -374,11 +389,11 @@ async def test_install_mcp_server_denial_clears_the_plan():
     # in-memory state — see _patch_settings's docstring for why both
     # modules' bindings need patching.
     with (
-        patch("aug.core.mcp_install.load_state", return_value=state),
-        patch("aug.core.mcp_install.save_state"),
+        patch("aug.core.mcp.install.load_state", return_value=state),
+        patch("aug.core.mcp.install.save_state"),
         patch("aug.utils.state.load_state", return_value=state),
         patch("aug.utils.state.save_state"),
-        patch("aug.core.mcp_install.list_secret_names", return_value=set()),
+        patch("aug.core.mcp.install.list_secret_names", return_value=set()),
         patch(_P_APPROVAL, return_value=AppSettings()),  # no saved rule -> triggers interrupt
         patch("aug.core.tools.approval.interrupt", return_value=ApprovalDecision.DENIED),
     ):
@@ -407,7 +422,7 @@ async def test_install_mcp_server_rechecks_duplicates_inside_lock():
         patch("aug.core.tools.mcp.load_settings", return_value=AppSettings(mcp_servers=[])),
         patch("aug.utils.file_settings.load_settings", return_value=installed),
         patch("aug.utils.file_settings.save_settings") as mock_save,
-        patch("aug.core.mcp_install.list_secret_names", return_value=set()),
+        patch("aug.core.mcp.install.list_secret_names", return_value=set()),
         patch("aug.core.tools.mcp.record_operation", AsyncMock(return_value="op1")),
         patch("aug.core.tools.mcp.update_operation_state", AsyncMock()),
         load_p,
@@ -459,6 +474,34 @@ async def test_remove_mcp_server_success():
         output = await mcp_tools.remove_mcp_server.ainvoke({"name": "postgres"})
 
     assert "removed" in output.lower()
+    assert "pending, not done" in output.lower()
     assert save_calls[0].mcp_servers == []
     mock_record.assert_called_once_with("remove", "postgres", "saved", interface="", thread_id="")
     assert schedule_calls == [("op2", "postgres", "", "")]
+
+
+# ---------------------------------------------------------------------------
+# install/remove result wording — only promise what will actually happen
+# ---------------------------------------------------------------------------
+
+
+def test_pending_message_with_self_restart_and_push_channel():
+    with patch("aug.core.tools.mcp.can_self_restart", return_value=True):
+        msg = mcp_tools._pending_message("Saved.", "install", "telegram")
+    assert "attempt to restart itself" in msg
+    assert "reported here" in msg
+    assert "pending, not done" in msg
+
+
+def test_pending_message_without_portainer_asks_for_manual_restart():
+    with patch("aug.core.tools.mcp.can_self_restart", return_value=False):
+        msg = mcp_tools._pending_message("Saved.", "install", "telegram")
+    assert "will NOT restart by itself" in msg
+    assert "attempt to restart" not in msg
+
+
+def test_pending_message_over_rest_promises_no_report():
+    with patch("aug.core.tools.mcp.can_self_restart", return_value=True):
+        msg = mcp_tools._pending_message("Saved.", "removal", "rest_api")
+    assert "No outcome will be reported" in msg
+    assert "reported here once" not in msg

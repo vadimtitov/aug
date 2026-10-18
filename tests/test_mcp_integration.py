@@ -27,7 +27,7 @@ from typing_extensions import TypedDict
 
 import aug.core.tools.mcp as mcp_tools
 from aug.core.agents.chat_agent import ChatAgent
-from aug.core.mcp_manager import MCPManager, _read_hushed_secret
+from aug.core.mcp.manager import MCPManager, _read_hushed_secret
 from aug.core.state import AgentState
 from aug.core.tools.approval import ApprovalDecision
 from aug.utils.file_settings import ApprovalRule, AppSettings, McpServerConfig, ToolSettings
@@ -216,14 +216,14 @@ async def test_install_plan_survives_a_concurrent_search_in_another_conversation
 
     with (
         patch(_P_APPROVAL, return_value=_APPROVE_ALL),
-        patch("aug.core.mcp_install.load_state", return_value=state),
-        patch("aug.core.mcp_install.save_state"),
+        patch("aug.core.mcp.install.load_state", return_value=state),
+        patch("aug.core.mcp.install.save_state"),
         patch("aug.utils.state.load_state", return_value=state),
         patch("aug.utils.state.save_state"),
         patch("aug.core.tools.mcp.load_settings", return_value=settings),
         patch("aug.utils.file_settings.load_settings", return_value=settings),
         patch("aug.utils.file_settings.save_settings", side_effect=lambda s: saved.append(s)),
-        patch("aug.core.mcp_install.list_secret_names", return_value=set()),
+        patch("aug.core.mcp.install.list_secret_names", return_value=set()),
         patch("aug.core.tools.mcp.record_operation", AsyncMock(return_value="op1")),
         patch("aug.core.tools.mcp.schedule_restart"),
     ):
@@ -266,11 +266,11 @@ async def test_concurrent_installs_of_different_servers_both_persist():
             "aug.utils.file_settings.save_settings",
             side_effect=lambda s: store.__setitem__("settings", s),
         ),
-        patch("aug.core.mcp_install.load_state", return_value=AppState()),
-        patch("aug.core.mcp_install.save_state"),
+        patch("aug.core.mcp.install.load_state", return_value=AppState()),
+        patch("aug.core.mcp.install.save_state"),
         patch("aug.utils.state.load_state", return_value=AppState()),
         patch("aug.utils.state.save_state"),
-        patch("aug.core.mcp_install.list_secret_names", return_value=set()),
+        patch("aug.core.mcp.install.list_secret_names", return_value=set()),
         patch("aug.core.tools.mcp.record_operation", AsyncMock(return_value="op1")),
         patch("aug.core.tools.mcp.schedule_restart"),
     ):
@@ -300,7 +300,7 @@ async def test_slow_mcp_server_times_out_as_tool_error_not_exception(tmp_path):
         await manager._load_one(cfg)
         assert manager.health["slow"].status == "active"
 
-        with patch("aug.core.mcp_manager._TOOL_CALL_TIMEOUT", 0.2):
+        with patch("aug.core.mcp.manager._TOOL_CALL_TIMEOUT", 0.2):
             with pytest.raises(ToolException, match="did NOT complete"):
                 await manager.tools[0].coroutine(text="hi")
     finally:
@@ -321,7 +321,7 @@ async def test_removed_server_reconciles_as_success():
     )
 
     with (
-        patch("aug.core.mcp_manager.load_state", return_value=state),
+        patch("aug.core.mcp.manager.load_state", return_value=state),
         patch("aug.utils.state.load_state", return_value=state),
         patch("aug.utils.state.save_state"),
     ):
@@ -343,9 +343,9 @@ async def test_secret_never_appears_in_logs_from_real_subprocess_stderr(tmp_path
     )
     manager = MCPManager()
 
-    with patch("aug.core.mcp_manager._read_hushed_secret", return_value="super-secret-token-xyz"):
+    with patch("aug.core.mcp.manager._read_hushed_secret", return_value="super-secret-token-xyz"):
         try:
-            with caplog.at_level(logging.INFO, logger="aug.core.mcp_manager"):
+            with caplog.at_level(logging.INFO, logger="aug.core.mcp.manager"):
                 await manager._load_one(cfg)
                 await asyncio.sleep(0.2)  # give the stderr pump a moment to log the line
         finally:
@@ -539,7 +539,7 @@ async def test_agent_graph_completes_when_an_mcp_tool_call_times_out(tmp_path):
     try:
         with (
             patch("aug.core.agents.chat_agent.build_chat_model", return_value=fake_llm),
-            patch("aug.core.mcp_manager._TOOL_CALL_TIMEOUT", 0.2),
+            patch("aug.core.mcp.manager._TOOL_CALL_TIMEOUT", 0.2),
         ):
             agent = ChatAgent(model="fake-model", tools=manager.tools)
             graph = agent._build_subagent()
@@ -576,7 +576,7 @@ async def test_successful_tool_result_redacts_a_resolved_secret(tmp_path):
         env={"MY_SECRET_VAR": "hushed:MY_SECRET_VAR"},
     )
     manager = MCPManager()
-    with patch("aug.core.mcp_manager._read_hushed_secret", return_value="super-secret-token-xyz"):
+    with patch("aug.core.mcp.manager._read_hushed_secret", return_value="super-secret-token-xyz"):
         await manager._load_one(cfg)
         try:
             whoami = next(t for t in manager.tools if t.name == "secretecho__whoami")
@@ -601,7 +601,7 @@ async def test_tool_execution_error_redacts_a_resolved_secret(tmp_path):
         env={"MY_SECRET_VAR": "hushed:MY_SECRET_VAR"},
     )
     manager = MCPManager()
-    with patch("aug.core.mcp_manager._read_hushed_secret", return_value="super-secret-token-xyz"):
+    with patch("aug.core.mcp.manager._read_hushed_secret", return_value="super-secret-token-xyz"):
         await manager._load_one(cfg)
         try:
             boom = next(t for t in manager.tools if t.name == "secretecho__boom")

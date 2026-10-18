@@ -1,13 +1,13 @@
-"""Tests for aug/core/mcp_restart.py — restart delivery for MCP install/remove."""
+"""Tests for aug/core/mcp/restart.py — restart delivery for MCP install/remove."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from aug.core.mcp_restart import trigger_restart
+from aug.core.mcp.restart import can_report_outcome, can_self_restart, trigger_restart
 
 
-def _settings(container="aug-aug-1", environment="musya"):
+def _settings(container="aug-container", environment="prod"):
     m = MagicMock()
     m.AUG_CONTAINER = container
     m.AUG_ENVIRONMENT = environment
@@ -21,10 +21,10 @@ async def test_trigger_restart_portainer_not_configured():
     mock_client.is_configured.return_value = False
 
     with (
-        patch("aug.core.mcp_restart.get_settings", return_value=_settings()),
-        patch("aug.core.mcp_restart.PortainerClient", return_value=mock_client),
+        patch("aug.core.mcp.restart.get_settings", return_value=_settings()),
+        patch("aug.core.mcp.restart.PortainerClient", return_value=mock_client),
         patch(
-            "aug.core.mcp_restart.update_operation_state",
+            "aug.core.mcp.restart.update_operation_state",
             AsyncMock(side_effect=lambda *a: update_calls.append(a)),
         ),
     ):
@@ -43,9 +43,9 @@ async def test_trigger_restart_container_or_environment_unset():
     mock_client.is_configured.return_value = True
 
     with (
-        patch("aug.core.mcp_restart.get_settings", return_value=_settings(container=None)),
-        patch("aug.core.mcp_restart.PortainerClient", return_value=mock_client),
-        patch("aug.core.mcp_restart.update_operation_state", AsyncMock()),
+        patch("aug.core.mcp.restart.get_settings", return_value=_settings(container=None)),
+        patch("aug.core.mcp.restart.PortainerClient", return_value=mock_client),
+        patch("aug.core.mcp.restart.update_operation_state", AsyncMock()),
     ):
         result = await trigger_restart("op1", "postgres")
 
@@ -67,10 +67,10 @@ async def test_trigger_restart_success_marks_pending_before_the_actual_restart_c
     mock_client.container_action = AsyncMock(side_effect=lambda *a: order.append("restart"))
 
     with (
-        patch("aug.core.mcp_restart.get_settings", return_value=_settings()),
-        patch("aug.core.mcp_restart.PortainerClient", return_value=mock_client),
+        patch("aug.core.mcp.restart.get_settings", return_value=_settings()),
+        patch("aug.core.mcp.restart.PortainerClient", return_value=mock_client),
         patch(
-            "aug.core.mcp_restart.update_operation_state",
+            "aug.core.mcp.restart.update_operation_state",
             AsyncMock(side_effect=lambda *a: order.append(a)),
         ),
     ):
@@ -89,10 +89,10 @@ async def test_trigger_restart_container_not_found():
 
     update_calls = []
     with (
-        patch("aug.core.mcp_restart.get_settings", return_value=_settings()),
-        patch("aug.core.mcp_restart.PortainerClient", return_value=mock_client),
+        patch("aug.core.mcp.restart.get_settings", return_value=_settings()),
+        patch("aug.core.mcp.restart.PortainerClient", return_value=mock_client),
         patch(
-            "aug.core.mcp_restart.update_operation_state",
+            "aug.core.mcp.restart.update_operation_state",
             AsyncMock(side_effect=lambda *a: update_calls.append(a)),
         ),
     ):
@@ -110,10 +110,10 @@ async def test_trigger_restart_handles_exception():
 
     update_calls = []
     with (
-        patch("aug.core.mcp_restart.get_settings", return_value=_settings()),
-        patch("aug.core.mcp_restart.PortainerClient", return_value=mock_client),
+        patch("aug.core.mcp.restart.get_settings", return_value=_settings()),
+        patch("aug.core.mcp.restart.PortainerClient", return_value=mock_client),
         patch(
-            "aug.core.mcp_restart.update_operation_state",
+            "aug.core.mcp.restart.update_operation_state",
             AsyncMock(side_effect=lambda *a: update_calls.append(a)),
         ),
     ):
@@ -122,3 +122,32 @@ async def test_trigger_restart_handles_exception():
     assert "restart failed" in result.lower()
     assert "portainer down" in result
     assert update_calls[0][1] == "failed"
+
+
+@pytest.mark.parametrize(
+    ("configured", "container", "environment", "expected"),
+    [
+        (True, "aug-container", "prod", True),
+        (False, "aug-container", "prod", False),
+        (True, None, "prod", False),
+        (True, "aug-container", None, False),
+    ],
+)
+def test_can_self_restart(configured, container, environment, expected):
+    mock_client = MagicMock()
+    mock_client.is_configured.return_value = configured
+    with (
+        patch(
+            "aug.core.mcp.restart.get_settings",
+            return_value=_settings(container=container, environment=environment),
+        ),
+        patch("aug.core.mcp.restart.PortainerClient", return_value=mock_client),
+    ):
+        assert can_self_restart() is expected
+
+
+@pytest.mark.parametrize(
+    ("interface", "expected"), [("telegram", True), ("rest_api", False), ("", False)]
+)
+def test_can_report_outcome(interface, expected):
+    assert can_report_outcome(interface) is expected

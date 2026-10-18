@@ -1,10 +1,10 @@
-"""Tests for aug/core/mcp_install.py — MCP install-plan resolution/building."""
+"""Tests for aug/core/mcp/install.py — MCP install-plan resolution/building."""
 
 from unittest.mock import patch
 
 import pytest
 
-from aug.core import mcp_install
+from aug.core.mcp import install as mcp_install
 from aug.utils.mcp_registry import McpRegistryServer
 from aug.utils.state import AppState, McpCredentialBinding, McpInstallPlan
 
@@ -41,7 +41,7 @@ async def test_get_or_build_plan_reuses_persisted_plan_across_a_different_search
     with (
         patch("aug.utils.state.load_state", return_value=state),
         patch("aug.utils.state.save_state"),
-        patch("aug.core.mcp_install.list_secret_names", return_value=set()),
+        patch("aug.core.mcp.install.list_secret_names", return_value=set()),
     ):
         plan = await mcp_install.get_or_build_plan("thread-a", 1, snapshot_a)
         assert plan is not None
@@ -76,7 +76,7 @@ async def test_get_or_build_plan_survives_missing_live_snapshot():
     with (
         patch("aug.utils.state.load_state", return_value=state),
         patch("aug.utils.state.save_state"),
-        patch("aug.core.mcp_install.list_secret_names", return_value={"X"}),
+        patch("aug.core.mcp.install.list_secret_names", return_value={"X"}),
     ):
         resolved = await mcp_install.get_or_build_plan("thread-a", 1, [])
 
@@ -111,7 +111,7 @@ async def test_get_or_build_plan_revalidates_bound_status_on_retry():
     with (
         patch("aug.utils.state.load_state", return_value=state),
         patch("aug.utils.state.save_state", side_effect=lambda s: saved.append(s)),
-        patch("aug.core.mcp_install.list_secret_names", return_value={"GITHUB_TOKEN"}),
+        patch("aug.core.mcp.install.list_secret_names", return_value={"GITHUB_TOKEN"}),
     ):
         resolved = await mcp_install.get_or_build_plan("thread-a", 1, [])
 

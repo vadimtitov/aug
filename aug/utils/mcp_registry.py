@@ -19,7 +19,8 @@ from aug.utils.file_settings import McpServerConfig
 logger = logging.getLogger(__name__)
 
 _REGISTRY_BASE = "https://registry.modelcontextprotocol.io"
-_TIMEOUT = 15.0
+# A cold registry request routinely takes ~10s (warm: <1s).
+_TIMEOUT = 30.0
 _DEFAULT_LIMIT = 10
 # A literal/default value the registry declares as e.g. "{other_var}" is a
 # template referencing some other input this v1 install flow has no way to
@@ -98,8 +99,12 @@ class McpRegistryClient:
     async def search(self, query: str, limit: int = _DEFAULT_LIMIT) -> list[McpRegistryServer]:
         """Search the registry. Returns [] on no matches; raises on transport failure."""
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            # version=latest: without it every published version is its own
+            # result, so a few prolific servers fill the page with old releases
+            # and push other servers (e.g. the official Playwright one) off it.
             r = await client.get(
-                f"{self._base}/v0.1/servers", params={"search": query, "limit": limit}
+                f"{self._base}/v0.1/servers",
+                params={"search": query, "limit": limit, "version": "latest"},
             )
             r.raise_for_status()
         data = r.json()

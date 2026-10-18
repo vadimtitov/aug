@@ -1,7 +1,7 @@
 """MCP tool support — search, install, list, and remove MCP servers.
 
-Install planning lives in aug.core.mcp_install, restart delivery in
-aug.core.mcp_restart, hushed secret listing in aug.utils.hushed — this module
+Install planning lives in aug.core.mcp.install, restart delivery in
+aug.core.mcp.restart, hushed secret listing in aug.utils.hushed — this module
 is the tool surface plus the per-conversation search-result cache that ties
 them together ("install #N" resolves against *this* conversation's last
 search, never another conversation's).
@@ -11,9 +11,9 @@ import logging
 
 from langchain_core.tools import tool
 
-from aug.core import mcp_install
-from aug.core.mcp_manager import get_manager, record_operation, update_operation_state
-from aug.core.mcp_restart import schedule_restart
+from aug.core.mcp import install as mcp_install
+from aug.core.mcp.manager import get_manager, record_operation, update_operation_state
+from aug.core.mcp.restart import can_report_outcome, can_self_restart, schedule_restart
 from aug.core.tools.approval import requires_approval
 from aug.core.tools.context import current_interface, current_thread_id
 from aug.utils.file_settings import load_settings, update_settings
@@ -48,7 +48,8 @@ async def search_mcp_servers(query: str) -> str:
         results = await client.search(query)
     except Exception as exc:
         logger.warning("search_mcp_servers failed query=%r: %r", query, exc)
-        return f"MCP Registry search did NOT complete. Error: {exc}"
+        # type name too: some httpx errors (e.g. ReadTimeout) stringify to "".
+        return f"MCP Registry search did NOT complete. Error: {type(exc).__name__}: {exc}"
 
     _state.last_search[current_thread_id()] = results
     if not results:
@@ -135,7 +136,12 @@ async def install_mcp_server(index: int) -> str:
 
     mcp_install.clear_plan(thread_id)
     schedule_restart(op_id, plan.slug, interface, thread_id)
-    return f"Config saved for '{plan.slug}'. Restarting to activate..."
+    return _pending_message(
+        f"Config saved for '{plan.slug}', but it is NOT active yet — its tools only "
+        "appear after AUG restarts.",
+        "install",
+        interface,
+    )
 
 
 @tool
@@ -169,7 +175,11 @@ async def remove_mcp_server(name: str) -> str:
         return f"No MCP server named '{name}' is configured. See list_mcp_servers for what's there."
 
     schedule_restart(op_id, name, interface, thread_id)
-    return f"Removed '{name}' from config. Restarting to deactivate..."
+    return _pending_message(
+        f"Removed '{name}' from config, but its tools stay active until AUG restarts.",
+        "removal",
+        interface,
+    )
 
 
 async def _describe_install(index: int) -> tuple[str, str]:
@@ -177,3 +187,20 @@ async def _describe_install(index: int) -> tuple[str, str]:
     thread_id = current_thread_id()
     snapshot = _state.last_search.get(thread_id, [])
     return await mcp_install.describe_plan(thread_id, index, snapshot)
+
+
+def _pending_message(saved: str, what: str, interface: str) -> str:
+    """Install/remove result: what was saved, plus only the follow-up that will
+    actually happen — a restart and an outcome report are both conditional."""
+    restart = (
+        "AUG will attempt to restart itself in a few seconds."
+        if can_self_restart()
+        else "AUG will NOT restart by itself (Portainer / AUG_CONTAINER / AUG_ENVIRONMENT "
+        "not configured) — the user must restart it manually."
+    )
+    report = (
+        "The outcome is reported here once AUG is back."
+        if can_report_outcome(interface)
+        else "No outcome will be reported here — check list_mcp_servers after the restart."
+    )
+    return f"{saved} {restart} {report} Tell the user the {what} is pending, not done."
