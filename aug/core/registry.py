@@ -357,35 +357,37 @@ _V11_KIMI_TOOLS = [
     make_run_subagent_tool(_subagent_kimi),
 ]
 
-# v12_claude = v11_claude's tools minus browser + MCP management tools + whatever
+# v12 = the matching v11 tool set minus browser + MCP management tools + whatever
 # MCP servers are actually reachable at startup. Browsing comes from an MCP
 # server (e.g. @playwright/mcp) instead. V11 agents are immutable and untouched —
-# this is a new version, not a modification of _V11_CLAUDE_TOOLS.
-_V12_BASE_TOOLS = [
-    *(t for t in _V11_CLAUDE_TOOLS if t is not browser),
+# these are new versions, not modifications of the _V11_* lists.
+_MCP_MANAGEMENT_TOOLS = [
     search_mcp_servers,
     install_mcp_server,
     list_mcp_servers,
     remove_mcp_server,
 ]
+_V12_CLAUDE_TOOLS = [*(t for t in _V11_CLAUDE_TOOLS if t is not browser), *_MCP_MANAGEMENT_TOOLS]
+_V12_GLM5_TOOLS = [*(t for t in _V11_GLM5_TOOLS if t is not browser), *_MCP_MANAGEMENT_TOOLS]
+_V12_KIMI_TOOLS = [*(t for t in _V11_KIMI_TOOLS if t is not browser), *_MCP_MANAGEMENT_TOOLS]
 
 
 def v12_base_tool_names() -> set[str]:
-    """Names of v12_claude's non-MCP tools — seeds MCPManager's collision check
-    so a server can never shadow a native AUG tool."""
-    return {t.name for t in _V12_BASE_TOOLS}
+    """Names of the v12 agents' non-MCP tools — seeds MCPManager's collision
+    check so a server can never shadow a native AUG tool."""
+    return {t.name for t in [*_V12_CLAUDE_TOOLS, *_V12_GLM5_TOOLS, *_V12_KIMI_TOOLS]}
 
 
 def configure_mcp_tools(tools: list[BaseTool]) -> None:
-    """Rebuild v12_claude with the MCP tools MCPManager actually connected.
+    """Rebuild the v12 agents with the MCP tools MCPManager actually connected.
 
     Called once from aug/app.py's lifespan(), after MCPManager.load_all()
     resolves which configured servers are reachable. Before this runs (e.g. in
     tests, or if a server config exists but the app hasn't booted through
-    lifespan) v12_claude simply has no MCP-sourced tools yet — same graceful
-    degradation as "every MCP server failed to connect".
+    lifespan) the v12 agents simply have no MCP-sourced tools yet — same
+    graceful degradation as "every MCP server failed to connect".
     """
-    _REGISTRY["v12_claude"] = _build_v12_claude(tools)
+    _REGISTRY.update(_build_v12_agents(tools))
 
 
 _REGISTRY: dict[str, BaseAgent] = {
@@ -566,19 +568,42 @@ def get_agent(name: str) -> BaseAgent:
     return _REGISTRY[name]
 
 
-def _build_v12_claude(mcp_tools: list[BaseTool]) -> AugAgent:
-    return AugAgent(
-        model="claude-sonnet-4-6",
-        tools=[*_V12_BASE_TOOLS, *mcp_tools],
-        temperature=0.0,
-        recursion_limit=100,
-        compaction_model="claude-haiku-4-5",
-        compaction_threshold=0.7,
-        context_window=500_000,
-        max_summary_tokens=2000,
-    )
+def _build_v12_agents(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:
+    return {
+        "v12_claude": AugAgent(
+            model="claude-sonnet-4-6",
+            tools=[*_V12_CLAUDE_TOOLS, *mcp_tools],
+            temperature=0.0,
+            recursion_limit=100,
+            compaction_model="claude-haiku-4-5",
+            compaction_threshold=0.7,
+            context_window=500_000,
+            max_summary_tokens=2000,
+        ),
+        "v12_glm5": AugAgent(
+            model="accounts/fireworks/models/glm-5p3",
+            tools=[*_V12_GLM5_TOOLS, *mcp_tools],
+            temperature=0.0,
+            recursion_limit=100,
+            vision_description_model="gemini-2.5-flash",
+            compaction_model="accounts/fireworks/models/glm-5p3",
+            compaction_threshold=0.8,
+            context_window=200_000,
+            max_summary_tokens=2000,
+        ),
+        "v12_kimi": AugAgent(
+            model="accounts/fireworks/models/kimi-k3",
+            tools=[*_V12_KIMI_TOOLS, *mcp_tools],
+            temperature=0.0,
+            recursion_limit=100,
+            compaction_model="accounts/fireworks/models/kimi-k3",
+            compaction_threshold=0.8,
+            context_window=200_000,
+            max_summary_tokens=2000,
+        ),
+    }
 
 
-# Seeds v12_claude with no MCP tools until aug/app.py's lifespan() calls
+# Seeds the v12 agents with no MCP tools until aug/app.py's lifespan() calls
 # configure_mcp_tools() again with whatever MCPManager actually connected.
 configure_mcp_tools([])

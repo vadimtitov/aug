@@ -162,7 +162,7 @@ async def lifespan(app: FastAPI):
         telegram = TelegramInterface(checkpointer)
         await telegram.start_polling(app)
 
-        # MCP servers — connects before v12_claude's tool list is finalized, so
+        # MCP servers — connects before the v12 agents' tool lists are finalized, so
         # the agent that gets built (or resumed from a checkpoint) sees whichever
         # servers were actually reachable this boot. Bounded by its own overall
         # deadline; a server that never comes up just isn't in the tool list.
