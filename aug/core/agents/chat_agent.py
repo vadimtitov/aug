@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 
 from aug.core.agents.base_agent import BaseAgent
@@ -178,14 +179,15 @@ class AugAgent(BaseAgent):
         self._compaction_threshold = compaction_threshold
         self._context_window = context_window
         self._max_summary_tokens = max_summary_tokens
-        self._llm = build_chat_model(
+        self._model = build_chat_model(
             model,
             temperature=temperature,
             max_tokens=max_tokens,
             max_retries=max_retries,
             timeout=timeout,
             seed=seed,
-        ).bind_tools(self.tools)
+        )
+        self._llm = self._model.bind_tools(self.tools)
 
     def with_extra_tools(self, tools: list[BaseTool]) -> "AugAgent":
         """A new agent with this one's settings and *tools* added to its own."""
@@ -203,6 +205,9 @@ class AugAgent(BaseAgent):
         return AgentStateUpdate(system_prompt=prompt)
 
     async def respond(self, state: AgentState) -> AgentStateUpdate:
+        return await self._respond_with(self._llm, state)
+
+    async def _respond_with(self, llm: Runnable, state: AgentState) -> AgentStateUpdate:
         messages = _drop_orphaned_tool_calls(state.messages)
         state_changes: list[AnyMessage] = []
         tokens = count_tokens(messages)
@@ -220,7 +225,7 @@ class AugAgent(BaseAgent):
         if not self._vision_description_model:
             messages = await _expand_images(messages)
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
-        response: AIMessage = await self._llm.ainvoke(messages)
+        response: AIMessage = await llm.ainvoke(messages)
         log_token_usage(response)
         return AgentStateUpdate(messages=[*state_changes, response])
 

@@ -4,15 +4,25 @@ import asyncio
 import contextlib
 import json
 import logging
+import mimetypes
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from aug.api.interfaces.base import BaseInterface, IncomingMessage, TextContent
+from aug.api.interfaces.base import (
+    BaseInterface,
+    ContentPart,
+    FileContent,
+    IncomingMessage,
+    TextContent,
+)
 from aug.api.schemas.chat import ChatRequest
 from aug.core.events import AgentEvent, ChatModelStreamEvent
 from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
+from aug.utils.data import UPLOADS_DIR
+from aug.utils.storage import FileStorage
 
 logger = logging.getLogger(__name__)
 
@@ -54,19 +64,50 @@ class RestApiInterface(BaseInterface[_RestContext]):
     run lifecycle management, and error handling defined in BaseInterface._execute_run.
     """
 
-    def __init__(self, checkpointer: BaseCheckpointSaver) -> None:
+    def __init__(
+        self, checkpointer: BaseCheckpointSaver, storage: FileStorage | None = None
+    ) -> None:
         super().__init__(checkpointer)
+        self._storage = storage
 
     async def receive_message(self, context: _RestContext) -> IncomingMessage | None:
         req = context.request
+        parts: list[ContentPart] = await self._attachment_parts(req)
+        if req.message:
+            parts.append(TextContent(text=req.message))
         return IncomingMessage(
-            parts=[TextContent(text=req.message)],
+            parts=parts,
             interface="rest_api",
             sender_id=req.thread_id,
             thread_id=req.thread_id,
             agent_version=context.agent_version,
-            user_id=req.thread_id,  # REST has no separate user identity — the thread is the caller
+            # Without an explicit user, the thread is the caller.
+            user_id=req.user_id or req.thread_id,
         )
+
+    async def _attachment_parts(self, req: ChatRequest) -> list[ContentPart]:
+        """Copy uploaded files (POST /files/upload) next to Telegram's uploads, as file
+        parts — the agent sees them exactly as it sees a file sent on Telegram."""
+        parts: list[ContentPart] = []
+        for attachment in req.attachments:
+            data = await self._storage.read(attachment.file_id) if self._storage else None
+            if data is None:
+                parts.append(
+                    TextContent(text=f"[Attachment {attachment.file_id} could not be found]")
+                )
+                continue
+            meta = await self._storage.get_metadata(attachment.file_id)
+            filename = Path(meta.filename).name if meta else attachment.file_id
+            mime = attachment.mime_type or mimetypes.guess_type(filename)[0]
+            part = FileContent(
+                path=str(
+                    UPLOADS_DIR / f"rest-{req.thread_id}" / f"{attachment.file_id[:8]}_{filename}"
+                ),
+                mime_type=mime or "application/octet-stream",
+            )
+            await part.write(data)
+            parts.append(part)
+        return parts
 
     async def send_stream(self, stream: AsyncIterator[AgentEvent], context: _RestContext) -> None:
         async for event in stream:

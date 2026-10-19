@@ -69,6 +69,16 @@ export function getModels(): Promise<string[]> {
   return request<string[]>("/models");
 }
 
+/** Knowledge-base models that cannot be picked — shown read-only. */
+export interface KbFixedModels {
+  embedding: string;
+  transcription: string;
+}
+
+export function getKbFixedModels(): Promise<KbFixedModels> {
+  return request<KbFixedModels>("/settings/knowledge-base/fixed");
+}
+
 // ---------------------------------------------------------------------------
 // Live browser view
 // ---------------------------------------------------------------------------

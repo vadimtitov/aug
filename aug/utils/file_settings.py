@@ -97,6 +97,18 @@ class ImageGenToolSettings(BaseModel):
     model: str = "gpt-image-1.5"
 
 
+class KnowledgeBaseSettings(BaseModel):
+    """The knowledge base's pickable models, read on every call so a change applies at
+    once.  Embedding and transcription models are fixed — see
+    ``aug.core.kb.service.KB_FIXED_MODELS``.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    extraction_model: str = "accounts/fireworks/models/glm-5p3-flash"
+    vision_model: str = "gemini-2.5-flash"
+
+
 class ToolSettings(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -184,6 +196,7 @@ class AppSettings(BaseModel):
 
     conversations: dict[str, ConversationSettings] = {}
     consolidation: ConsolidationSettings = ConsolidationSettings()
+    knowledge_base: KnowledgeBaseSettings = KnowledgeBaseSettings()
     tools: ToolSettings = ToolSettings()
     reflexes: ReflexSettings = ReflexSettings()
     mcp_servers: list[McpServerConfig] = []

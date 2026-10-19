@@ -213,3 +213,6 @@ __marimo__/
 
 # User data — volume-mounted at runtime, not committed
 /data/*
+
+# Knowledge-base eval output (generated fixtures, data dir, reports)
+eval-results/

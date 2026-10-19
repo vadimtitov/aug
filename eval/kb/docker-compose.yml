@@ -1,0 +1,64 @@
+# Isolated stack for the knowledge-base eval — its own project, ports, data and
+# databases, so a dev stack (8012/5432/5433) and prod are never touched.
+#
+#   docker compose -p aug-kb-eval -f eval/kb/docker-compose.yml up --build -d
+#
+# Shares the repo's .env for LLM_* / API_KEY; everything that could reach a real
+# service the eval has no business touching is blanked below.
+services:
+  aug:
+    build: ../..
+    ports:
+      - "8013:8000"
+    env_file: ../../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aug:password@postgres:5432/aug
+      KB_DATABASE_URL: postgresql+asyncpg://aug:password@pgvector:5432/aug_kb
+      DEBUG: "true"
+      STARTUP_ANNOUNCEMENT: "false"
+      BASE_URL: http://localhost:8013
+      TELEGRAM_BOT_TOKEN: ""
+      PORTAINER_URL: ""
+      PORTAINER_API_TOKEN: ""
+      HASS_URL: ""
+      HASS_TOKEN: ""
+      GMAIL_CLIENT_ID: ""
+      GMAIL_CLIENT_SECRET: ""
+      BROWSER_CDP_URL: ""
+    volumes:
+      - ../../aug:/app/aug
+      - ../../eval-results/kb/data:/app/data
+    command: ["uvicorn", "aug.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/aug"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pgvector:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aug
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: aug
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aug -d aug"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  pgvector:
+    image: pgvector/pgvector:0.8.7-pg16-trixie
+    environment:
+      POSTGRES_USER: aug
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: aug_kb
+    ports:
+      - "5435:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aug -d aug_kb"]
+      interval: 3s
+      timeout: 3s
+      retries: 20

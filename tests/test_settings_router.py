@@ -88,6 +88,28 @@ def test_put_settings_requires_auth(client: TestClient) -> None:
 
 
 # ---------------------------------------------------------------------------
+# GET /settings/knowledge-base/fixed
+# ---------------------------------------------------------------------------
+
+
+def test_kb_fixed_models_are_listed_but_not_part_of_settings(client: TestClient) -> None:
+    response = client.get("/settings/knowledge-base/fixed", headers=_HEADERS)
+    assert response.status_code == 200
+    assert response.json() == {
+        "embedding": "accounts/fireworks/models/qwen3-embedding-8b",
+        "transcription": "whisper-1",
+    }
+    assert set(AppSettings().model_dump()["knowledge_base"]) == {
+        "extraction_model",
+        "vision_model",
+    }
+
+
+def test_kb_fixed_models_requires_auth(client: TestClient) -> None:
+    assert client.get("/settings/knowledge-base/fixed").status_code == 401
+
+
+# ---------------------------------------------------------------------------
 # GET /models
 # ---------------------------------------------------------------------------
 

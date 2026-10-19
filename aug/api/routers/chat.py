@@ -95,4 +95,6 @@ async def approve_command(thread_id: str, body: ApprovalRequest, request: Reques
 
 
 def _get_interface(request: Request) -> RestApiInterface:
-    return RestApiInterface(request.app.state.checkpointer)
+    return RestApiInterface(
+        request.app.state.checkpointer, getattr(request.app.state, "storage", None)
+    )

@@ -27,6 +27,22 @@ The agent effectively writes its own system prompt. Four plain-text files on dis
 
 The `note` tool is the write mechanism during a conversation. A nightly job folds notes into `context.md`, `user.md`, and `self.md` — all in one cross-file-aware pass. A weekly deep consolidation reflects across the full picture and evolves files where something has genuinely shifted.
 
+## Knowledge base
+
+Tell it anything, send it anything — facts, PDFs, scans, photos, voice notes — and forget about it. Three years later the washing machine dies:
+
+> **You:** send me the receipt for the washing machine, is it still under warranty?
+>
+> **Aug:** *(sends the original PDF)* Bought 14 March 2023 with a 5-year warranty — covered until March 2028.
+
+Everything is kept verbatim and searchable, with a time-aware fact graph on top: "where does John live now" and "where did he live before" both get the right answer. Search fuses dense and lexical retrieval in PostgreSQL + pgvector, with per-user row-level security.
+
+![Knowledge base overview](docs/design/img/kb-overview.svg)
+
+In an end-to-end evaluation, the live assistant was sent 52 messages over seven simulated months, then asked 78 questions in fresh chats. It answered **74 of 78 correctly (95%)** and made up **no** answers to questions about things it was never told.
+
+**→ [Design and evaluation write-up](docs/design/knowledge-base.md)**
+
 
 
 ## Tools

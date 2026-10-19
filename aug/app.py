@@ -41,11 +41,12 @@ from aug.api.routers import (
 from aug.config import get_settings
 from aug.core.browser_view import BrowserViewHub
 from aug.core.dispatch import broadcast, fire_push
+from aug.core.kb.service import init_knowledge_base
 from aug.core.mcp.manager import MCPManager, McpOperationOutcome
 from aug.core.mcp.manager import set_manager as set_mcp_manager
 from aug.core.memory import init_memory_files, start_consolidation_scheduler
 from aug.core.oauth.providers import PROVIDERS_FILE, ProviderRegistry
-from aug.core.registry import configure_mcp_tools, v12_base_tool_names
+from aug.core.registry import configure_mcp_tools, native_tool_names
 from aug.core.skill_deps import warm_all_skills
 from aug.utils.app_ref import set_app
 from aug.utils.db import create_pool, set_pool
@@ -136,6 +137,9 @@ async def lifespan(app: FastAPI):
     app.state.db_pool = pool
     set_pool(pool)
 
+    # Knowledge base — its own Postgres (pgvector), optional.
+    knowledge_base = await init_knowledge_base()
+
     # LangGraph Postgres checkpointer
     # Strip the +asyncpg driver suffix — psycopg expects a plain postgres:// URI.
     dsn = re.sub(r"^postgresql\+asyncpg://", "postgresql://", get_settings().DATABASE_URL)
@@ -167,7 +171,7 @@ async def lifespan(app: FastAPI):
         # servers were actually reachable this boot. Bounded by its own overall
         # deadline; a server that never comes up just isn't in the tool list.
         mcp_manager = MCPManager()
-        await mcp_manager.load_all(base_tool_names=v12_base_tool_names())
+        await mcp_manager.load_all(base_tool_names=native_tool_names())
         configure_mcp_tools(mcp_manager.tools)
         set_mcp_manager(mcp_manager)
         app.state.mcp_manager = mcp_manager
@@ -194,12 +198,13 @@ async def lifespan(app: FastAPI):
         mcp_active = sum(1 for h in mcp_manager.health.values() if h.status == "active")
         logger.info(
             "AUG startup complete — version=%s telegram=%s brave=%s gmail=%s portainer=%s "
-            "mcp_servers=%d/%d mcp_tools=%d",
+            "kb=%s mcp_servers=%d/%d mcp_tools=%d",
             settings.APP_VERSION,
             bool(settings.TELEGRAM_BOT_TOKEN),
             bool(settings.BRAVE_API_KEY),
             bool(settings.GMAIL_CLIENT_ID),
             bool(settings.PORTAINER_URL),
+            knowledge_base is not None,
             mcp_active,
             len(mcp_manager.health),
             len(mcp_manager.tools),
@@ -217,6 +222,8 @@ async def lifespan(app: FastAPI):
         await mcp_manager.aclose()
 
     # Shutdown
+    if knowledge_base is not None:
+        await knowledge_base.close()
     await pool.close()
     logger.info("AUG shutdown complete.")
 

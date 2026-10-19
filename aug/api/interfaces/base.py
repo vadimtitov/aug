@@ -550,6 +550,7 @@ class BaseInterface[ContextT](ABC):
         interface: Literal["telegram", "rest_api"],
         decision: ApprovalDecision,
         context: ContextT,
+        user_id: str = "",
     ) -> None:
         """Resume a graph that is paused on an approval interrupt.
 
@@ -562,6 +563,7 @@ class BaseInterface[ContextT](ABC):
             sender_id=sender_id,
             thread_id=thread_id,
             agent_version=agent_version,
+            user_id=user_id,
         )
 
         async with run_registry.thread_lock(thread_id):
@@ -695,6 +697,7 @@ async def _agent_stream(
             "thread_id": message.thread_id,
             "interface": message.interface,
             "sender_id": message.sender_id,
+            "user_id": message.user_id,
             AGENT_RUN_CONFIG_KEY: run,
         }
     }
@@ -747,6 +750,7 @@ async def _resume_stream(
             "thread_id": message.thread_id,
             "interface": message.interface,
             "sender_id": message.sender_id,
+            "user_id": message.user_id,
             AGENT_RUN_CONFIG_KEY: run,
         }
     }
