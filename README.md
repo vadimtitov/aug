@@ -29,7 +29,7 @@ The `note` tool is the write mechanism during a conversation. A nightly job fold
 
 ## Knowledge base
 
-Long-term memory for *any* information you share: facts, PDFs, scans, photos, voice notes. Everything is kept verbatim and searchable. A time-aware fact graph sits on top, so "where does John live now" and "where did he live before" both get the right answer. Search fuses dense and lexical retrieval in PostgreSQL + pgvector, with per-user row-level security.
+Long-term memory for *any* information you share: facts, PDFs, scans, photos, voice notes. Everything is kept verbatim and searchable, and the original files can be sent back on request ("send me my September payslip"). A time-aware fact graph sits on top, so "where does John live now" and "where did he live before" both get the right answer. Search fuses dense and lexical retrieval in PostgreSQL + pgvector, with per-user row-level security.
 
 ![Knowledge base overview](docs/design/img/kb-overview.svg)
 

@@ -4,7 +4,7 @@
 
 ## Summary
 
-This is the long-term memory of a personal AI assistant. One store keeps any information a person shares (facts, files, photos, voice notes) and answers questions about it months later. It combines a hybrid search index over the raw text with a small fact graph that records time.
+This is the long-term memory of a personal AI assistant. One store keeps any information a person shares (facts, files, photos, voice notes) and answers questions about it months later. When asked, it can also send back the original file. It combines a hybrid search index over the raw text with a small fact graph that records time.
 
 An end-to-end evaluation sent the live assistant 52 realistic messages, spread over seven simulated months, then asked 78 questions in fresh conversations. It answered 74 of 78 correctly (95%) and never invented an answer to something it had not been told. Every failure, in writing or in answering, was traced to a root cause. All but one are fixed.
 
@@ -18,7 +18,7 @@ A chat assistant forgets everything once a conversation ends. People still hand 
 
 The store makes no assumptions about content. No domain schema exists: it has to work for *any* piece of information. It also had to meet five requirements:
 
-- **Exact recall.** Identifiers such as a booking code, a licence plate or a port number must come back verbatim. Paraphrased questions must still find them.
+- **Exact recall.** Identifiers such as a booking code, a licence plate or a port number must come back verbatim. Paraphrased questions must still find them. Files must come back too: "send me the tenancy agreement" returns the original PDF, not a summary of it.
 - **Time awareness.** When a value changes, the old one becomes history, never a second current answer. "Where does John live now" and "where did he live before" are different questions.
 - **No invention.** Saying "not on file" is always better than a confident guess.
 - **Real forgetting.** When asked to forget something, it must stop resurfacing, including from text that merely mentioned it.
@@ -78,7 +78,7 @@ Optional filters run inside the search, not after it:
 - **Source:** where the item came from.
 - **Date:** two clocks. One is when the item was received; the other is the date it refers to, such as an invoice date.
 
-Each hit returns a snippet. A second tool fetches a node in full: an object's text, or an entity's current facts with their history. It can also reconstruct the facts as they stood on a past date.
+Each hit returns a snippet. A second tool fetches a node in full: an object's text, or an entity's current facts with their history. It can also reconstruct the facts as they stood on a past date. For a stored file it returns the path to the original bytes, which the assistant sends back as an attachment. In the chat, that looks like "send me my September payslip" followed by the PDF itself.
 
 The assistant is instructed to search before answering anything that might have been shared, to retry once with different words if the first search misses, and to answer "not on file" rather than guess. If a name matches two people, it must ask which one was meant. Per-turn caps on tool calls stop a confused model from looping.
 
