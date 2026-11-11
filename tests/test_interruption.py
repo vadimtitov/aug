@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from aug.api.interfaces.base import _frame_injection
+from aug.core.harness.langgraph import _frame_injection
 from aug.core.prompts import MID_RUN_INJECTION_PREFIX
 from aug.core.run import AgentRun, RunRegistry
 

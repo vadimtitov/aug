@@ -21,7 +21,6 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import markdown as md
-from langgraph.checkpoint.base import BaseCheckpointSaver
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -66,13 +65,13 @@ from aug.api.interfaces.telegram.utils import (
 )
 from aug.config import get_settings
 from aug.core.events import (
-    AgentEvent,
     ChatModelStreamEvent,
     StatusEvent,
     ToolEndEvent,
     ToolProgressEvent,
     ToolStartEvent,
 )
+from aug.core.harness import HarnessEvent, TurnEnded
 from aug.core.memory import run_deep_consolidation, run_light_consolidation
 from aug.core.prompts import build_system_prompt
 from aug.core.registry import list_agents
@@ -124,8 +123,8 @@ _no_draft_chats: set[int] = set()
 class TelegramInterface(_SshMixin, BaseInterface[Update]):
     _debounce_window = 0.1  # 100ms — collects rapid-fire forwarded messages into one run
 
-    def __init__(self, checkpointer: BaseCheckpointSaver) -> None:
-        super().__init__(checkpointer)
+    def __init__(self) -> None:
+        super().__init__()
         self._bot_app = None
 
     # ------------------------------------------------------------------
@@ -234,7 +233,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             user_id=str(user_id),
         )
 
-    async def send_stream(self, stream: AsyncIterator[AgentEvent], context: Update) -> None:
+    async def send_stream(self, stream: AsyncIterator[HarnessEvent], context: Update) -> None:
         msg = context.effective_message
         chat_id = context.effective_chat.id  # type: ignore[union-attr]
         bot = msg.get_bot()  # type: ignore[union-attr]
@@ -257,6 +256,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         last_stream_edit = 0.0
 
         stream_completed_normally = False
+        turn_failed = False
         spinner_stop = asyncio.Event()
 
         async def _push_tool_draft() -> None:
@@ -493,6 +493,12 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                         except Exception:
                             logger.debug("status event send failed", exc_info=True)
 
+                    case TurnEnded(error=error) if error is not None:
+                        turn_failed = True
+
+            if turn_failed:
+                return  # the caller reports the error; `finally` marks open tools failed
+
             if tool_entries:
                 await _finalize_tool_draft()
 
@@ -660,7 +666,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         return [get_thread_id(cid, None) for cid in sorted(chat_ids)]
 
     async def send_proactive_stream(
-        self, thread_id: str, stream: AsyncIterator[AgentEvent]
+        self, thread_id: str, stream: AsyncIterator[HarnessEvent]
     ) -> None:
         """Stream the agent response to *thread_id* using draft updates, then send final message.
 
@@ -997,8 +1003,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         # Cheap gate: skip the whole pipeline for an update nothing is waiting on.
         # It is only a gate — run() takes the real decision under its thread lock,
         # since the run seen here can finish while run() is still preprocessing.
-        run = run_registry.get(thread_id)
-        injecting = bool(run and run.active and not run.user_requested_stop.is_set())
+        injecting = run_registry.accepting(thread_id)
         if not injecting and not self.claim_location_run(thread_id):
             logger.debug("live location throttled for %s", thread_id)
             return
@@ -1013,7 +1018,8 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     @restricted
     async def _handle_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        stopped = self.stop_run(get_thread_id(chat_id, update.effective_message.message_thread_id))  # type: ignore[union-attr]
+        topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
+        stopped = await self.stop_run(get_thread_id(chat_id, topic_id))
         msg = "Stopping..." if stopped else "Nothing is running."
         await update.message.reply_text(msg)  # type: ignore[union-attr]
 
@@ -1360,10 +1366,6 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
 # ---------------------------------------------------------------------------
 # Module-level helpers called from FastAPI lifespan
 # ---------------------------------------------------------------------------
-
-
-def build_interface(checkpointer: BaseCheckpointSaver) -> TelegramInterface:
-    return TelegramInterface(checkpointer)
 
 
 # ---------------------------------------------------------------------------

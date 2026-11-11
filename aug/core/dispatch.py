@@ -16,38 +16,45 @@ broadcast(app, message)
     Delivers a service-level announcement to every registered interface, with
     no target thread and no agent run.
 
-External agent runs are capped at _PUSH_RECURSION_LIMIT iterations.
-Tool restriction (e.g. excluding run_bash) is a TODO: it requires either a
-dedicated agent variant or a hook in the agent graph to filter tool calls.
+Agent pushes run through the harness like any turn, under the same run lock, as an
+unattended turn (``TurnContext.attended=False``).
 """
 
 import logging
 import re
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import FastAPI
-from langchain_core.messages import HumanMessage
-from langchain_core.runnables.config import RunnableConfig
-from langgraph.errors import GraphRecursionError
-from langgraph.types import Command
 
-from aug.core.agents.base_agent import BaseAgent
-from aug.core.events import AgentEvent
-from aug.core.registry import get_agent
-from aug.core.state import AgentState
+from aug.core.harness import (
+    Address,
+    HarnessEvent,
+    Message,
+    Sender,
+    TextPart,
+    TurnContext,
+    TurnEnded,
+    error_text,
+)
+from aug.core.harness.langgraph import LangGraphHarness
+from aug.core.registry import get_harness
+from aug.core.run import run_registry
 from aug.utils.app_ref import get_app
 from aug.utils.db import get_pool
 from aug.utils.tasks import ScheduledTask, get_task, mark_fired
 
 InterfaceName = Literal["telegram", "rest_api"]
 
-logger = logging.getLogger(__name__)
 
-# Maximum agentic loop iterations allowed for externally-triggered agent runs.
-_PUSH_RECURSION_LIMIT = 10
+class PushTurnFailed(RuntimeError):
+    """An agent push ran but its turn ended with an error."""
+
+
+logger = logging.getLogger(__name__)
 
 # Retry configuration for fire_task delivery failures.
 _MAX_TASK_RETRIES = 10
@@ -144,58 +151,62 @@ async def fire_push(
         await iface.send_proactive(actual_thread_id, message)
         return
 
+    harness = get_harness(iface.get_agent_version(actual_thread_id))
     if push_type == "inject":
-        agent = get_agent(iface.get_agent_version(actual_thread_id))
-        inject_config: RunnableConfig = {
-            "configurable": {
-                "thread_id": actual_thread_id,
-                "interface": interface,
-                "sender_id": _extract_chat_id(actual_thread_id) or "",
-            },
-        }
-        await agent.aupdate_state(
-            inject_config,
-            {"messages": [HumanMessage(content=message)]},
-            app.state.checkpointer,
-        )
+        if not isinstance(harness, LangGraphHarness):
+            raise ValueError(f"inject pushes are not supported on {type(harness).__name__}")
+        await harness.add_context(message, actual_thread_id)
         await iface.send_proactive(actual_thread_id, message)
         return
 
     # push_type == "agent" or "agent_isolated"
-    agent = get_agent(iface.get_agent_version(actual_thread_id))
-
-    # agent_isolated uses a throw-away thread so it doesn't share history with
-    # the target thread.  The orphaned checkpoints accumulate in Postgres; a
-    # periodic cleanup job should purge push-isolated-* threads older than a few days.
-    run_thread_id = (
+    # agent_isolated uses a throw-away session so it doesn't share history with the
+    # target thread.  The orphaned checkpoints accumulate in Postgres; a periodic
+    # cleanup job should purge push-isolated-* threads older than a few days.
+    run_context_id = (
         f"push-isolated-{uuid.uuid4()}" if push_type == "agent_isolated" else actual_thread_id
     )
-
-    config: RunnableConfig = {
-        "recursion_limit": _PUSH_RECURSION_LIMIT,
-        "configurable": {
-            "thread_id": run_thread_id,
-            "interface": interface,
-            "sender_id": _extract_chat_id(actual_thread_id) or "",
-        },
-    }
-
-    initial_state = AgentState(
-        messages=[HumanMessage(content=message)],
-        thread_id=run_thread_id,
-        interface=interface,
+    turn = TurnContext(
+        reply_to=Address(
+            interface=interface,
+            conversation_id=iface.conversation_id(actual_thread_id),
+            chat_id=_extract_chat_id(actual_thread_id) or "",
+        ),
+        attended=False,
     )
-    stream = _push_agent_stream(agent, initial_state, config, app.state.checkpointer)
-    try:
-        await iface.send_proactive_stream(actual_thread_id, stream)
-    except GraphRecursionError:
-        logger.warning(
-            "fire_push: recursion limit hit interface=%s thread_id=%s", interface, actual_thread_id
-        )
-        await iface.send_proactive(
-            actual_thread_id,
-            "⚠️ Reached the step limit without completing — the task may be too complex.",
-        )
+    prompt = Message(parts=[TextPart(text=message)], sender=Sender(interface=interface, user_id=""))
+    ended: TurnEnded | None = None
+
+    async def events(stream: AsyncIterator[HarnessEvent]) -> AsyncIterator[HarnessEvent]:
+        nonlocal ended
+        async for event in stream:
+            if isinstance(event, TurnEnded):
+                ended = event
+            yield event
+
+    async with run_registry.run_lock(run_context_id):
+        async with aclosing(harness.run(prompt, run_context_id, turn)) as stream:
+            await iface.send_proactive_stream(actual_thread_id, events(stream))
+
+    if ended is None or ended.error is None:
+        return
+    if ended.error.kind == "step_limit":
+        await iface.send_proactive(actual_thread_id, error_text(ended.error))
+        return
+    # Raised so fire_task's retry/backoff applies, as it does to a failed delivery.
+    raise PushTurnFailed(f"push turn failed: {ended.error.kind}")
+
+
+async def deliver_unsolicited(context_id: str, events: AsyncIterator[HarnessEvent]) -> None:
+    """Receive a turn a harness started by itself (the ``running()`` sink).
+
+    LangGraph never starts one; the Claude Code harness will (background work that
+    finishes after its turn) and routes it here.  Until then there is nothing to
+    deliver to, so such a turn is drained and logged rather than lost silently.
+    """
+    async for _ in events:
+        pass
+    logger.warning("unsolicited turn dropped context=%s: no delivery route yet", context_id)
 
 
 async def broadcast(app: FastAPI, message: str) -> int:
@@ -281,30 +292,6 @@ def _schedule_task_retry(task_id: str, retry_count: int) -> None:
         _MAX_TASK_RETRIES,
         retry_at.isoformat(),
     )
-
-
-async def _push_agent_stream(
-    agent: BaseAgent,
-    initial_state: AgentState,
-    config: RunnableConfig,
-    checkpointer,
-) -> AsyncIterator[AgentEvent]:
-    """Loop across interrupt_after=["call_tools"] boundaries, yielding all events.
-
-    Mirrors the logic in base.py:_agent_stream but without stop/injection handling,
-    since push runs have no interactive user present.
-    """
-    graph_input: AgentState | Command | None = initial_state
-    while True:
-        async for event in agent.astream_events(graph_input, config, checkpointer):
-            yield event
-
-        graph_state = await agent.aget_state(config, checkpointer)
-        if not graph_state.next:
-            return  # graph reached END naturally
-        if graph_state.interrupts:
-            return  # approval interrupt — skip silently in push context
-        graph_input = None  # resume from where the graph paused
 
 
 def _extract_chat_id(thread_id: str) -> str | None:

@@ -9,7 +9,6 @@ from aug.api.interfaces.rest import RestApiInterface
 from aug.api.schemas.chat import ApprovalRequest, ChatRequest, ChatResponse
 from aug.api.security import require_api_key
 from aug.core.registry import list_agents
-from aug.core.run import run_registry
 from aug.core.tools.approval import ApprovalDecision
 from aug.utils.logging import set_thread_id
 
@@ -62,12 +61,10 @@ async def stream(body: ChatRequest, request: Request) -> StreamingResponse:
 
 
 @router.post("/{thread_id}/run/cancel", status_code=status.HTTP_204_NO_CONTENT)
-async def cancel_run(thread_id: str) -> None:
+async def cancel_run(thread_id: str, request: Request) -> None:
     """Cancel the currently active agent run for a thread, if any."""
-    run = run_registry.get(thread_id)
-    if run and run.active:
-        logger.info("cancel_run thread=%s run=%s", thread_id, run.id)
-        run.request_stop()
+    if await _get_interface(request).stop_run(thread_id):
+        logger.info("cancel_run thread=%s", thread_id)
 
 
 @router.post("/{thread_id}/approve", response_model=ChatResponse)
@@ -95,4 +92,4 @@ async def approve_command(thread_id: str, body: ApprovalRequest, request: Reques
 
 
 def _get_interface(request: Request) -> RestApiInterface:
-    return RestApiInterface(request.app.state.checkpointer)
+    return RestApiInterface()

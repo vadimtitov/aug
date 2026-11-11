@@ -1,48 +1,44 @@
 """Tests for BaseInterface debounce — rapid messages merged into one run."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from aug.api.interfaces.base import IncomingMessage, TextContent, _merge_contents
-from aug.core.run import AgentRun, RunRegistry
+from aug.api.interfaces.base import IncomingMessage, TextContent, _merge_messages
+from aug.core.harness import Message, Sender, TextPart
+from aug.core.run import RunRegistry
+from tests.harness_fakes import ScriptedHarness
+
+_SENDER = Sender(interface="telegram", user_id="1")
+
+
+def _msg(*texts: str) -> Message:
+    return Message(parts=[TextPart(text=t) for t in texts], sender=_SENDER)
+
+
+async def _as_message(incoming: IncomingMessage) -> Message:
+    return _msg(*(p.text for p in incoming.parts))
+
 
 # ---------------------------------------------------------------------------
-# _merge_contents
+# _merge_messages
 # ---------------------------------------------------------------------------
 
 
 def test_merge_single_passthrough() -> None:
-    assert _merge_contents(["hello"]) == "hello"
+    message = _msg("hello")
+    assert _merge_messages([message]) is message
 
 
-def test_merge_two_strings() -> None:
-    result = _merge_contents(["hello", "world"])
-    assert result == "hello\n\nworld"
+def test_merge_concatenates_parts_in_order() -> None:
+    merged = _merge_messages([_msg("hello"), _msg("world", "again")])
+    assert [p.text for p in merged.parts] == ["hello", "world", "again"]
 
 
-def test_merge_multimodal_blocks() -> None:
-    img = {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}
-    next_block = {"type": "text", "text": "next"}
-    result = _merge_contents([[img, {"type": "text", "text": "caption"}], [next_block]])
-    assert isinstance(result, list)
-    assert result[0] == img
-    assert result[1] == {"type": "text", "text": "caption"}
-    assert result[2] == {"type": "text", "text": "next"}
-
-
-def test_merge_mixed_str_and_blocks() -> None:
-    img = {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}
-    result = _merge_contents(["text first", [img]])
-    assert isinstance(result, list)
-    assert result[0] == {"type": "text", "text": "text first"}
-    assert result[1] == img
-
-
-def test_merge_skips_empty_strings() -> None:
-    result = _merge_contents(["", "hello", ""])
-    assert result == "hello"
+def test_merge_keeps_the_first_sender() -> None:
+    other = Message(parts=[TextPart(text="b")], sender=Sender(interface="telegram", user_id="2"))
+    assert _merge_messages([_msg("a"), other]).sender == _SENDER
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +57,13 @@ def _make_incoming(text: str, thread_id: str = "tg-1-0") -> IncomingMessage:
 
 
 @pytest.fixture()
+def harness():
+    harness = ScriptedHarness()
+    with patch("aug.api.interfaces.base.get_harness", return_value=harness):
+        yield harness
+
+
+@pytest.fixture()
 def isolated_registry():
     """Each test gets a clean RunRegistry so runs don't bleed across tests."""
     registry = RunRegistry()
@@ -69,7 +72,7 @@ def isolated_registry():
 
 
 @pytest.fixture()
-def interface(isolated_registry):
+def interface(isolated_registry, harness):
     from aug.api.interfaces.base import BaseInterface
     from aug.core.tools.approval import ApprovalRequest
 
@@ -101,23 +104,23 @@ def interface(isolated_registry):
             async for _ in stream:
                 pass
 
-    iface = _TestInterface(checkpointer=MagicMock())
-    iface._execute_run = AsyncMock()
+    iface = _TestInterface()
+    iface._converse = AsyncMock()
     return iface
 
 
 async def test_single_message_starts_one_run(interface) -> None:
-    with patch("aug.api.interfaces.base._preprocess", AsyncMock(side_effect=lambda p: p[0].text)):
+    with patch("aug.api.interfaces.base._preprocess", _as_message):
         await interface.run("hello")
         await asyncio.sleep(0.1)
 
-    interface._execute_run.assert_awaited_once()
-    _, merged, _ = interface._execute_run.call_args[0][1:4]  # (run, incoming, content, context)
-    assert merged == "hello"
+    interface._converse.assert_awaited_once()
+    _incoming, merged, _context = interface._converse.call_args[0]
+    assert merged == _msg("hello")
 
 
 async def test_rapid_messages_merged_into_one_run(interface) -> None:
-    with patch("aug.api.interfaces.base._preprocess", AsyncMock(side_effect=lambda p: p[0].text)):
+    with patch("aug.api.interfaces.base._preprocess", _as_message):
         await asyncio.gather(
             interface.run("msg1"),
             interface.run("msg2"),
@@ -125,27 +128,23 @@ async def test_rapid_messages_merged_into_one_run(interface) -> None:
         )
         await asyncio.sleep(0.1)
 
-    interface._execute_run.assert_awaited_once()
-    content = interface._execute_run.call_args[0][2]
-    assert "msg1" in content
-    assert "msg2" in content
-    assert "msg3" in content
+    interface._converse.assert_awaited_once()
+    merged = interface._converse.call_args[0][1]
+    assert {p.text for p in merged.parts} == {"msg1", "msg2", "msg3"}
 
 
-async def test_message_during_active_run_is_injected(interface, isolated_registry) -> None:
-    active_run = AgentRun()
-    active_run.active = True
-    isolated_registry.set("tg-1-0", active_run)
+async def test_message_during_active_run_is_injected(interface, harness) -> None:
+    harness.accept_inject = True
 
-    with patch("aug.api.interfaces.base._preprocess", AsyncMock(side_effect=lambda p: p[0].text)):
+    with patch("aug.api.interfaces.base._preprocess", _as_message):
         await interface.run("inject me")
 
-    interface._execute_run.assert_not_awaited()
-    assert active_run.pending_agent_injection.get_nowait() == "inject me"
+    interface._converse.assert_not_awaited()
+    assert harness.injected == [(_msg("inject me"), "tg-1-0")]
 
 
 async def test_debounce_task_cleaned_up_after_fire(interface) -> None:
-    with patch("aug.api.interfaces.base._preprocess", AsyncMock(side_effect=lambda p: p[0].text)):
+    with patch("aug.api.interfaces.base._preprocess", _as_message):
         await interface.run("hello")
         await asyncio.sleep(0.1)
 

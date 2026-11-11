@@ -58,7 +58,7 @@ def _no_typing_loop():
 def interface():
     from aug.api.interfaces.telegram.interface import TelegramInterface
 
-    return TelegramInterface(checkpointer=MagicMock())
+    return TelegramInterface()
 
 
 # ---------------------------------------------------------------------------
@@ -200,3 +200,24 @@ async def test_empty_stream_sends_nothing(interface):
 
     bot.send_message_draft.assert_not_called()
     msg.reply_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_sends_no_partial_answer_and_marks_open_tools_failed(interface):
+    """A turn ending in an error behaves like the old raised exception: nothing more is
+    committed (the caller sends the error instead), and a tool still running is frozen
+    as failed."""
+    from aug.core.harness import HarnessError, TurnEnded
+
+    context, _msg, _bot, sent = _make_context()
+
+    await interface.send_stream(
+        _stream(
+            ToolStartEvent(run_id="r1", tool_name="run_bash", args={"command": "ls"}),
+            TurnEnded(error=HarnessError(kind="rate_limited")),
+        ),
+        context,
+    )
+
+    texts = [m.text for m in sent]
+    assert len(texts) == 1 and "🔴" in texts[0]  # only the tool line, frozen as failed

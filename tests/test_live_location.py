@@ -9,7 +9,9 @@ import pytest
 from telegram import Chat, Location, Message, Update, User
 from telegram.ext import filters
 
-from aug.api.interfaces.base import LocationContent
+from aug.api.interfaces import base
+from aug.api.interfaces.base import IncomingMessage, LocationContent
+from aug.core.harness.langgraph import LangGraphHarness, _render
 from aug.core.run import AgentRun, run_registry
 from aug.utils.state import AppState, ConversationLocationState, LiveLocationState
 
@@ -35,11 +37,26 @@ def clean_registry():
     run_registry.clear()
 
 
+@pytest.fixture(autouse=True)
+def langgraph_harness():
+    """Every agent version resolves to a LangGraph harness, so inject() reaches the run."""
+    harness = LangGraphHarness(MagicMock(), MagicMock())
+    with patch("aug.api.interfaces.base.get_harness", return_value=harness):
+        yield harness
+
+
+async def _preprocess(parts) -> str:
+    incoming = IncomingMessage(
+        parts=parts, interface="telegram", sender_id="1", thread_id="tg-1-0", agent_version="x"
+    )
+    return _render(await base._preprocess(incoming))
+
+
 @pytest.fixture()
 def telegram_interface():
     from aug.api.interfaces.telegram.interface import TelegramInterface
 
-    return TelegramInterface(checkpointer=MagicMock())
+    return TelegramInterface()
 
 
 def _message(user=USER, date=None, **kwargs) -> Message:
@@ -781,7 +798,7 @@ async def test_initial_share_is_saved_on_the_way_through_run(telegram_interface)
         patch("aug.api.interfaces.base.save_state", side_effect=saved.append),
         patch("aug.api.interfaces.telegram.utils.load_state", return_value=state),
         patch("aug.api.interfaces.base._geocode", new=AsyncMock(return_value=_GEOCODED)),
-        patch.object(telegram_interface, "_execute_run", new=AsyncMock()),
+        patch.object(telegram_interface, "_converse", new=AsyncMock()),
     ):
         await telegram_interface.run(_new_location(lat=51.5, lon=-0.12, live_period=900))
 
@@ -804,7 +821,7 @@ async def test_active_run_receives_the_location_as_an_injection(telegram_interfa
         patch("aug.api.interfaces.base.save_state"),
         patch("aug.api.interfaces.telegram.utils.load_state", return_value=state),
         patch("aug.api.interfaces.base._geocode", new=AsyncMock(return_value=_GEOCODED)),
-        patch.object(telegram_interface, "_execute_run", new=AsyncMock()) as execute,
+        patch.object(telegram_interface, "_converse", new=AsyncMock()) as execute,
     ):
         await telegram_interface._handle_live_location(
             _edited_location(lat=51.5, lon=-0.12), MagicMock()
@@ -826,7 +843,7 @@ async def test_unthrottled_update_starts_a_real_run_with_the_location(telegram_i
         patch("aug.api.interfaces.base.save_state"),
         patch("aug.api.interfaces.telegram.utils.load_state", return_value=state),
         patch("aug.api.interfaces.base._geocode", new=AsyncMock(return_value=_GEOCODED)),
-        patch.object(telegram_interface, "_execute_run", new=AsyncMock()) as execute,
+        patch.object(telegram_interface, "_converse", new=AsyncMock()) as execute,
     ):
         await telegram_interface._handle_live_location(
             _edited_location(lat=51.5, lon=-0.12), MagicMock()
@@ -834,8 +851,8 @@ async def test_unthrottled_update_starts_a_real_run_with_the_location(telegram_i
         await asyncio.sleep(0.3)  # let the debounce window elapse
 
     execute.assert_awaited_once()
-    _run, incoming, content, _ctx = execute.await_args[0]
-    assert content == _GEOCODED
+    incoming, message, _ctx = execute.await_args[0]
+    assert _render(message) == _GEOCODED
     assert incoming.thread_id == "tg-123-0"
     assert incoming.user_id == "7"
 
@@ -855,7 +872,7 @@ async def _run_update(interface, update, state, incoming=None):
         patch("aug.api.interfaces.base.save_state", side_effect=saved.append),
         patch("aug.api.interfaces.telegram.utils.load_state", return_value=state),
         patch("aug.api.interfaces.base._geocode", new=AsyncMock(return_value=_GEOCODED)),
-        patch.object(interface, "_execute_run", new=AsyncMock()),
+        patch.object(interface, "_converse", new=AsyncMock()),
     ]
     if incoming is not None:
         patches.append(patch.object(interface, "receive_message", AsyncMock(return_value=incoming)))
@@ -1073,8 +1090,6 @@ async def test_receive_message_names_the_sharer(telegram_interface):
 
 @pytest.mark.asyncio
 async def test_geocoded_text_names_the_sharer():
-    from aug.api.interfaces.base import _preprocess
-
     with patch("aug.api.interfaces.base.httpx.AsyncClient") as client:
         response = MagicMock()
         response.json.return_value = {"display_name": "10 Downing St, London"}
@@ -1091,8 +1106,6 @@ async def test_geocoded_text_names_the_sharer():
 @pytest.mark.asyncio
 async def test_geocoded_text_falls_back_to_user_without_a_name():
     """Interfaces that supply no name keep the wording the agent already knows."""
-    from aug.api.interfaces.base import _preprocess
-
     with patch("aug.api.interfaces.base.httpx.AsyncClient") as client:
         response = MagicMock()
         response.json.return_value = {"display_name": "Somewhere"}

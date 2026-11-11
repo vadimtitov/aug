@@ -7,11 +7,10 @@ import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
-from langgraph.checkpoint.base import BaseCheckpointSaver
-
 from aug.api.interfaces.base import BaseInterface, IncomingMessage, TextContent
 from aug.api.schemas.chat import ChatRequest
-from aug.core.events import AgentEvent, ChatModelStreamEvent
+from aug.core.events import ChatModelStreamEvent
+from aug.core.harness import HarnessEvent
 from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
 
 logger = logging.getLogger(__name__)
@@ -51,11 +50,8 @@ class RestApiInterface(BaseInterface[_RestContext]):
     """REST API frontend — runs every request through the full BaseInterface pipeline.
 
     Both /chat/invoke and /chat/stream benefit from reflexes, structured logging,
-    run lifecycle management, and error handling defined in BaseInterface._execute_run.
+    run lifecycle management, and error handling defined in BaseInterface.
     """
-
-    def __init__(self, checkpointer: BaseCheckpointSaver) -> None:
-        super().__init__(checkpointer)
 
     async def receive_message(self, context: _RestContext) -> IncomingMessage | None:
         req = context.request
@@ -68,7 +64,7 @@ class RestApiInterface(BaseInterface[_RestContext]):
             user_id=req.thread_id,  # REST has no separate user identity — the thread is the caller
         )
 
-    async def send_stream(self, stream: AsyncIterator[AgentEvent], context: _RestContext) -> None:
+    async def send_stream(self, stream: AsyncIterator[HarnessEvent], context: _RestContext) -> None:
         async for event in stream:
             if isinstance(event, ChatModelStreamEvent) and event.delta:
                 context._queue.put_nowait(event.delta)
@@ -110,7 +106,7 @@ class RestApiInterface(BaseInterface[_RestContext]):
         return []
 
     async def send_proactive_stream(
-        self, thread_id: str, stream: AsyncIterator[AgentEvent]
+        self, thread_id: str, stream: AsyncIterator[HarnessEvent]
     ) -> None:
         """Consume and discard the stream; REST has no push channel."""
         async for _ in stream:

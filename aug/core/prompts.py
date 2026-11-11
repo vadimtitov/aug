@@ -418,6 +418,22 @@ LEGACY_SYSTEM_PROMPT = (
 # The LLM decides based on content: steer if it's a correction, stop if the user wants to cancel.
 MID_RUN_INJECTION_PREFIX = "[Message from user while you were working]: "
 
+# What the user is told when a turn ends with a HarnessError, keyed by its kind.  Every
+# harness maps its own client errors onto these kinds, so the wording is the same on all.
+HARNESS_ERROR_MESSAGES = {
+    "context_full": "Context window is full. Use /clear to start a fresh conversation.",
+    "rate_limited": "The model is rate-limited right now. Please try again in a minute.",
+    "auth": "The model provider rejected AUG's credentials. Check the model login or API key.",
+    "unavailable": (
+        "The model or a service AUG depends on is unavailable right now. "
+        "Please try again in a moment."
+    ),
+    "step_limit": "The agent got stuck in a loop and was stopped. Try rephrasing your request.",
+    "internal": "Sorry, something went wrong.",
+}
+# Appended to a rate_limited message when the harness knows when the limit resets.
+HARNESS_RETRY_AT_SUFFIX = " The limit resets at {time} UTC."
+
 # Rendered into the conversation when someone shares a location.  The sharer is named
 # because a group can have several live locations running at once, and coordinates alone
 # leave the agent unable to say whose is whose.

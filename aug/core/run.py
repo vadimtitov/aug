@@ -53,6 +53,7 @@ class RunRegistry:
     def __init__(self) -> None:
         self._runs: dict[str, AgentRun] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._run_locks: dict[str, asyncio.Lock] = {}
 
     def get(self, thread_id: str) -> AgentRun | None:
         return self._runs.get(thread_id)
@@ -64,14 +65,29 @@ class RunRegistry:
         self._runs.pop(thread_id, None)
 
     def thread_lock(self, thread_id: str) -> asyncio.Lock:
-        """Per-thread lock to serialise routing decisions in BaseInterface.run()."""
+        """Short per-thread lock that serialises routing: inject into the turn in flight,
+        or queue a new one.  Never held across a turn."""
         if thread_id not in self._locks:
             self._locks[thread_id] = asyncio.Lock()
         return self._locks[thread_id]
 
+    def run_lock(self, context_id: str) -> asyncio.Lock:
+        """The run lock: held for a whole turn by whoever runs one — interfaces, approval
+        resumes, pushes, /compact — so two turns never share a context_id at once."""
+        if context_id not in self._run_locks:
+            self._run_locks[context_id] = asyncio.Lock()
+        return self._run_locks[context_id]
+
+    def accepting(self, context_id: str) -> bool:
+        """True while a turn is in flight for *context_id* and can still take an
+        injected message (it has not been asked to stop)."""
+        run = self._runs.get(context_id)
+        return run is not None and run.active and not run.user_requested_stop.is_set()
+
     def clear(self) -> None:
         self._runs.clear()
         self._locks.clear()
+        self._run_locks.clear()
 
 
 run_registry = RunRegistry()

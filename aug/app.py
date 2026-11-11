@@ -16,7 +16,7 @@ import asyncio
 import logging
 import re
 import sys
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, Response
@@ -40,12 +40,17 @@ from aug.api.routers import (
 )
 from aug.config import get_settings
 from aug.core.browser_view import BrowserViewHub
-from aug.core.dispatch import broadcast, fire_push
+from aug.core.dispatch import broadcast, deliver_unsolicited, fire_push
 from aug.core.mcp.manager import MCPManager, McpOperationOutcome
 from aug.core.mcp.manager import set_manager as set_mcp_manager
 from aug.core.memory import init_memory_files, start_consolidation_scheduler
 from aug.core.oauth.providers import PROVIDERS_FILE, ProviderRegistry
-from aug.core.registry import configure_mcp_tools, v12_base_tool_names
+from aug.core.registry import (
+    configure_harnesses,
+    configure_mcp_tools,
+    harnesses,
+    v12_base_tool_names,
+)
 from aug.core.skill_deps import warm_all_skills
 from aug.utils.app_ref import set_app
 from aug.utils.db import create_pool, set_pool
@@ -159,7 +164,7 @@ async def lifespan(app: FastAPI):
         # Live browser view — lazy; the screencast only runs while someone watches.
         app.state.browser_view_hub = BrowserViewHub(get_settings().BROWSER_CDP_URL)
 
-        telegram = TelegramInterface(checkpointer)
+        telegram = TelegramInterface()
         await telegram.start_polling(app)
 
         # MCP servers — connects before the v12 agents' tool lists are finalized, so
@@ -169,6 +174,13 @@ async def lifespan(app: FastAPI):
         mcp_manager = MCPManager()
         await mcp_manager.load_all(base_tool_names=v12_base_tool_names())
         configure_mcp_tools(mcp_manager.tools)
+        # Harnesses are built from the agents as configured above, so this comes after.
+        configure_harnesses(checkpointer)
+        harness_stack = AsyncExitStack()
+        for harness in harnesses():
+            await harness_stack.enter_async_context(
+                harness.running(on_unsolicited=deliver_unsolicited)
+            )
         set_mcp_manager(mcp_manager)
         app.state.mcp_manager = mcp_manager
         mcp_outcomes = await mcp_manager.reconcile_operations()
@@ -213,6 +225,7 @@ async def lifespan(app: FastAPI):
         warmup_task.cancel()
         await stop_scheduler(app)
         await telegram.stop_polling(app)
+        await harness_stack.aclose()
         await app.state.browser_view_hub.aclose()
         await mcp_manager.aclose()
 

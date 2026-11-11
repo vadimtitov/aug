@@ -63,7 +63,7 @@ def test_no_topic_reflects_non_zero_session():
 def telegram_interface():
     from aug.api.interfaces.telegram.interface import TelegramInterface
 
-    return TelegramInterface(checkpointer=MagicMock())
+    return TelegramInterface()
 
 
 @pytest.mark.asyncio

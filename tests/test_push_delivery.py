@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from aug.core.events import ChatModelStreamEvent
+from tests.harness_fakes import ScriptedHarness
 
 # ---------------------------------------------------------------------------
 # RestApiInterface
@@ -22,7 +23,7 @@ def rest_iface():
     """Return a RestApiInterface with a mock checkpointer."""
     from aug.api.interfaces.rest import RestApiInterface
 
-    return RestApiInterface(checkpointer=MagicMock())
+    return RestApiInterface()
 
 
 @pytest.mark.asyncio
@@ -116,7 +117,7 @@ def tg_iface():
     """Return a TelegramInterface with a mock checkpointer and mock bot."""
     from aug.api.interfaces.telegram.interface import TelegramInterface
 
-    iface = TelegramInterface(checkpointer=MagicMock())
+    iface = TelegramInterface()
     mock_bot = AsyncMock()
     iface._bot_app = MagicMock()
     iface._bot_app.bot = mock_bot
@@ -263,7 +264,7 @@ async def test_fire_push_into_topic_inherits_group_version(tg_iface):
     """Tasks created from a forum topic store the raw tg-{chat}-topic-{n} thread ID.
 
     If such a topic has no version of its own, resolution must fall back to the group's
-    rather than yielding the unregistered "default" sentinel — get_agent would raise,
+    rather than yielding the unregistered "default" sentinel — get_harness would raise,
     fire_task would swallow it into 10 backoff retries and then dead-letter, and the
     user would never be told their scheduled task stopped running.
     """
@@ -278,7 +279,7 @@ async def test_fire_push_into_topic_inherits_group_version(tg_iface):
 
     with (
         patch("aug.api.interfaces.base.load_settings", return_value=settings),
-        patch("aug.core.dispatch.get_agent") as mock_get_agent,
+        patch("aug.core.dispatch.get_harness", return_value=ScriptedHarness()) as mock_get_harness,
     ):
         await fire_push(
             app,
@@ -288,7 +289,7 @@ async def test_fire_push_into_topic_inherits_group_version(tg_iface):
             push_type="agent",
         )
 
-    mock_get_agent.assert_called_once_with("v9_claude")
+    mock_get_harness.assert_called_once_with("v9_claude")
     tg_iface.send_proactive_stream.assert_awaited_once()
 
 
