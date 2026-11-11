@@ -335,6 +335,7 @@ def _normalise(text: str) -> str:
         r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?( ?UTC|Z|[+-]\d{2}:\d{2})?", "<time>", text
     )
     text = re.sub(r"call_\d+", "call_<n>", text)
+    text = re.sub("[🌑🌘🌗🌖🌕🌔🌓🌒]", "<spin>", text)  # spinner frame depends on timing
     text = re.sub(r"\b[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", "<uuid>", text)
     return text.replace("\n", "\\n")
 

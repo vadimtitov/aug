@@ -55,10 +55,10 @@ class _State:
         self.polled = False
 
     def reset(self, scripts: dict[str, list[dict[str, Any]]]) -> None:
-        polled = self.polled
+        # Keep the event and the poll flag: a long poll already waiting holds this event.
+        event, polled = self.new_update, self.polled
         self.__init__()
-        self.scripts = scripts
-        self.polled = polled
+        self.scripts, self.new_update, self.polled = scripts, event, polled
 
 
 state = _State()
