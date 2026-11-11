@@ -856,12 +856,11 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     # ------------------------------------------------------------------
 
     def build_bot(self) -> Application:
-        bot_app = (  # type: ignore[arg-type]
-            Application.builder()
-            .token(get_settings().TELEGRAM_BOT_TOKEN)
-            .concurrent_updates(True)
-            .build()
-        )
+        builder = Application.builder().token(get_settings().TELEGRAM_BOT_TOKEN)  # type: ignore[arg-type]
+        base_url = get_settings().TELEGRAM_BASE_URL
+        if base_url:
+            builder = builder.base_url(f"{base_url}/bot").base_file_url(f"{base_url}/file/bot")
+        bot_app = builder.concurrent_updates(True).build()
         bot_app.add_handler(CommandHandler("clear", self._handle_clear))
         bot_app.add_handler(CommandHandler("stop", self._handle_stop))
         bot_app.add_handler(CommandHandler("thread_id", self._handle_thread_id))

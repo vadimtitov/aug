@@ -5,6 +5,7 @@ To add a new agent, instantiate a BaseAgent subclass and add it to _REGISTRY.
 
 from langchain_core.tools import BaseTool
 
+from aug.config import get_settings
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.agents.chat_agent import AugAgent
 from aug.core.agents.fake_agent import FakeAgent
@@ -35,6 +36,7 @@ from aug.core.tools.run_ssh import download_ssh_file, list_ssh_targets, run_ssh,
 from aug.core.tools.skills import delete_skill, get_skill, save_skill, write_skill_file
 from aug.core.tools.subagent import make_run_subagent_tool
 from aug.core.tools.tasks import create_task, delete_task, list_tasks, update_task
+from aug.dev.scripted import build_scripted_agent
 
 _V7_TOOLS = [
     brave_search,
@@ -489,6 +491,8 @@ def configure_mcp_tools(tools: list[BaseTool]) -> None:
     graceful degradation as "every MCP server failed to connect".
     """
     _REGISTRY.update(_build_v12_agents(tools))
+    if get_settings().SCRIPTED_AGENT:
+        _REGISTRY["scripted"] = build_scripted_agent()
 
 
 _REGISTRY: dict[str, BaseAgent] = {

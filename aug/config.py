@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str | None = None
     # Comma-separated chat IDs allowed to use the bot. If empty, all chats are allowed.
     TELEGRAM_ALLOWED_CHAT_IDS: str = ""
+    # Bot API server root, e.g. http://fakes:8081.  Unset = Telegram's own servers.
+    # Only the scenario stack (docker-compose.scenarios.yml) points this at a fake.
+    TELEGRAM_BASE_URL: str | None = None
+
+    # Register the dev-only "scripted" agent (aug/dev/scripted.py).  Scenario stack only.
+    SCRIPTED_AGENT: bool = False
 
     @computed_field  # type: ignore[prop-decorator]
     @property

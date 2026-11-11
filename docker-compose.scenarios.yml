@@ -1,0 +1,49 @@
+# Scenario stack: AUG against a fake LLM and a fake Telegram (scripts/fakes.py).
+# Nothing here reaches a real model, a real bot or the real data dir, so a run is free.
+# Driven by `make scenarios` (scripts/scenarios.py); separate project name and ports,
+# so it runs next to the normal dev stack.
+services:
+  aug:
+    build: .
+    ports:
+      - "8013:8000"
+    environment:
+      API_KEY: scenarios
+      LLM_API_KEY: fake
+      LLM_BASE_URL: http://fakes:8081/v1
+      DATABASE_URL: postgresql+asyncpg://aug:password@postgres:5432/aug
+      TELEGRAM_BOT_TOKEN: "123456:FAKE"
+      TELEGRAM_BASE_URL: http://fakes:8081
+      TELEGRAM_ALLOWED_CHAT_IDS: "111"
+      SCRIPTED_AGENT: "true"
+      STARTUP_ANNOUNCEMENT: "false"
+      DEBUG: "true"
+      HUSHED_DIR: /app/data/.hushed
+    volumes:
+      - ./aug:/app/aug
+      - ./.scenarios/data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      fakes:
+        condition: service_started
+
+  fakes:
+    build: .
+    command: ["python", "scripts/fakes.py"]
+    ports:
+      - "8091:8081"
+    volumes:
+      - ./scripts:/app/scripts
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aug
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: aug
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aug -d aug"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
