@@ -221,3 +221,23 @@ async def test_failed_turn_sends_no_partial_answer_and_marks_open_tools_failed(i
 
     texts = [m.text for m in sent]
     assert len(texts) == 1 and "🔴" in texts[0]  # only the tool line, frozen as failed
+
+
+@pytest.mark.asyncio
+async def test_stopped_turn_marks_its_open_tools_stopped_not_failed(interface):
+    from aug.core.harness import TurnEnded
+
+    context, _msg, _bot, sent = _make_context()
+
+    await interface.send_stream(
+        _stream(
+            ToolStartEvent(run_id="r1", tool_name="run_bash", args={"command": "ls"}),
+            ToolEndEvent(run_id="r1", tool_name="run_bash", output="ok"),
+            ToolStartEvent(run_id="r2", tool_name="run_bash", args={"command": "sleep 60"}),
+            TurnEnded(cancelled=True),
+        ),
+        context,
+    )
+
+    final = sent[-1].text
+    assert "🟢" in final and "⏹" in final and "🔴" not in final

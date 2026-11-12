@@ -10,6 +10,7 @@ parsed graph events, which PR 2 replaces with harness events.
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from contextlib import aclosing, suppress
 
 import openai
 import psycopg
@@ -167,14 +168,12 @@ class LangGraphHarness(Harness):
             )
         try:
             while True:
-                async for event in self.agent.astream_events(
-                    graph_input, config, self._checkpointer
-                ):
-                    if run.user_requested_stop.is_set():
-                        break
-                    yield event
-                    while displays:
-                        yield StatusEvent(text=displays.pop(0))
+                graph = self.agent.astream_events(graph_input, config, self._checkpointer)
+                async with aclosing(_until_stopped(graph, run.user_requested_stop)) as events:
+                    async for event in events:
+                        yield event
+                        while displays:
+                            yield StatusEvent(text=displays.pop(0))
                 if run.user_requested_stop.is_set():
                     finished = True
                     break
@@ -204,8 +203,12 @@ class LangGraphHarness(Harness):
                     update={"messages": [HumanMessage(content=_frame_injection(injection))]}
                 )
         except Exception as e:
-            yield TurnEnded(error=_harness_error(e))
-            return
+            if not run.user_requested_stop.is_set():
+                yield TurnEnded(error=_harness_error(e))
+                return
+            # Failing on the way down after a /stop is still a stop, not an error.
+            logger.info("error after stop context=%s: %s: %s", context_id, type(e).__name__, e)
+            finished = True
         finally:
             # A turn that didn't finish (error, approval pause, consumer gone) drops its
             # reflexes; one that did waits for them below so their inject is counted.
@@ -310,6 +313,39 @@ def _approval_in(interrupts) -> ApprovalRequest | None:
         if isinstance(interrupt_obj.value, ApprovalRequest):
             return interrupt_obj.value
     return None
+
+
+async def _until_stopped(
+    events: AsyncIterator[HarnessEvent], stop: asyncio.Event
+) -> AsyncIterator[HarnessEvent]:
+    """Pass *events* through until *stop* is set, then cancel whatever the graph is
+    awaiting (a model call, a running tool) instead of waiting for its next event.
+
+    A tool cancelled mid-call leaves its tool call unanswered in the checkpoint; the
+    agent drops such calls before its next model call.
+    """
+    stopped = asyncio.ensure_future(stop.wait())
+    try:
+        while True:
+            step = asyncio.ensure_future(anext(events))
+            await asyncio.wait({step, stopped}, return_when=asyncio.FIRST_COMPLETED)
+            if not step.done():
+                step.cancel()
+                await asyncio.wait({step})  # let the cancellation land; never raises
+                if not step.cancelled():
+                    step.exception()  # retrieved: it is a stop, not an error
+                return
+            try:
+                event = step.result()
+            except StopAsyncIteration:
+                return
+            if stop.is_set():
+                return
+            yield event
+    finally:
+        stopped.cancel()
+        with suppress(Exception):
+            await events.aclose()  # type: ignore[attr-defined]
 
 
 def _harness_error(e: Exception) -> HarnessError:

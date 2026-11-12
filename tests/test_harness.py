@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -34,7 +35,11 @@ from aug.core.harness.langgraph import (
     LangGraphHarness,
     _harness_error,
 )
-from aug.core.prompts import HARNESS_ERROR_MESSAGES, MID_RUN_INJECTION_PREFIX
+from aug.core.prompts import (
+    HARNESS_ERROR_MESSAGES,
+    HARNESS_STOPPED_MESSAGE,
+    MID_RUN_INJECTION_PREFIX,
+)
 from aug.core.reflexes import ReflexOutput
 from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, run_registry
 from aug.core.state import AgentState, AgentStateUpdate
@@ -192,6 +197,20 @@ async def slow(seconds: float, config: RunnableConfig) -> str:
 
 
 @tool
+async def stubborn(seconds: float) -> str:
+    """Wait, ignoring the stop flag."""
+    await asyncio.sleep(seconds)
+    return "waited"
+
+
+@tool
+def stubborn_sync(seconds: float) -> str:
+    """Block a worker thread, ignoring the stop flag."""
+    time.sleep(seconds)
+    return "waited"
+
+
+@tool
 @requires_approval(describe=lambda command: ("box", command))
 async def guarded(command: str) -> str:
     """Run a command that needs approval."""
@@ -203,7 +222,7 @@ class _ScriptAgent(BaseAgent):
 
     def __init__(self, replies: list[AIMessage | Exception]) -> None:
         super().__init__()
-        self.tools = [slow, guarded]
+        self.tools = [slow, stubborn, stubborn_sync, guarded]
         self.replies = list(replies)
         self.seen: list[list] = []
 
@@ -280,6 +299,27 @@ async def test_cancel_stops_the_running_tool() -> None:
 
     assert cancelled is True
     assert events[-1].cancelled is True
+
+
+@pytest.mark.parametrize("tool_name", ["stubborn", "stubborn_sync"])
+async def test_cancel_does_not_wait_for_a_tool_that_ignores_it(tool_name: str) -> None:
+    harness, agent = _harness(_call(tool_name, {"seconds": 2}), AIMessage(content="next turn"))
+
+    async def cancel_soon() -> bool:
+        await asyncio.sleep(0.1)
+        return await harness.cancel("c1")
+
+    started = time.monotonic()
+    events, _ = await asyncio.wait_for(
+        asyncio.gather(_collect(harness.run(_msg("go"), "c1", TURN)), cancel_soon()), 3
+    )
+
+    assert time.monotonic() - started < 1
+    assert events[-1] == TurnEnded(cancelled=True)
+    # The cut-off tool call doesn't break the session: the next turn runs normally.
+    after = await _collect(harness.run(_msg("again"), "c1", TURN))
+    assert after[-1] == TurnEnded()
+    assert agent.seen[-1][-1].content == "again"
 
 
 async def test_model_error_ends_the_turn_with_its_kind() -> None:
@@ -477,10 +517,11 @@ async def test_stop_run_cancels_whatever_agent_the_turn_uses() -> None:
     """The settings fallback ("default") is not an agent; /stop must still work."""
     from aug.api.interfaces.rest import RestApiInterface
 
-    running = ScriptedHarness()
-    with patch("aug.api.interfaces.base.harnesses", return_value=[ScriptedHarness(), running]):
+    idle, running, after = ScriptedHarness(running=False), ScriptedHarness(), ScriptedHarness()
+    with patch("aug.api.interfaces.base.harnesses", return_value=[idle, running, after]):
         assert await RestApiInterface().stop_run("rest-x") is True
     assert running.cancelled == ["rest-x"]
+    assert after.cancelled == []  # one harness owns the turn; the rest aren't asked
 
 
 async def test_unattended_turns_are_capped_at_a_few_steps() -> None:
@@ -503,3 +544,21 @@ async def test_attended_turns_have_no_tool_round_cap() -> None:
     events = await _collect(harness.run(_msg("chat"), "c1", TURN))
 
     assert events[-1] == TurnEnded()
+
+
+async def test_a_stopped_turn_tells_the_user_it_stopped_not_that_it_failed() -> None:
+    from aug.api.interfaces.rest import RestApiInterface
+
+    iface = RestApiInterface()
+
+    async def render(stream, _context) -> None:
+        await _collect(stream)
+
+    iface.send_stream = render
+    iface.send_message = AsyncMock()
+    harness = ScriptedHarness([TurnEnded(cancelled=True)])
+
+    await iface._deliver(lambda: harness.run(_msg("go"), "c1", TURN), "c1", MagicMock())
+
+    iface.send_message.assert_awaited_once()
+    assert iface.send_message.await_args.args[0] == HARNESS_STOPPED_MESSAGE

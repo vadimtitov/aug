@@ -112,6 +112,7 @@ class _ToolEntry:
     sub_lines: list[str] = field(default_factory=list)
     done: bool = False
     error: bool = False
+    stopped: bool = False  # cut short by /stop
 
 
 _TG_MAX_LEN = MessageLimit.MAX_TEXT_LENGTH
@@ -495,6 +496,11 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
 
                     case TurnEnded(error=error) if error is not None:
                         turn_failed = True
+
+                    case TurnEnded(cancelled=True):
+                        for entry in tool_entries:
+                            if not entry.done:
+                                entry.done = entry.stopped = True
 
             if turn_failed:
                 return  # the caller reports the error; `finally` marks open tools failed
@@ -1401,7 +1407,9 @@ def _render_tool_lines(entries: list[_ToolEntry], spin_tick: int) -> str:
     lines: list[str] = [f"…+{hidden} more"] if hidden else []
     for entry in visible:
         args_part = f"({entry.args_preview})" if entry.args_preview else "()"
-        if entry.done:
+        if entry.stopped:
+            icon = "⏹"
+        elif entry.done:
             icon = "🔴" if entry.error else "🟢"
         else:
             icon = spinner

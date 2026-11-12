@@ -42,7 +42,11 @@ from aug.core.harness import (
     error_text,
 )
 from aug.core.harness.langgraph import LangGraphHarness
-from aug.core.prompts import LOCATION_SHARE_TEMPLATE, LOCATION_SHARE_UNKNOWN_SENDER
+from aug.core.prompts import (
+    HARNESS_STOPPED_MESSAGE,
+    LOCATION_SHARE_TEMPLATE,
+    LOCATION_SHARE_UNKNOWN_SENDER,
+)
 from aug.core.registry import get_harness, harnesses
 from aug.core.run import run_registry
 from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
@@ -508,6 +512,8 @@ class BaseInterface[ContextT](ABC):
                 return None
         if ended is not None and ended.error is not None:
             await self._send_quietly(error_text(ended.error), context)
+        elif ended is not None and ended.cancelled:
+            await self._send_quietly(HARNESS_STOPPED_MESSAGE, context)
         return ended
 
     async def _send_quietly(self, text: str, context: ContextT) -> None:
@@ -538,10 +544,10 @@ class BaseInterface[ContextT](ABC):
         Asks every harness rather than the one selected in settings: the turn may have
         been started with an explicit agent (REST) or before a /version switch.
         """
-        stopped = False
         for harness in harnesses():
-            stopped = await harness.cancel(context_id) or stopped
-        return stopped
+            if await harness.cancel(context_id):
+                return True
+        return False
 
     async def get_pending_approval(
         self, context_id: str, agent_version: str

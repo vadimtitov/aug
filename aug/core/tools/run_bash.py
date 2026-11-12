@@ -1,8 +1,10 @@
 """Bash execution tool with hushed secret injection and blacklist filtering."""
 
+import asyncio
 import logging
+import os
 import re
-import subprocess
+import signal
 
 from langchain_core.tools import tool
 
@@ -15,11 +17,9 @@ _KEYS_DIR = str(DATA_DIR / "keys")
 
 logger = logging.getLogger(__name__)
 
-_TIMEOUT = 60
-
 
 @tool
-def run_bash(command: str) -> str:
+async def run_bash(command: str) -> str:
     """Execute a shell command inside the container.
 
     SECRETS: The user may have stored secrets (API keys, passwords, tokens, urls,etc.)
@@ -40,21 +40,32 @@ def run_bash(command: str) -> str:
 
     logger.info("run_bash cmd=%.120r", command)
 
-    result = subprocess.run(
-        ["hushed", "run", "--", "bash", "-c", command],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=_TIMEOUT,
+    # Its own process group, so /stop (which cancels this coroutine) kills the command
+    # and everything it started, not just the hushed wrapper.  No timeout: long
+    # commands are fine, and /stop is how they end early.
+    proc = await asyncio.create_subprocess_exec(
+        "hushed",
+        "run",
+        "--",
+        "bash",
+        "-c",
+        command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
-    if result.returncode != 0:
-        logger.warning(
-            "run_bash exit_code=%d stderr=%.200r", result.returncode, result.stderr.strip()
-        )
+    try:
+        stdout, stderr = await proc.communicate()
+    except asyncio.CancelledError:
+        _kill_group(proc)
+        raise
+    out = stdout.decode("utf-8", errors="replace")
+    err = stderr.decode("utf-8", errors="replace")
+    if proc.returncode != 0:
+        logger.warning("run_bash exit_code=%d stderr=%.200r", proc.returncode, err.strip())
     else:
         logger.debug("run_bash exit_code=0")
-    output = (result.stdout + result.stderr).strip()
+    output = (out + err).strip()
     return output or "(no output)"
 
 
@@ -69,3 +80,13 @@ def _check_blacklist(command: str) -> str | None:
             logger.warning("run_bash blocked by blacklist pattern %r: %s", pattern, command)
             return f"Command blocked by blacklist pattern: {pattern}"
     return None
+
+
+def _kill_group(proc: asyncio.subprocess.Process) -> None:
+    """SIGKILL the command's whole process group.  Processes that left it on purpose
+    (setsid, nohup &, docker run -d) survive, as intended."""
+    logger.info("run_bash killed pid=%d", proc.pid)
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass

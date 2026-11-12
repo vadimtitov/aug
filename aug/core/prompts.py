@@ -434,6 +434,9 @@ HARNESS_ERROR_MESSAGES = {
 # Appended to a rate_limited message when the harness knows when the limit resets.
 HARNESS_RETRY_AT_SUFFIX = " The limit resets at {time} UTC."
 
+# Told after /stop ended a turn.  Whatever already ran is not undone.
+HARNESS_STOPPED_MESSAGE = "⏹ Stopped."
+
 # Rendered into the conversation when someone shares a location.  The sharer is named
 # because a group can have several live locations running at once, and coordinates alone
 # leave the agent unable to say whose is whose.

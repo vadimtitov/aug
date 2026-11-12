@@ -12,9 +12,15 @@ class ScriptedHarness(Harness):
     in flight.
     """
 
-    def __init__(self, events: list[HarnessEvent] | None = None, accept_inject: bool = False):
+    def __init__(
+        self,
+        events: list[HarnessEvent] | None = None,
+        accept_inject: bool = False,
+        running: bool = True,
+    ):
         self.events = list(events or [])
         self.accept_inject = accept_inject
+        self.running_turn = running  # what cancel() answers
         self.turns: list[tuple[Message, str, TurnContext]] = []
         self.injected: list[tuple[Message, str]] = []
         self.cancelled: list[str] = []
@@ -34,7 +40,7 @@ class ScriptedHarness(Harness):
 
     async def cancel(self, context_id: str) -> bool:
         self.cancelled.append(context_id)
-        return True
+        return self.running_turn
 
     async def compact(self, context_id: str) -> bool:
         self.compacted.append(context_id)
