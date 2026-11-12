@@ -24,14 +24,18 @@ class AgentRun:
                                loop and by tools between execution steps.
     pending_agent_injection  — content queued here is injected as a new HumanMessage
                                at the next interrupt_after=[call_tools] pause point.
-    active                   — False once the run has cleaned up; guards against
-                               stale injections.
+    active                   — False once the run stops taking injections (its leftovers
+                               are being collected) or has cleaned up.
+    accepts_injection        — False for unattended turns (pushes): a user message then
+                               waits for its own turn instead of joining one nobody
+                               renders to the user.
     """
 
     id: str = field(default_factory=lambda: str(uuid4())[:8])
     user_requested_stop: asyncio.Event = field(default_factory=asyncio.Event)
     pending_agent_injection: asyncio.Queue[MessageContent] = field(default_factory=asyncio.Queue)
     active: bool = True
+    accepts_injection: bool = True
 
     def inject_message(self, content: MessageContent) -> None:
         """Queue user content for injection at the next agent pause point."""
@@ -82,7 +86,12 @@ class RunRegistry:
         """True while a turn is in flight for *context_id* and can still take an
         injected message (it has not been asked to stop)."""
         run = self._runs.get(context_id)
-        return run is not None and run.active and not run.user_requested_stop.is_set()
+        return (
+            run is not None
+            and run.active
+            and run.accepts_injection
+            and not run.user_requested_stop.is_set()
+        )
 
     def clear(self) -> None:
         self._runs.clear()

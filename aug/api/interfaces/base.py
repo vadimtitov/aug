@@ -17,6 +17,7 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -42,7 +43,7 @@ from aug.core.harness import (
 )
 from aug.core.harness.langgraph import LangGraphHarness
 from aug.core.prompts import LOCATION_SHARE_TEMPLATE, LOCATION_SHARE_UNKNOWN_SENDER
-from aug.core.registry import get_harness
+from aug.core.registry import get_harness, harnesses
 from aug.core.run import run_registry
 from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
 from aug.utils.file_settings import ConversationSettings, load_settings, save_settings
@@ -440,19 +441,36 @@ class BaseInterface[ContextT](ABC):
 
         turn = self._turn_context(incoming.interface, incoming.context_id, incoming.sender_id)
         async with run_registry.run_lock(incoming.context_id):
-            next_message: Message | None = message
-            while next_message is not None:
-                ended = await self._deliver(
-                    lambda message=next_message: harness.run(message, incoming.context_id, turn),
-                    incoming.context_id,
-                    context,
-                )
-                next_message = None
-                if ended and ended.unconsumed and not ended.error and not ended.approval:
-                    # Arrived during the final streaming phase, with no tool-round pause
-                    # left to take it: it gets a turn of its own, straight away.
-                    logger.info("leftover_injection thread=%s", incoming.context_id)
-                    next_message = _merge_messages(ended.unconsumed)
+            await self._deliver_with_follow_ups(
+                harness,
+                lambda: harness.run(message, incoming.context_id, turn),
+                incoming.context_id,
+                turn,
+                context,
+            )
+
+    async def _deliver_with_follow_ups(
+        self,
+        harness: Harness,
+        start: Callable[[], AsyncGenerator[HarnessEvent]],
+        context_id: str,
+        turn: TurnContext,
+        context: ContextT,
+    ) -> None:
+        """Deliver a turn, then one follow-up turn per batch of messages it left
+        unconsumed.  The caller holds the run lock."""
+        ended = await self._deliver(start, context_id, context)
+        follow_up = replace(turn, follow_up=True)
+        while ended and ended.unconsumed and not ended.error and not ended.approval:
+            # Arrived during the final streaming phase, with no tool-round pause left
+            # to take it: it gets a turn of its own, straight away.
+            logger.info("leftover_injection context=%s", context_id)
+            leftover = _merge_messages(ended.unconsumed)
+            ended = await self._deliver(
+                lambda message=leftover: harness.run(message, context_id, follow_up),
+                context_id,
+                context,
+            )
 
     async def _deliver(
         self,
@@ -515,9 +533,15 @@ class BaseInterface[ContextT](ABC):
         )
 
     async def stop_run(self, context_id: str) -> bool:
-        """Stop the turn in flight for a thread.  Returns True if there was one."""
-        harness = _harness_for(self.get_agent_version(context_id))
-        return harness is not None and await harness.cancel(context_id)
+        """Stop the turn in flight for *context_id*.  Returns True if there was one.
+
+        Asks every harness rather than the one selected in settings: the turn may have
+        been started with an explicit agent (REST) or before a /version switch.
+        """
+        stopped = False
+        for harness in harnesses():
+            stopped = await harness.cancel(context_id) or stopped
+        return stopped
 
     async def get_pending_approval(
         self, context_id: str, agent_version: str
@@ -559,9 +583,13 @@ class BaseInterface[ContextT](ABC):
         set_context_id(context_id)
         turn = self._turn_context(interface, context_id, sender_id)
         async with run_registry.run_lock(context_id):
-            logger.info("approval_resume thread=%s decision=%s", context_id, decision.value)
-            await self._deliver(
-                lambda: harness.resume(decision, context_id, turn), context_id, context
+            logger.info("approval_resume context=%s decision=%s", context_id, decision.value)
+            await self._deliver_with_follow_ups(
+                harness,
+                lambda: harness.resume(decision, context_id, turn),
+                context_id,
+                turn,
+                context,
             )
 
 

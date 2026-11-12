@@ -37,6 +37,7 @@ class Address:
 class TurnContext:
     reply_to: Address
     attended: bool  # False for pushes and jobs: nobody is there to answer an approval
+    follow_up: bool = False  # a turn for messages the previous turn left unconsumed
 
 
 @dataclass(frozen=True)

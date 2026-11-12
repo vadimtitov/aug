@@ -22,6 +22,7 @@ from langgraph.types import Command
 
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.compaction import compact_thread
+from aug.core.events import StatusEvent
 from aug.core.harness.base import Harness
 from aug.core.harness.types import (
     FilePart,
@@ -29,6 +30,7 @@ from aug.core.harness.types import (
     HarnessEvent,
     Message,
     ModelTier,
+    Sender,
     TextPart,
     TurnContext,
     TurnEnded,
@@ -49,6 +51,7 @@ class LangGraphHarness(Harness):
     def __init__(self, agent: BaseAgent, checkpointer: BaseCheckpointSaver) -> None:
         self.agent = agent
         self._checkpointer = checkpointer
+        self._opened: dict[str, AgentRun] = {}
 
     def _run(
         self, message: Message, context_id: str, turn: TurnContext
@@ -58,7 +61,9 @@ class LangGraphHarness(Harness):
             thread_id=context_id,
             interface=turn.reply_to.interface,
         )
-        return self._stream(graph_input, message, context_id, turn, reflexes=True)
+        # Reflexes answer what the user just said; a follow-up turn's messages were
+        # injections (their own reflexes already ran), so it fires none.
+        return self._stream(graph_input, message, context_id, turn, reflexes=not turn.follow_up)
 
     async def resume(
         self, decision: ApprovalDecision, context_id: str, turn: TurnContext
@@ -87,10 +92,9 @@ class LangGraphHarness(Harness):
         )
 
     async def inject(self, message: Message, context_id: str) -> bool:
-        run = run_registry.get(context_id)
-        if run is None or not run.active or run.user_requested_stop.is_set():
+        if not run_registry.accepting(context_id):
             return False
-        run.inject_message(_render(message))
+        run_registry.get(context_id).inject_message(_render(message))  # type: ignore[union-attr]
         return True
 
     async def cancel(self, context_id: str) -> bool:
@@ -110,16 +114,20 @@ class LangGraphHarness(Harness):
         response = await build_chat_model(self.agent.model_name, temperature=0.0).ainvoke(prompt)
         return response.text
 
-    def _open_turn(self, context_id: str) -> None:
+    def _open_turn(self, context_id: str, turn: TurnContext) -> None:
         existing = run_registry.get(context_id)
         if existing is not None and existing.active:
             existing.request_stop()  # the run lock should rule this out; never leave two
-        run_registry.set(context_id, AgentRun())
+        run = AgentRun(accepts_injection=turn.attended)
+        run_registry.set(context_id, run)
+        self._opened[context_id] = run
 
     def _close_turn(self, context_id: str) -> None:
-        run = run_registry.get(context_id)
-        if run is not None:
-            run.active = False
+        run = self._opened.pop(context_id, None)
+        if run is None:
+            return
+        run.active = False
+        if run_registry.get(context_id) is run:  # never drop a turn this one didn't open
             run_registry.pop(context_id)
 
     async def _stream(
@@ -143,10 +151,11 @@ class LangGraphHarness(Harness):
             }
         }
         finished = False
+        displays: list[str] = []  # reflex results to show the user, as they land
         reflex_task: asyncio.Task[None] | None = None
         if reflexes and message is not None and self.agent.reflexes:
             reflex_task = asyncio.create_task(
-                self._run_reflexes(self.agent.reflexes, message.text, context_id, run)
+                self._run_reflexes(self.agent.reflexes, message.text, context_id, run, displays)
             )
         try:
             while True:
@@ -156,6 +165,8 @@ class LangGraphHarness(Harness):
                     if run.user_requested_stop.is_set():
                         break
                     yield event
+                    while displays:
+                        yield StatusEvent(text=displays.pop(0))
                 if run.user_requested_stop.is_set():
                     finished = True
                     break
@@ -187,9 +198,14 @@ class LangGraphHarness(Harness):
 
         if reflex_task is not None:
             await asyncio.gather(reflex_task, return_exceptions=True)
-        sender = message.sender if message is not None else None
+        for text in displays:
+            yield StatusEvent(text=text)
+        # Stop taking injections before collecting what's queued: from here on a new
+        # message gets a turn of its own instead of landing in a queue nobody reads.
+        run.active = False
+        sender = message.sender if message is not None else Sender(turn.reply_to.interface, "")
         unconsumed = []
-        while sender is not None:
+        while True:
             try:
                 leftover = run.pending_agent_injection.get_nowait()
             except asyncio.QueueEmpty:
@@ -198,13 +214,21 @@ class LangGraphHarness(Harness):
         yield TurnEnded(unconsumed=unconsumed, cancelled=run.user_requested_stop.is_set())
 
     async def _run_reflexes(
-        self, reflexes: list[Reflex], query: str, context_id: str, run: AgentRun
+        self,
+        reflexes: list[Reflex],
+        query: str,
+        context_id: str,
+        run: AgentRun,
+        displays: list[str],
     ) -> None:
         """Run reflexes alongside the turn; each result is injected as soon as it lands,
-        so the agent can pick it up at its next tool-round pause."""
+        so the agent can pick it up at its next tool-round pause, and its display text
+        is queued for the turn's event stream."""
         history = await self._recent_history(context_id)
         for result in await run_reflexes(reflexes, query, history):
             run.inject_message(result.inject)
+            if result.display:
+                displays.append(result.display)
 
     async def _recent_history(self, context_id: str, n: int = 3) -> list[MessageContent]:
         """The last *n* user/assistant messages, as labelled strings, for reflexes."""

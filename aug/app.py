@@ -164,6 +164,10 @@ async def lifespan(app: FastAPI):
         # Live browser view — lazy; the screencast only runs while someone watches.
         app.state.browser_view_hub = BrowserViewHub(get_settings().BROWSER_CDP_URL)
 
+        # Before Telegram starts polling, so the first message already finds a harness.
+        # Agents rebuilt by configure_mcp_tools() below get fresh harnesses on first use.
+        configure_harnesses(checkpointer)
+
         telegram = TelegramInterface()
         await telegram.start_polling(app)
 
@@ -174,8 +178,6 @@ async def lifespan(app: FastAPI):
         mcp_manager = MCPManager()
         await mcp_manager.load_all(base_tool_names=v12_base_tool_names())
         configure_mcp_tools(mcp_manager.tools)
-        # Harnesses are built from the agents as configured above, so this comes after.
-        configure_harnesses(checkpointer)
         harness_stack = AsyncExitStack()
         for harness in harnesses():
             await harness_stack.enter_async_context(

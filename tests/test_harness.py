@@ -17,7 +17,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.errors import GraphRecursionError
 
 from aug.core.agents.base_agent import BaseAgent
-from aug.core.events import ChatModelStreamEvent, ToolStartEvent
+from aug.core.events import ChatModelStreamEvent, StatusEvent, ToolStartEvent
 from aug.core.harness import (
     Address,
     HarnessError,
@@ -31,7 +31,8 @@ from aug.core.harness import (
 )
 from aug.core.harness.langgraph import LangGraphHarness, _harness_error
 from aug.core.prompts import HARNESS_ERROR_MESSAGES, MID_RUN_INJECTION_PREFIX
-from aug.core.run import AGENT_RUN_CONFIG_KEY, run_registry
+from aug.core.reflexes import ReflexOutput
+from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, run_registry
 from aug.core.state import AgentState, AgentStateUpdate
 from aug.core.tools.approval import ApprovalDecision, requires_approval
 from tests.harness_fakes import ScriptedHarness
@@ -382,3 +383,75 @@ async def test_compact_waits_for_the_turn_in_flight() -> None:
         lock.release()
         assert await asyncio.wait_for(task, 1) is True
     assert harness.compacted == ["t1"]
+
+
+# ---------------------------------------------------------------------------
+# Review regressions
+# ---------------------------------------------------------------------------
+
+
+async def test_inject_after_leftovers_are_collected_is_refused_not_lost() -> None:
+    """Once TurnEnded is out, a new message must get its own turn, not a dead queue."""
+    harness, _ = _harness(AIMessage(content="final"))
+    accepted = None
+    async for event in harness.run(_msg("start"), "c1", TURN):
+        if isinstance(event, TurnEnded):
+            accepted = await harness.inject(_msg("just after"), "c1")
+    assert accepted is False
+
+
+async def test_unattended_turn_takes_no_injections() -> None:
+    harness, _ = _harness(AIMessage(content="push reply"))
+    unattended = TurnContext(reply_to=TURN.reply_to, attended=False)
+    stream = harness.run(_msg("push"), "c1", unattended)
+    await anext(stream)
+
+    assert await harness.inject(_msg("user typing"), "c1") is False
+    assert run_registry.accepting("c1") is False
+    await _collect(stream)
+
+
+def _reflexing_harness(display: str = "🪄 light on"):
+    harness, agent = _harness(AIMessage(content="ok"))
+    reflex = AsyncMock(return_value=ReflexOutput(inject="[reflex] done", display=display))
+    agent.reflexes = [reflex]
+    return harness, reflex
+
+
+async def test_reflex_display_reaches_the_event_stream() -> None:
+    harness, reflex = _reflexing_harness()
+
+    events = await _collect(harness.run(_msg("turn on the light"), "c1", TURN))
+
+    reflex.assert_awaited_once()
+    assert StatusEvent(text="🪄 light on") in events
+
+
+async def test_follow_up_turns_fire_no_reflexes() -> None:
+    harness, reflex = _reflexing_harness()
+    follow_up = TurnContext(reply_to=TURN.reply_to, attended=True, follow_up=True)
+
+    await _collect(harness.run(_msg("late message"), "c1", follow_up))
+
+    reflex.assert_not_awaited()
+
+
+async def test_close_turn_never_drops_a_run_it_did_not_open() -> None:
+    harness, _ = _harness()
+    harness._open_turn("c1", TURN)
+    newer = AgentRun()
+    run_registry.set("c1", newer)
+
+    harness._close_turn("c1")
+
+    assert run_registry.get("c1") is newer
+
+
+async def test_stop_run_cancels_whatever_agent_the_turn_uses() -> None:
+    """The settings fallback ("default") is not an agent; /stop must still work."""
+    from aug.api.interfaces.rest import RestApiInterface
+
+    running = ScriptedHarness()
+    with patch("aug.api.interfaces.base.harnesses", return_value=[ScriptedHarness(), running]):
+        assert await RestApiInterface().stop_run("rest-x") is True
+    assert running.cancelled == ["rest-x"]

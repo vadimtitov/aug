@@ -82,7 +82,7 @@ class Harness(ABC):
         """
         yield
 
-    def _open_turn(self, context_id: str) -> None:  # noqa: B027 — optional hook
+    def _open_turn(self, context_id: str, turn: TurnContext) -> None:  # noqa: B027 — optional hook
         """Called before TurnStarted: from here on inject() must reach this turn."""
 
     def _close_turn(self, context_id: str) -> None:  # noqa: B027 — optional hook
@@ -105,7 +105,7 @@ class Harness(ABC):
         tool_started: dict[str, float] = {}
         text = ""
         ended: TurnEnded | None = None
-        self._open_turn(context_id)
+        self._open_turn(context_id, turn)
         try:
             yield TurnStarted(context_id=context_id)
             logger.info(
