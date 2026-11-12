@@ -29,7 +29,11 @@ from aug.core.harness import (
     TurnStarted,
     error_text,
 )
-from aug.core.harness.langgraph import LangGraphHarness, _harness_error
+from aug.core.harness.langgraph import (
+    UNATTENDED_MAX_TOOL_ROUNDS,
+    LangGraphHarness,
+    _harness_error,
+)
 from aug.core.prompts import HARNESS_ERROR_MESSAGES, MID_RUN_INJECTION_PREFIX
 from aug.core.reflexes import ReflexOutput
 from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, run_registry
@@ -455,3 +459,25 @@ async def test_stop_run_cancels_whatever_agent_the_turn_uses() -> None:
     with patch("aug.api.interfaces.base.harnesses", return_value=[ScriptedHarness(), running]):
         assert await RestApiInterface().stop_run("rest-x") is True
     assert running.cancelled == ["rest-x"]
+
+
+async def test_unattended_turns_are_capped_at_a_few_steps() -> None:
+    """A push that loops on tools stops at the cap with step_limit; a chat turn doesn't."""
+    loop = [_call("slow", {"seconds": 0}, f"c{i}") for i in range(30)]
+    harness, agent = _harness(*loop)
+    loop = agent.replies
+    unattended = TurnContext(reply_to=TURN.reply_to, attended=False)
+
+    events = await _collect(harness.run(_msg("push"), "c1", unattended))
+
+    assert events[-1].error == HarnessError(kind="step_limit")
+    assert len(loop) == 30 - UNATTENDED_MAX_TOOL_ROUNDS  # stopped asking the model
+
+
+async def test_attended_turns_have_no_tool_round_cap() -> None:
+    loop = [_call("slow", {"seconds": 0}, f"c{i}") for i in range(15)]
+    harness, _ = _harness(*loop, AIMessage(content="done"))
+
+    events = await _collect(harness.run(_msg("chat"), "c1", TURN))
+
+    assert events[-1] == TurnEnded()

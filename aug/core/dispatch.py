@@ -17,7 +17,7 @@ broadcast(app, message)
     no target thread and no agent run.
 
 Agent pushes run through the harness like any turn, under the same run lock, as an
-unattended turn (``TurnContext.attended=False``).
+unattended turn (``TurnContext.attended=False``), which the harness caps at a few steps.
 """
 
 import logging

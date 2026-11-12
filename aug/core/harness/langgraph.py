@@ -44,6 +44,12 @@ from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
 
 logger = logging.getLogger(__name__)
 
+# Tool rounds an unattended turn (a push, a scheduled task) may take.  Nobody is
+# watching it, so a runaway task is stopped early.  Counted here, not with LangGraph's
+# recursion_limit: the graph pauses after every tool round and each resume starts a
+# fresh step count, so a recursion_limit never binds across rounds.
+UNATTENDED_MAX_TOOL_ROUNDS = 10
+
 
 class LangGraphHarness(Harness):
     """One agent version's compiled graph, sharing the app's checkpointer."""
@@ -150,7 +156,9 @@ class LangGraphHarness(Harness):
                 AGENT_RUN_CONFIG_KEY: run,
             }
         }
+
         finished = False
+        tool_rounds = 0
         displays: list[str] = []  # reflex results to show the user, as they land
         reflex_task: asyncio.Task[None] | None = None
         if reflexes and message is not None and self.agent.reflexes:
@@ -177,6 +185,13 @@ class LangGraphHarness(Harness):
                 approval = _approval_in(state.interrupts)
                 if approval is not None or state.interrupts:
                     yield TurnEnded(approval=approval)
+                    return
+                tool_rounds += 1
+                if not turn.attended and tool_rounds >= UNATTENDED_MAX_TOOL_ROUNDS:
+                    logger.warning(
+                        "unattended turn hit %d tool rounds context=%s", tool_rounds, context_id
+                    )
+                    yield TurnEnded(error=HarnessError(kind="step_limit"))
                     return
                 try:
                     injection = run.pending_agent_injection.get_nowait()
