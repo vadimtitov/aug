@@ -363,7 +363,7 @@ def _make_aug_agent(**kwargs):
 def _state_with_research():
     from aug.core.state import AgentState
 
-    return AgentState(messages=_research_thread(), thread_id="test", system_prompt="")
+    return AgentState(messages=_research_thread(), context_id="test", system_prompt="")
 
 
 @pytest.mark.asyncio

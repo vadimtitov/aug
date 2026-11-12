@@ -47,7 +47,7 @@ def langgraph_harness():
 
 async def _preprocess(parts) -> str:
     incoming = IncomingMessage(
-        parts=parts, interface="telegram", sender_id="1", thread_id="tg-1-0", agent_version="x"
+        parts=parts, interface="telegram", sender_id="1", context_id="tg-1-0", agent_version="x"
     )
     return _render(await base._preprocess(incoming))
 
@@ -195,13 +195,13 @@ def test_a_location_with_no_live_period_is_never_live():
 # ---------------------------------------------------------------------------
 
 
-async def _record(interface, state, user_id, location, thread_id="tg-123-0"):
+async def _record(interface, state, user_id, location, context_id="tg-123-0"):
     saved: list[AppState] = []
     with (
         patch("aug.api.interfaces.base.load_state", return_value=state),
         patch("aug.api.interfaces.base.save_state", side_effect=saved.append),
     ):
-        interface.record_location(thread_id, user_id, location)
+        interface.record_location(context_id, user_id, location)
     return saved
 
 
@@ -431,7 +431,7 @@ async def test_location_state_survives_a_new_session(telegram_interface):
         state,
         "7",
         LocationContent(latitude=51.5, longitude=-0.12),
-        thread_id="tg-123-0",
+        context_id="tg-123-0",
     )
 
     with patch("aug.api.interfaces.base.load_state", return_value=state):
@@ -446,7 +446,7 @@ async def test_topics_do_not_share_location_state(telegram_interface):
         state,
         "7",
         LocationContent(latitude=1.0, longitude=1.0),
-        thread_id="tg-123-topic-5",
+        context_id="tg-123-topic-5",
     )
 
     with patch("aug.api.interfaces.base.load_state", return_value=state):
@@ -673,7 +673,7 @@ async def test_receive_message_reads_edited_location(telegram_interface):
     assert incoming.parts == [
         LocationContent(latitude=10.0, longitude=20.0, live_period=600, sender_name="V")
     ]
-    assert incoming.thread_id == "tg-123-0"
+    assert incoming.context_id == "tg-123-0"
     assert incoming.user_id == "7"
     assert incoming.sender_id == "123"  # the chat, which is where a reply goes
 
@@ -853,7 +853,7 @@ async def test_unthrottled_update_starts_a_real_run_with_the_location(telegram_i
     execute.assert_awaited_once()
     incoming, message, _ctx = execute.await_args[0]
     assert _render(message) == _GEOCODED
-    assert incoming.thread_id == "tg-123-0"
+    assert incoming.context_id == "tg-123-0"
     assert incoming.user_id == "7"
 
 
@@ -951,7 +951,7 @@ async def test_a_location_without_a_user_id_is_keyed_by_sender(telegram_interfac
         parts=[LocationContent(latitude=1.0, longitude=2.0)],
         interface="rest_api",
         sender_id="rest-caller",
-        thread_id="tg-123-0",
+        context_id="tg-123-0",
         agent_version="fake",
     )
 

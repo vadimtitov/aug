@@ -209,8 +209,8 @@ def test_lifespan_announces_to_whatever_interface_registered_itself():
     iface = _boot(announce=True)
 
     iface.send_proactive.assert_awaited_once()
-    thread_id, message = iface.send_proactive.await_args[0]
-    assert thread_id == "fake-thread"
+    context_id, message = iface.send_proactive.await_args[0]
+    assert context_id == "fake-thread"
     assert message == "🟢 AUG 1.2.3 is up."
 
 

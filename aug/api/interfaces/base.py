@@ -46,7 +46,7 @@ from aug.core.registry import get_harness
 from aug.core.run import run_registry
 from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
 from aug.utils.file_settings import ConversationSettings, load_settings, save_settings
-from aug.utils.logging import set_correlation_id, set_thread_id
+from aug.utils.logging import set_context_id, set_correlation_id
 from aug.utils.state import ConversationLocationState, LiveLocationState, load_state, save_state
 
 logger = logging.getLogger(__name__)
@@ -134,7 +134,7 @@ class IncomingMessage(BaseModel):
     parts: list[ContentPart]
     interface: Literal["telegram", "rest_api"]
     sender_id: str  # delivery target — the chat a reply goes back to
-    thread_id: str
+    context_id: str
     agent_version: str
     # Platform id of the person who sent this.  Distinct from sender_id, which addresses
     # a place: in a group chat many user_ids share one sender_id.
@@ -173,14 +173,14 @@ class BaseInterface[ContextT](ABC):
         """
 
     @abstractmethod
-    async def resolve_thread(
+    async def resolve_context(
         self,
-        thread_id: str,
+        context_id: str,
         *,
         topic_name: str | None = None,
         chat_id: int | None = None,
     ) -> str:
-        """Resolve a logical thread_id to a concrete thread ID for this interface.
+        """Resolve a logical context_id to a concrete thread ID for this interface.
 
         Accepts:
           ``"default"``    — the interface's canonical default delivery target
@@ -195,8 +195,8 @@ class BaseInterface[ContextT](ABC):
         """
 
     @abstractmethod
-    def conversation_id(self, thread_id: str) -> str:
-        """Return the stable conversation key that *thread_id* belongs to.
+    def conversation_id(self, context_id: str) -> str:
+        """Return the stable conversation key that *context_id* belongs to.
 
         Thread IDs may rotate — Telegram's /clear starts a new session and thus a
         new thread ID — but per-conversation settings must survive that.  The
@@ -206,8 +206,8 @@ class BaseInterface[ContextT](ABC):
         """
 
     @abstractmethod
-    async def send_proactive(self, thread_id: str, text: str) -> None:
-        """Send a plain-text message to *thread_id* without an agent turn.
+    async def send_proactive(self, context_id: str, text: str) -> None:
+        """Send a plain-text message to *context_id* without an agent turn.
 
         Used for ``type="forward"`` pushes.  Must raise on failure.
         """
@@ -224,9 +224,9 @@ class BaseInterface[ContextT](ABC):
 
     @abstractmethod
     async def send_proactive_stream(
-        self, thread_id: str, stream: AsyncIterator[HarnessEvent]
+        self, context_id: str, stream: AsyncIterator[HarnessEvent]
     ) -> None:
-        """Consume an agent event stream and deliver the final response to *thread_id*.
+        """Consume an agent event stream and deliver the final response to *context_id*.
 
         Only the accumulated final text and any tool output attachments are
         sent — intermediate streaming updates and tool call messages are
@@ -260,13 +260,13 @@ class BaseInterface[ContextT](ABC):
         """
         return None
 
-    def get_agent_version(self, thread_id: str) -> str:
-        """Return the agent version selected for *thread_id*'s conversation.
+    def get_agent_version(self, context_id: str) -> str:
+        """Return the agent version selected for *context_id*'s conversation.
 
         Falls back to the parent conversation when this one has no selection of its own.
         """
         conversations = load_settings().conversations
-        conversation = self.conversation_id(thread_id)
+        conversation = self.conversation_id(context_id)
         if conversation in conversations:
             return conversations[conversation].agent
         parent = self.parent_conversation_id(conversation)
@@ -274,23 +274,23 @@ class BaseInterface[ContextT](ABC):
             return conversations[parent].agent
         return ConversationSettings().agent
 
-    def set_agent_version(self, thread_id: str, agent: str) -> None:
-        """Select *agent* for *thread_id*'s conversation, leaving other conversations alone."""
-        conversation = self.conversation_id(thread_id)
+    def set_agent_version(self, context_id: str, agent: str) -> None:
+        """Select *agent* for *context_id*'s conversation, leaving other conversations alone."""
+        conversation = self.conversation_id(context_id)
         settings = load_settings()
         settings.conversations.setdefault(conversation, ConversationSettings()).agent = agent
         save_settings(settings)
 
-    def live_locations(self, thread_id: str) -> dict[str, LiveLocationState]:
-        """Latest location per user for *thread_id*'s conversation, keyed by user id.
+    def live_locations(self, context_id: str) -> dict[str, LiveLocationState]:
+        """Latest location per user for *context_id*'s conversation, keyed by user id.
 
         Includes users whose sharing period has already expired — callers decide what
         counts as stale via ``LiveLocationState.is_live`` / ``age_seconds``.
         """
-        return self._location_state(thread_id).users
+        return self._location_state(context_id).users
 
-    def record_location(self, thread_id: str, user_id: str, location: LocationContent) -> bool:
-        """Persist *location* as *user_id*'s latest position in *thread_id*'s conversation.
+    def record_location(self, context_id: str, user_id: str, location: LocationContent) -> bool:
+        """Persist *location* as *user_id*'s latest position in *context_id*'s conversation.
 
         Called for every location that arrives, whoever sent it, so several people in
         one group are tracked side by side.  An update the platform timestamped before
@@ -304,11 +304,11 @@ class BaseInterface[ContextT](ABC):
         now = time.time()
         state = load_state()
         conversation = state.locations.setdefault(
-            self.conversation_id(thread_id), ConversationLocationState()
+            self.conversation_id(context_id), ConversationLocationState()
         )
         previous = conversation.users.get(user_id, LiveLocationState(user_id=user_id))
         if location.reported_at and location.reported_at < previous.reported_at:
-            logger.debug("dropping out-of-order location for %s in %s", user_id, thread_id)
+            logger.debug("dropping out-of-order location for %s in %s", user_id, context_id)
             return False
 
         conversation.users[user_id] = LiveLocationState(
@@ -322,8 +322,8 @@ class BaseInterface[ContextT](ABC):
         save_state(state)
         return True
 
-    def claim_location_run(self, thread_id: str) -> bool:
-        """Reserve a location-triggered agent run for *thread_id*'s conversation.
+    def claim_location_run(self, context_id: str) -> bool:
+        """Reserve a location-triggered agent run for *context_id*'s conversation.
 
         Returns True and stamps the throttle if enough time has passed since the last
         such run, False if the update should be recorded but not woken on.  Only for
@@ -333,7 +333,7 @@ class BaseInterface[ContextT](ABC):
         now = time.time()
         state = load_state()
         conversation = state.locations.setdefault(
-            self.conversation_id(thread_id), ConversationLocationState()
+            self.conversation_id(context_id), ConversationLocationState()
         )
         if now - conversation.last_run_at < conversation.throttle_seconds:
             return False
@@ -341,7 +341,7 @@ class BaseInterface[ContextT](ABC):
         save_state(state)
         return True
 
-    def stamp_location_run(self, thread_id: str) -> None:
+    def stamp_location_run(self, context_id: str) -> None:
         """Record that a location is starting an agent run now, throttle or no throttle.
 
         The decision to run has already been made by the time this is called — a first
@@ -350,19 +350,19 @@ class BaseInterface[ContextT](ABC):
         """
         state = load_state()
         state.locations.setdefault(
-            self.conversation_id(thread_id), ConversationLocationState()
+            self.conversation_id(context_id), ConversationLocationState()
         ).last_run_at = time.time()
         save_state(state)
 
-    def location_throttle(self, thread_id: str) -> int:
+    def location_throttle(self, context_id: str) -> int:
         """Minimum seconds between location-triggered agent runs in this conversation."""
-        return self._location_state(thread_id).throttle_seconds
+        return self._location_state(context_id).throttle_seconds
 
-    def set_location_throttle(self, thread_id: str, seconds: int) -> None:
+    def set_location_throttle(self, context_id: str, seconds: int) -> None:
         """Set the minimum seconds between location-triggered runs in this conversation."""
         state = load_state()
         state.locations.setdefault(
-            self.conversation_id(thread_id), ConversationLocationState()
+            self.conversation_id(context_id), ConversationLocationState()
         ).throttle_seconds = seconds
         save_state(state)
 
@@ -381,7 +381,7 @@ class BaseInterface[ContextT](ABC):
         for part in incoming.parts:
             if isinstance(part, LocationContent):
                 accepted = self.record_location(
-                    incoming.thread_id, incoming.user_id or incoming.sender_id, part
+                    incoming.context_id, incoming.user_id or incoming.sender_id, part
                 )
                 located = located or accepted
 
@@ -389,9 +389,9 @@ class BaseInterface[ContextT](ABC):
         message = await _preprocess(incoming)
 
         fire_inline = False
-        async with run_registry.thread_lock(incoming.thread_id):
+        async with run_registry.routing_lock(incoming.context_id):
             harness = _harness_for(incoming.agent_version)
-            if harness is not None and await harness.inject(message, incoming.thread_id):
+            if harness is not None and await harness.inject(message, incoming.context_id):
                 return
 
             # A location is about to start a run.  Stamp the throttle here, under the
@@ -399,29 +399,29 @@ class BaseInterface[ContextT](ABC):
             # check happened before preprocessing, and the run it saw may since have
             # finished.  Covers the first share too, which never passes such a check.
             if located:
-                self.stamp_location_run(incoming.thread_id)
+                self.stamp_location_run(incoming.context_id)
 
             # No turn in flight — buffer for the debounce window (or fire at once).
-            self._debounce_buf.setdefault(incoming.thread_id, []).append((incoming, message))
-            task = self._debounce_tasks.get(incoming.thread_id)
+            self._debounce_buf.setdefault(incoming.context_id, []).append((incoming, message))
+            task = self._debounce_tasks.get(incoming.context_id)
             if task is None or task.done():
                 if self._debounce_window == 0:
                     fire_inline = True  # await _debounce_fire after releasing the lock
                 else:
-                    self._debounce_tasks[incoming.thread_id] = asyncio.create_task(
-                        self._debounce_fire(incoming.thread_id, context)
+                    self._debounce_tasks[incoming.context_id] = asyncio.create_task(
+                        self._debounce_fire(incoming.context_id, context)
                     )
 
         if fire_inline:
-            await self._debounce_fire(incoming.thread_id, context)
+            await self._debounce_fire(incoming.context_id, context)
 
-    async def _debounce_fire(self, thread_id: str, context: ContextT) -> None:
+    async def _debounce_fire(self, context_id: str, context: ContextT) -> None:
         """Wait out the debounce window, then start a single merged turn."""
         if self._debounce_window > 0:
             await asyncio.sleep(self._debounce_window)
 
-        entries = self._debounce_buf.pop(thread_id, [])
-        self._debounce_tasks.pop(thread_id, None)
+        entries = self._debounce_buf.pop(context_id, [])
+        self._debounce_tasks.pop(context_id, None)
         if not entries:
             return
         await self._converse(entries[0][0], _merge_messages([m for _, m in entries]), context)
@@ -430,7 +430,7 @@ class BaseInterface[ContextT](ABC):
         self, incoming: IncomingMessage, message: Message, context: ContextT
     ) -> None:
         """Run *message* as a turn, then a follow-up turn for anything injected too late."""
-        set_thread_id(incoming.thread_id)
+        set_context_id(incoming.context_id)
         harness = _harness_for(incoming.agent_version)
         if harness is None:
             await self.send_message(
@@ -438,26 +438,26 @@ class BaseInterface[ContextT](ABC):
             )
             return
 
-        turn = self._turn_context(incoming.interface, incoming.thread_id, incoming.sender_id)
-        async with run_registry.run_lock(incoming.thread_id):
+        turn = self._turn_context(incoming.interface, incoming.context_id, incoming.sender_id)
+        async with run_registry.run_lock(incoming.context_id):
             next_message: Message | None = message
             while next_message is not None:
                 ended = await self._deliver(
-                    lambda message=next_message: harness.run(message, incoming.thread_id, turn),
-                    incoming.thread_id,
+                    lambda message=next_message: harness.run(message, incoming.context_id, turn),
+                    incoming.context_id,
                     context,
                 )
                 next_message = None
                 if ended and ended.unconsumed and not ended.error and not ended.approval:
                     # Arrived during the final streaming phase, with no tool-round pause
                     # left to take it: it gets a turn of its own, straight away.
-                    logger.info("leftover_injection thread=%s", incoming.thread_id)
+                    logger.info("leftover_injection thread=%s", incoming.context_id)
                     next_message = _merge_messages(ended.unconsumed)
 
     async def _deliver(
         self,
         start: Callable[[], AsyncGenerator[HarnessEvent]],
-        thread_id: str,
+        context_id: str,
         context: ContextT,
     ) -> TurnEnded | None:
         """Stream one turn to the user, then report its error or ask its approval.
@@ -466,7 +466,7 @@ class BaseInterface[ContextT](ABC):
         so a message arriving in between is injected rather than queued behind it.
         Returns the TurnEnded, or None when delivering the stream itself failed.
         """
-        async with run_registry.thread_lock(thread_id):
+        async with run_registry.routing_lock(context_id):
             stream = start()
             first = await anext(stream)
         ended: TurnEnded | None = None
@@ -498,49 +498,49 @@ class BaseInterface[ContextT](ABC):
         except Exception:
             logger.warning("failed to deliver error message to user")
 
-    def _turn_context(self, interface: str, thread_id: str, chat_id: str) -> TurnContext:
+    def _turn_context(self, interface: str, context_id: str, chat_id: str) -> TurnContext:
         return TurnContext(
             reply_to=Address(
                 interface=interface,
-                conversation_id=self.conversation_id(thread_id),
+                conversation_id=self.conversation_id(context_id),
                 chat_id=chat_id,
             ),
             attended=True,
         )
 
-    def _location_state(self, thread_id: str) -> ConversationLocationState:
-        """Stored location state for *thread_id*'s conversation, defaults if never used."""
+    def _location_state(self, context_id: str) -> ConversationLocationState:
+        """Stored location state for *context_id*'s conversation, defaults if never used."""
         return load_state().locations.get(
-            self.conversation_id(thread_id), ConversationLocationState()
+            self.conversation_id(context_id), ConversationLocationState()
         )
 
-    async def stop_run(self, thread_id: str) -> bool:
+    async def stop_run(self, context_id: str) -> bool:
         """Stop the turn in flight for a thread.  Returns True if there was one."""
-        harness = _harness_for(self.get_agent_version(thread_id))
-        return harness is not None and await harness.cancel(thread_id)
+        harness = _harness_for(self.get_agent_version(context_id))
+        return harness is not None and await harness.cancel(context_id)
 
     async def get_pending_approval(
-        self, thread_id: str, agent_version: str
+        self, context_id: str, agent_version: str
     ) -> ApprovalRequest | None:
-        """Return the pending ApprovalRequest for *thread_id*, or None if not paused."""
+        """Return the pending ApprovalRequest for *context_id*, or None if not paused."""
         harness = _harness_for(agent_version)
         if not isinstance(harness, LangGraphHarness):
             return None
-        return await harness.pending_approval(thread_id)
+        return await harness.pending_approval(context_id)
 
-    async def _execute_compact(self, thread_id: str, agent_version: str) -> bool:
-        """Compact the message history for *thread_id*, waiting for any turn in flight.
+    async def _execute_compact(self, context_id: str, agent_version: str) -> bool:
+        """Compact the message history for *context_id*, waiting for any turn in flight.
 
         Returns True if compaction ran, False if there was nothing to compact.
         Raises ValueError if the agent has no compaction_model configured.
         """
         harness = get_harness(agent_version)
-        async with run_registry.run_lock(thread_id):
-            return await harness.compact(thread_id)
+        async with run_registry.run_lock(context_id):
+            return await harness.compact(context_id)
 
     async def _execute_resume(
         self,
-        thread_id: str,
+        context_id: str,
         agent_version: str,
         sender_id: str,
         interface: Literal["telegram", "rest_api"],
@@ -556,12 +556,12 @@ class BaseInterface[ContextT](ABC):
         if not isinstance(harness, LangGraphHarness):
             logger.warning("approval_resume: %r has no resumable approvals", agent_version)
             return
-        set_thread_id(thread_id)
-        turn = self._turn_context(interface, thread_id, sender_id)
-        async with run_registry.run_lock(thread_id):
-            logger.info("approval_resume thread=%s decision=%s", thread_id, decision.value)
+        set_context_id(context_id)
+        turn = self._turn_context(interface, context_id, sender_id)
+        async with run_registry.run_lock(context_id):
+            logger.info("approval_resume thread=%s decision=%s", context_id, decision.value)
             await self._deliver(
-                lambda: harness.resume(decision, thread_id, turn), thread_id, context
+                lambda: harness.resume(decision, context_id, turn), context_id, context
             )
 
 

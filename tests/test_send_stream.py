@@ -9,7 +9,7 @@ import aug.api.interfaces.telegram.interface as _iface_mod
 from aug.core.events import ChatModelStreamEvent, ToolEndEvent, ToolStartEvent
 
 
-def _make_context(chat_id: int = 123, thread_id: int | None = None):
+def _make_context(chat_id: int = 123, context_id: int | None = None):
     """Build a minimal mock Update context for send_stream tests."""
     bot = MagicMock()
     bot.send_message_draft = AsyncMock(return_value=True)
@@ -29,7 +29,7 @@ def _make_context(chat_id: int = 123, thread_id: int | None = None):
     msg = MagicMock()
     msg.get_bot.return_value = bot
     msg.chat_id = chat_id
-    msg.message_thread_id = thread_id
+    msg.message_thread_id = context_id
     msg.reply_text = AsyncMock(side_effect=lambda text, **kw: _make_msg(text, **kw))
 
     context = MagicMock()

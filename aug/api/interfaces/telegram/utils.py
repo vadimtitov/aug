@@ -42,22 +42,22 @@ def escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def get_thread_id(chat_id: int, topic_id: int | None) -> str:
+def get_context_id(chat_id: int, topic_id: int | None) -> str:
     if topic_id is not None:
         return f"tg-{chat_id}-topic-{topic_id}"
     session = load_state().telegram.chats.get(str(chat_id), TelegramChatState()).session
     return f"tg-{chat_id}-{session}"
 
 
-def get_conversation_id(thread_id: str) -> str:
-    """Return the conversation a Telegram *thread_id* belongs to.
+def get_conversation_id(context_id: str) -> str:
+    """Return the conversation a Telegram *context_id* belongs to.
 
     A forum topic is its own conversation, so its thread ID is already the key.
     A plain chat gets a fresh thread ID on every /clear (the trailing session
     counter), so the counter is stripped to keep per-chat settings across resets.
     """
-    m = _CHAT_THREAD_RE.match(thread_id)
-    return f"tg-{m.group(1)}" if m else thread_id
+    m = _CHAT_THREAD_RE.match(context_id)
+    return f"tg-{m.group(1)}" if m else context_id
 
 
 def get_parent_conversation_id(conversation_id: str) -> str | None:

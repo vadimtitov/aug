@@ -43,7 +43,7 @@ class AgentRun:
 
 
 class RunRegistry:
-    """Registry of active AgentRuns, keyed by thread_id.
+    """Registry of active AgentRuns, keyed by context_id.
 
     Use the module-level ``run_registry`` singleton — do not instantiate directly.
     The class boundary makes test isolation (clear()) and future backend swaps
@@ -55,21 +55,21 @@ class RunRegistry:
         self._locks: dict[str, asyncio.Lock] = {}
         self._run_locks: dict[str, asyncio.Lock] = {}
 
-    def get(self, thread_id: str) -> AgentRun | None:
-        return self._runs.get(thread_id)
+    def get(self, context_id: str) -> AgentRun | None:
+        return self._runs.get(context_id)
 
-    def set(self, thread_id: str, run: AgentRun) -> None:
-        self._runs[thread_id] = run
+    def set(self, context_id: str, run: AgentRun) -> None:
+        self._runs[context_id] = run
 
-    def pop(self, thread_id: str) -> None:
-        self._runs.pop(thread_id, None)
+    def pop(self, context_id: str) -> None:
+        self._runs.pop(context_id, None)
 
-    def thread_lock(self, thread_id: str) -> asyncio.Lock:
+    def routing_lock(self, context_id: str) -> asyncio.Lock:
         """Short per-thread lock that serialises routing: inject into the turn in flight,
         or queue a new one.  Never held across a turn."""
-        if thread_id not in self._locks:
-            self._locks[thread_id] = asyncio.Lock()
-        return self._locks[thread_id]
+        if context_id not in self._locks:
+            self._locks[context_id] = asyncio.Lock()
+        return self._locks[context_id]
 
     def run_lock(self, context_id: str) -> asyncio.Lock:
         """The run lock: held for a whole turn by whoever runs one — interfaces, approval

@@ -39,21 +39,21 @@ def test_request_stop_sets_event() -> None:
 
 def test_registry_same_thread_returns_same_lock() -> None:
     registry = RunRegistry()
-    assert registry.thread_lock("t1") is registry.thread_lock("t1")
+    assert registry.routing_lock("t1") is registry.routing_lock("t1")
 
 
 def test_registry_different_threads_return_different_locks() -> None:
     registry = RunRegistry()
-    assert registry.thread_lock("t1") is not registry.thread_lock("t2")
+    assert registry.routing_lock("t1") is not registry.routing_lock("t2")
 
 
 def test_registry_clear_removes_runs_and_locks() -> None:
     registry = RunRegistry()
     registry.set("t1", AgentRun())
-    registry.thread_lock("t1")
+    registry.routing_lock("t1")
     registry.clear()
     assert registry.get("t1") is None
-    assert registry.thread_lock("t1") is not None  # recreated fresh
+    assert registry.routing_lock("t1") is not None  # recreated fresh
 
 
 # ---------------------------------------------------------------------------

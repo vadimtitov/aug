@@ -13,21 +13,21 @@ from contextvars import ContextVar
 from langchain_core.messages import AIMessage
 
 _correlation_id: ContextVar[str] = ContextVar("correlation_id", default="-")
-_thread_id: ContextVar[str] = ContextVar("thread_id", default="-")
+_context_id: ContextVar[str] = ContextVar("context_id", default="-")
 
 
 def set_correlation_id(cid: str) -> None:
     _correlation_id.set(cid)
 
 
-def set_thread_id(tid: str) -> None:
-    _thread_id.set(tid)
+def set_context_id(tid: str) -> None:
+    _context_id.set(tid)
 
 
 class _ContextFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         record.correlation_id = _correlation_id.get()  # type: ignore[attr-defined]
-        record.thread_id = _thread_id.get()  # type: ignore[attr-defined]
+        record.context_id = _context_id.get()  # type: ignore[attr-defined]
         return True
 
 
@@ -57,7 +57,7 @@ def configure_logging(debug: bool = False) -> None:
     handler.addFilter(_ContextFilter())
 
     if debug:
-        fmt = "%(asctime)s [%(levelname)s] %(correlation_id)s/%(thread_id)s %(name)s — %(message)s"
+        fmt = "%(asctime)s [%(levelname)s] %(correlation_id)s/%(context_id)s %(name)s — %(message)s"
     else:
         fmt = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
 

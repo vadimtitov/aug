@@ -16,11 +16,11 @@ Supports two delivery types:
 Authentication: standard X-API-Key / Bearer JWT (same as all other routes).
 
 Thread routing:
-  thread_id="default"  → each interface resolves its own default target
+  context_id="default" → each interface resolves its own default target
                          (Telegram: the DM with the bot).
-  thread_id="new"      → create a new thread (Telegram: forum topic).
+  context_id="new"      → create a new thread (Telegram: forum topic).
                          Requires chat_id and optional topic_name in payload.
-  thread_id="tg-…"     → deliver to that specific thread.
+  context_id="tg-…"     → deliver to that specific thread.
 """
 
 import asyncio
@@ -29,7 +29,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 from aug.api.security import require_api_key
 from aug.core.dispatch import InterfaceName, fire_push
@@ -45,8 +45,11 @@ class PushRequest(BaseModel):
     interface: InterfaceName
     """Interface name, e.g. ``"telegram"``."""
 
-    thread_id: str = "default"
-    """Target thread.  ``"default"`` resolves per-interface, ``"new"`` creates a thread."""
+    context_id: str = Field(
+        default="default", validation_alias=AliasChoices("context_id", "thread_id")
+    )
+    """Target chat.  ``"default"`` resolves per-interface, ``"new"`` creates a thread.
+    ``thread_id`` is still accepted, for callers written before the rename."""
 
     message: str
     """Text to forward or use as the agent prompt."""
@@ -60,10 +63,10 @@ class PushRequest(BaseModel):
     """
 
     topic_name: str | None = None
-    """Topic name when ``thread_id="new"`` and the interface supports topic creation."""
+    """Topic name when ``context_id="new"`` and the interface supports topic creation."""
 
     chat_id: int | None = None
-    """Group chat ID when ``thread_id="new"`` (required for Telegram forum topics)."""
+    """Group chat ID when ``context_id="new"`` (required for Telegram forum topics)."""
 
 
 @router.post("/push", status_code=200)
@@ -88,7 +91,7 @@ async def push(
         await fire_push(
             request.app,
             interface=payload.interface,
-            thread_id=payload.thread_id,
+            context_id=payload.context_id,
             message=payload.message,
             push_type=payload.type,
             topic_name=payload.topic_name,
@@ -110,7 +113,7 @@ async def _guarded_push(app, payload: PushRequest) -> None:
         await fire_push(
             app,
             interface=payload.interface,
-            thread_id=payload.thread_id,
+            context_id=payload.context_id,
             message=payload.message,
             push_type=payload.type,
             topic_name=payload.topic_name,
@@ -118,7 +121,7 @@ async def _guarded_push(app, payload: PushRequest) -> None:
         )
     except Exception:
         logger.exception(
-            "push-agent failed interface=%s thread_id=%s",
+            "push-agent failed interface=%s context_id=%s",
             payload.interface,
-            payload.thread_id,
+            payload.context_id,
         )

@@ -49,7 +49,7 @@ def client():
         test_app = create_app()
         # Register a mock interface so "telegram" is resolvable
         mock_iface = AsyncMock()
-        mock_iface.resolve_thread = AsyncMock(return_value="tg-123-0")
+        mock_iface.resolve_context = AsyncMock(return_value="tg-123-0")
         mock_iface.send_proactive = AsyncMock()
 
         with TestClient(test_app, raise_server_exceptions=True) as c:
@@ -101,6 +101,24 @@ def test_push_forward_calls_fire_push_with_correct_args(client):
     assert call_kwargs["interface"] == "telegram"
     assert call_kwargs["message"] == "door opened"
     assert call_kwargs["push_type"] == "forward"
+
+
+@pytest.mark.parametrize("field", ["context_id", "thread_id"])
+def test_push_accepts_context_id_and_legacy_thread_id(client, field):
+    """thread_id stays accepted so automations written before the rename keep working."""
+    c, mock_fire, _ = client
+    c.post(
+        "/hooks/push",
+        json={"interface": "telegram", "message": "m", field: "tg-5-0"},
+        headers=_HEADERS,
+    )
+    assert mock_fire.call_args.kwargs["context_id"] == "tg-5-0"
+
+
+def test_push_context_id_defaults_to_default(client):
+    c, mock_fire, _ = client
+    c.post("/hooks/push", json={"interface": "telegram", "message": "m"}, headers=_HEADERS)
+    assert mock_fire.call_args.kwargs["context_id"] == "default"
 
 
 # ── agent ─────────────────────────────────────────────────────────────────────

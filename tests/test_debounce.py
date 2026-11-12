@@ -46,12 +46,12 @@ def test_merge_keeps_the_first_sender() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_incoming(text: str, thread_id: str = "tg-1-0") -> IncomingMessage:
+def _make_incoming(text: str, context_id: str = "tg-1-0") -> IncomingMessage:
     return IncomingMessage(
         parts=[TextContent(text=text)],
         interface="telegram",
         sender_id="1",
-        thread_id=thread_id,
+        context_id=context_id,
         agent_version="default",
     )
 
@@ -88,19 +88,19 @@ def interface(isolated_registry, harness):
         async def request_approval(self, request: ApprovalRequest, context: str) -> None:
             pass
 
-        async def resolve_thread(self, thread_id, *, topic_name=None, chat_id=None) -> str:
-            return thread_id
+        async def resolve_context(self, context_id, *, topic_name=None, chat_id=None) -> str:
+            return context_id
 
-        def conversation_id(self, thread_id: str) -> str:
-            return thread_id
+        def conversation_id(self, context_id: str) -> str:
+            return context_id
 
-        async def send_proactive(self, thread_id: str, text: str) -> None:
+        async def send_proactive(self, context_id: str, text: str) -> None:
             pass
 
         async def announcement_threads(self) -> list[str]:
             return []
 
-        async def send_proactive_stream(self, thread_id, stream) -> None:
+        async def send_proactive_stream(self, context_id, stream) -> None:
             async for _ in stream:
                 pass
 

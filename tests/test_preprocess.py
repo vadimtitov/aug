@@ -15,7 +15,7 @@ from aug.core.harness.langgraph import _render
 
 async def _preprocess(parts) -> str:
     incoming = IncomingMessage(
-        parts=parts, interface="telegram", sender_id="1", thread_id="tg-1-0", agent_version="x"
+        parts=parts, interface="telegram", sender_id="1", context_id="tg-1-0", agent_version="x"
     )
     return _render(await base._preprocess(incoming))
 

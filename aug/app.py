@@ -107,7 +107,7 @@ async def _announce_startup(app: FastAPI, mcp_outcomes: list[McpOperationOutcome
             await fire_push(
                 app,
                 interface=outcome.interface,
-                thread_id=outcome.thread_id,
+                context_id=outcome.thread_id,
                 message=outcome.summary,
                 push_type="forward",
             )

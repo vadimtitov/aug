@@ -102,8 +102,8 @@ async def _deliver_restart_outcome(interface: str, thread_id: str, message: str)
     if iface is None:
         return
     try:
-        actual_thread_id = await iface.resolve_thread(thread_id)
-        await iface.send_proactive(actual_thread_id, message)
+        actual_context_id = await iface.resolve_context(thread_id)
+        await iface.send_proactive(actual_context_id, message)
     except Exception:
         logger.warning(
             "mcp restart outcome delivery failed interface=%s thread_id=%s",

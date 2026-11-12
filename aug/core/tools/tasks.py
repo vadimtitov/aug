@@ -89,7 +89,7 @@ async def create_task(
     if interface == "telegram":
         if "-topic-" not in raw_thread_id:
             m = _TG_CHAT_RE.match(raw_thread_id)
-            # Embed the chat_id so resolve_thread routes deterministically after /clear.
+            # Embed the chat_id so resolve_context routes deterministically after /clear.
             thread_id = f"default:{m.group(1)}" if m else "default"
         else:
             thread_id = raw_thread_id

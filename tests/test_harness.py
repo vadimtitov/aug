@@ -325,7 +325,7 @@ async def test_push_waits_for_the_interface_turn_holding_the_run_lock() -> None:
     from aug.core.dispatch import fire_push
 
     iface = MagicMock()
-    iface.resolve_thread = AsyncMock(return_value="tg-1-0")
+    iface.resolve_context = AsyncMock(return_value="tg-1-0")
     iface.get_agent_version = MagicMock(return_value="v")
     iface.conversation_id = MagicMock(return_value="tg-1")
     iface.send_proactive_stream = AsyncMock(side_effect=_drain)
@@ -336,7 +336,9 @@ async def test_push_waits_for_the_interface_turn_holding_the_run_lock() -> None:
     await lock.acquire()  # an interface turn is in flight
     with patch("aug.core.dispatch.get_harness", return_value=ScriptedHarness()):
         push = asyncio.create_task(
-            fire_push(app, interface="telegram", thread_id="tg-1-0", message="m", push_type="agent")
+            fire_push(
+                app, interface="telegram", context_id="tg-1-0", message="m", push_type="agent"
+            )
         )
         await asyncio.sleep(0.05)
         assert not push.done()
@@ -351,7 +353,7 @@ async def test_push_turn_error_raises_so_fire_task_retries() -> None:
     from aug.core.dispatch import PushTurnFailed, fire_push
 
     iface = MagicMock()
-    iface.resolve_thread = AsyncMock(return_value="tg-1-0")
+    iface.resolve_context = AsyncMock(return_value="tg-1-0")
     iface.conversation_id = MagicMock(return_value="tg-1")
     iface.send_proactive_stream = AsyncMock(side_effect=_drain)
     app = MagicMock()
@@ -363,7 +365,7 @@ async def test_push_turn_error_raises_so_fire_task_retries() -> None:
         pytest.raises(PushTurnFailed),
     ):
         await fire_push(
-            app, interface="telegram", thread_id="tg-1-0", message="m", push_type="agent"
+            app, interface="telegram", context_id="tg-1-0", message="m", push_type="agent"
         )
 
 
