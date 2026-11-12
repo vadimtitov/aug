@@ -179,13 +179,14 @@ class LangGraphHarness(Harness):
                     finished = True
                     break
                 state = await self.agent.aget_state(config, self._checkpointer)
+                # Checked before `next`: answering one of several parallel approvals
+                # leaves `next` empty while the others are still pending.
+                if state.interrupts:
+                    yield TurnEnded(approval=_approval_in(state.interrupts))
+                    return
                 if not state.next:
                     finished = True
                     break
-                approval = _approval_in(state.interrupts)
-                if approval is not None or state.interrupts:
-                    yield TurnEnded(approval=approval)
-                    return
                 tool_rounds += 1
                 if not turn.attended and tool_rounds >= UNATTENDED_MAX_TOOL_ROUNDS:
                     logger.warning(

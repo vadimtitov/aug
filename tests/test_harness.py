@@ -305,6 +305,28 @@ async def test_approval_pauses_then_resume_finishes_the_turn() -> None:
     assert await harness.pending_approval("c1") is None
 
 
+async def test_parallel_approvals_are_asked_one_after_another() -> None:
+    both = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "guarded", "args": {"command": "a"}, "id": "c1"},
+            {"name": "guarded", "args": {"command": "b"}, "id": "c2"},
+        ],
+    )
+    harness, agent = _harness(both, AIMessage(content="done"))
+
+    first = await _collect(harness.run(_msg("go"), "c1", TURN))
+    second = await _collect(harness.resume(ApprovalDecision.DENIED, "c1", TURN))
+    last = await _collect(harness.resume(ApprovalDecision.APPROVED_ONCE, "c1", TURN))
+
+    assert first[-1].approval.operation == "a"
+    assert second[-1].approval.operation == "b"  # not dropped once the first is answered
+    assert last[-1] == TurnEnded()
+    results = [m.content for m in agent.seen[1][-2:]]
+    assert "NOT executed" in results[0]
+    assert results[1] == "ran b"
+
+
 async def test_oneshot_calls_the_agent_model() -> None:
     harness, agent = _harness()
     agent.model_name = "some-model"
