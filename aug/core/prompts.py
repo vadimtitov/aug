@@ -437,6 +437,11 @@ HARNESS_RETRY_AT_SUFFIX = " The limit resets at {time} UTC."
 # Told after /stop ended a turn.  Whatever already ran is not undone.
 HARNESS_STOPPED_MESSAGE = "⏹ Stopped."
 
+# Sent when an agent push or scheduled task runs past its time limit and is stopped.
+UNATTENDED_TIMED_OUT_MESSAGE = (
+    "⏹ A background task ran for over {minutes} minutes without finishing and was stopped."
+)
+
 # Written into the history when the user stops a turn with /stop, so the model knows on
 # the next turn that it was interrupted rather than guessing what happened.  The first is
 # the result of every tool call the stop cut off; the second is added when the stop came

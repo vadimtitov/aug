@@ -1140,7 +1140,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         state = AgentState(
             messages=[],
-            context_id=get_context_id(chat_id, update.effective_message.message_thread_id),  # type: ignore[union-attr]
+            thread_id=get_context_id(chat_id, update.effective_message.message_thread_id),  # type: ignore[union-attr]
             interface="telegram",
         )
         prompt_text = build_system_prompt(state)

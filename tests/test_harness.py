@@ -18,7 +18,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.errors import GraphRecursionError
 
 from aug.core.agents.base_agent import BaseAgent
-from aug.core.events import ChatModelStreamEvent, StatusEvent, ToolStartEvent
+from aug.core.events import ChatModelStreamEvent, StatusEvent, ToolEndEvent, ToolStartEvent
 from aug.core.harness import (
     Address,
     HarnessError,
@@ -198,10 +198,14 @@ async def slow(seconds: float, config: RunnableConfig) -> str:
     return "waited"
 
 
+stubborn_ran: list[float] = []
+
+
 @tool
 async def stubborn(seconds: float) -> str:
     """Wait, ignoring the stop flag."""
     await asyncio.sleep(seconds)
+    stubborn_ran.append(seconds)
     return "waited"
 
 
@@ -322,6 +326,29 @@ async def test_cancel_does_not_wait_for_a_tool_that_ignores_it(tool_name: str) -
     after = await _collect(harness.run(_msg("again"), "c1", TURN))
     assert after[-1] == TurnEnded()
     assert agent.seen[-1][-1].content == "again"
+
+
+async def test_a_consumer_that_goes_away_takes_the_running_tool_with_it() -> None:
+    """A REST client hanging up cancels the task reading the turn; the tool must stop
+    too, since the run lock is released and /stop can no longer reach it."""
+    stubborn_ran.clear()
+    harness, _ = _harness(_call("stubborn", {"seconds": 0.5}), AIMessage(content="never"))
+    finished: list[str] = []
+
+    async def consume() -> None:
+        async for event in harness.run(_msg("go"), "c1", TURN):
+            if isinstance(event, ToolEndEvent):
+                finished.append(event.tool_name)
+
+    task = asyncio.create_task(consume())
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.7)
+
+    assert finished == []
+    assert stubborn_ran == []
 
 
 async def test_the_next_turn_knows_the_user_stopped_the_tool() -> None:
@@ -489,6 +516,70 @@ async def test_push_turn_error_raises_so_fire_task_retries() -> None:
         await fire_push(
             app, interface="telegram", context_id="tg-1-0", message="m", push_type="agent"
         )
+
+
+async def test_a_failed_push_sends_nothing_before_the_retry() -> None:
+    """The retry delivers the whole turn; the failed attempt's partial text must not."""
+    from aug.core.dispatch import PushTurnFailed, fire_push
+
+    sent: list[str] = []
+
+    async def send_at_end(_context_id, stream) -> None:
+        text = ""
+        async for event in stream:
+            if isinstance(event, ChatModelStreamEvent):
+                text += event.delta
+        sent.append(text)
+
+    iface = MagicMock()
+    iface.resolve_context = AsyncMock(return_value="tg-1-0")
+    iface.conversation_id = MagicMock(return_value="tg-1")
+    iface.send_proactive_stream = send_at_end
+    app = MagicMock()
+    app.state.interfaces = {"telegram": iface}
+    failing = ScriptedHarness(
+        [
+            ChatModelStreamEvent(delta="Let me check"),
+            TurnEnded(error=HarnessError(kind="unavailable")),
+        ]
+    )
+
+    with (
+        patch("aug.core.dispatch.get_harness", return_value=failing),
+        pytest.raises(PushTurnFailed),
+    ):
+        await fire_push(
+            app, interface="telegram", context_id="tg-1-0", message="m", push_type="agent"
+        )
+
+    assert sent == []
+
+
+async def test_a_push_that_hangs_is_stopped_and_not_retried() -> None:
+    from aug.core.dispatch import fire_push
+
+    harness, _ = _harness(_call("stubborn", {"seconds": 5}), AIMessage(content="never"))
+    iface = MagicMock()
+    iface.resolve_context = AsyncMock(return_value="tg-1-0")
+    iface.conversation_id = MagicMock(return_value="tg-1")
+    iface.send_proactive_stream = AsyncMock(side_effect=_drain)
+    iface.send_proactive = AsyncMock()
+    app = MagicMock()
+    app.state.interfaces = {"telegram": iface}
+
+    with (
+        patch("aug.core.dispatch.get_harness", return_value=harness),
+        patch("aug.core.dispatch.UNATTENDED_TIMEOUT_SECONDS", 0.2),
+    ):
+        await asyncio.wait_for(
+            fire_push(
+                app, interface="telegram", context_id="tg-1-0", message="m", push_type="agent"
+            ),
+            2,
+        )
+
+    iface.send_proactive.assert_awaited_once()
+    assert "stopped" in iface.send_proactive.await_args.args[1]
 
 
 async def test_compact_waits_for_the_turn_in_flight() -> None:

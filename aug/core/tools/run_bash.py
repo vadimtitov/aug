@@ -17,6 +17,15 @@ _KEYS_DIR = str(DATA_DIR / "keys")
 
 logger = logging.getLogger(__name__)
 
+# Runs the command ($1) with its output in temp files, then prints them.  hushed relays
+# (and redacts) output only once every process holding it has let go, so a background
+# job started by the command would otherwise keep the call open until it exits.  With
+# the files, it inherits those instead, and the call returns when the command does.
+_WRAPPER = (
+    'o=$(mktemp) e=$(mktemp); bash -c "$1" >"$o" 2>"$e"; s=$?; '
+    'cat "$o"; cat "$e" >&2; rm -f "$o" "$e"; exit $s'
+)
+
 
 @tool
 async def run_bash(command: str) -> str:
@@ -31,6 +40,11 @@ async def run_bash(command: str) -> str:
     Secret values are never visible — they are automatically redacted from output.
 
     Always run `hushed list` first if a command might need credentials.
+
+    BACKGROUND JOBS: the call returns as soon as the command itself exits. To leave
+    something running after that (a server, a long job), start it with
+    `setsid nohup CMD > /tmp/CMD.log 2>&1 &` so it neither holds the output open nor
+    dies if the user stops this call.
 
     Args:
         command: Shell command to run.
@@ -49,6 +63,8 @@ async def run_bash(command: str) -> str:
         "--",
         "bash",
         "-c",
+        _WRAPPER,
+        "bash",
         command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -83,8 +99,10 @@ def _check_blacklist(command: str) -> str | None:
 
 
 def _kill_group(proc: asyncio.subprocess.Process) -> None:
-    """SIGKILL the command's whole process group.  Processes that left it on purpose
-    (setsid, nohup &, docker run -d) survive, as intended."""
+    """SIGKILL the command's whole process group, background jobs included.  Processes
+    that left it with setsid (or docker run -d) survive."""
+    if proc.returncode is not None:
+        return  # already reaped: its pid may belong to someone else by now
     logger.info("run_bash killed pid=%d", proc.pid)
     try:
         os.killpg(proc.pid, signal.SIGKILL)

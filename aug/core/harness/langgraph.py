@@ -371,16 +371,13 @@ async def _until_stopped(
     _record_stop answers it once the turn is over.
     """
     stopped = asyncio.ensure_future(stop.wait())
+    step: asyncio.Future[HarnessEvent] | None = None
     try:
         while True:
             step = asyncio.ensure_future(anext(events))
             await asyncio.wait({step, stopped}, return_when=asyncio.FIRST_COMPLETED)
             if not step.done():
-                step.cancel()
-                await asyncio.wait({step})  # let the cancellation land; never raises
-                if not step.cancelled():
-                    step.exception()  # retrieved: it is a stop, not an error
-                return
+                return  # the finally below cancels the step
             try:
                 event = step.result()
             except StopAsyncIteration:
@@ -390,6 +387,13 @@ async def _until_stopped(
             yield event
     finally:
         stopped.cancel()
+        # Also reached when the consumer itself is cancelled (a REST client hung up):
+        # the step must go too, or the graph runs on without the run lock.
+        if step is not None and not step.done():
+            step.cancel()
+            await asyncio.wait({step})  # let the cancellation land; never raises
+            if not step.cancelled():
+                step.exception()  # retrieved: it is a stop, not an error
         with suppress(Exception):
             await events.aclose()  # type: ignore[attr-defined]
 

@@ -20,6 +20,7 @@ Agent pushes run through the harness like any turn, under the same run lock, as 
 unattended turn (``TurnContext.attended=False``), which the harness caps at a few steps.
 """
 
+import asyncio
 import logging
 import re
 import uuid
@@ -41,6 +42,7 @@ from aug.core.harness import (
     error_text,
 )
 from aug.core.harness.langgraph import LangGraphHarness
+from aug.core.prompts import UNATTENDED_TIMED_OUT_MESSAGE
 from aug.core.registry import get_harness
 from aug.core.run import run_registry
 from aug.utils.app_ref import get_app
@@ -55,6 +57,11 @@ class PushTurnFailed(RuntimeError):
 
 
 logger = logging.getLogger(__name__)
+
+# How long an agent push or scheduled task may run.  Nobody is watching it and it can't
+# be stopped with /stop (an isolated push has a context of its own), so a command that
+# hangs would otherwise hold the chat's run lock, and the task's scheduler slot, for good.
+UNATTENDED_TIMEOUT_SECONDS = 15 * 60
 
 # Retry configuration for fire_task delivery failures.
 _MAX_TASK_RETRIES = 10
@@ -184,19 +191,29 @@ async def fire_push(
         async for event in stream:
             if isinstance(event, TurnEnded):
                 ended = event
+                if event.error is not None and event.error.kind != "step_limit":
+                    # Raised inside the stream, before the interface sends the text it
+                    # collected: fire_task retries the whole turn, so a partial reply
+                    # now would reach the user twice.
+                    raise PushTurnFailed(f"push turn failed: {event.error.kind}")
             yield event
 
     async with run_registry.run_lock(run_context_id):
-        async with aclosing(harness.run(prompt, run_context_id, turn)) as stream:
-            await iface.send_proactive_stream(actual_context_id, events(stream))
+        try:
+            async with asyncio.timeout(UNATTENDED_TIMEOUT_SECONDS):
+                async with aclosing(harness.run(prompt, run_context_id, turn)) as stream:
+                    await iface.send_proactive_stream(actual_context_id, events(stream))
+        except TimeoutError:
+            # Not retried: the same turn would most likely hang the same way.
+            logger.warning("push turn timed out context=%s", run_context_id)
+            minutes = UNATTENDED_TIMEOUT_SECONDS // 60
+            await iface.send_proactive(
+                actual_context_id, UNATTENDED_TIMED_OUT_MESSAGE.format(minutes=minutes)
+            )
+            return
 
-    if ended is None or ended.error is None:
-        return
-    if ended.error.kind == "step_limit":
+    if ended is not None and ended.error is not None:  # step_limit: retrying won't help
         await iface.send_proactive(actual_context_id, error_text(ended.error))
-        return
-    # Raised so fire_task's retry/backoff applies, as it does to a failed delivery.
-    raise PushTurnFailed(f"push turn failed: {ended.error.kind}")
 
 
 async def deliver_unsolicited(context_id: str, events: AsyncIterator[HarnessEvent]) -> None:

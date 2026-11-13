@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -109,6 +110,18 @@ def fake_hushed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 async def test_run_bash_returns_stdout_and_stderr(fake_hushed: Path) -> None:
     result = await run_bash.ainvoke({"command": "echo out; echo err >&2; exit 3"})
     assert "out" in result and "err" in result
+
+
+async def test_run_bash_returns_without_waiting_for_a_background_job(fake_hushed: Path) -> None:
+    started = time.monotonic()
+    result = await run_bash.ainvoke({"command": "sleep 5 & echo started"})
+    assert result == "started"
+    assert time.monotonic() - started < 2
+
+
+async def test_run_bash_keeps_the_exit_code_and_both_streams(fake_hushed: Path) -> None:
+    result = await run_bash.ainvoke({"command": "echo out; echo err >&2; exec false"})
+    assert result == "out\nerr"
 
 
 async def test_run_bash_cancel_kills_the_command_and_its_children(fake_hushed: Path) -> None:
