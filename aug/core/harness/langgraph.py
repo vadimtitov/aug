@@ -38,6 +38,7 @@ from aug.core.harness.types import (
 )
 from aug.core.llm import build_chat_model
 from aug.core.prompts import (
+    HARNESS_STEP_LIMIT_NOTE,
     HARNESS_TOOL_STOPPED_RESULT,
     HARNESS_TURN_STOPPED_NOTE,
     MID_RUN_INJECTION_PREFIX,
@@ -152,6 +153,7 @@ class LangGraphHarness(Harness):
         }
 
         finished = False
+        step_limited = False
         tool_rounds = 0
         displays: list[str] = []  # reflex results to show the user, as they land
         reflex_task: asyncio.Task[None] | None = None
@@ -183,8 +185,8 @@ class LangGraphHarness(Harness):
                         context_id,
                         turn.attended,
                     )
-                    yield TurnEnded(error=HarnessError(kind="step_limit"))
-                    return
+                    step_limited = True
+                    break
                 try:
                     injection = run.pending_agent_injection.get_nowait()
                 except asyncio.QueueEmpty:
@@ -209,6 +211,8 @@ class LangGraphHarness(Harness):
 
         if run.user_requested_stop.is_set():
             await self._record_stop(context_id)
+        elif step_limited:
+            await self._record_note(context_id, HARNESS_STEP_LIMIT_NOTE)
         if reflex_task is not None:
             await asyncio.gather(reflex_task, return_exceptions=True)
         for text in displays:
@@ -223,7 +227,11 @@ class LangGraphHarness(Harness):
             except asyncio.QueueEmpty:
                 break
             unconsumed.append(Message(parts=_parts(leftover), sender=message.sender))
-        yield TurnEnded(unconsumed=unconsumed, cancelled=run.user_requested_stop.is_set())
+        yield TurnEnded(
+            error=HarnessError(kind="step_limit") if step_limited else None,
+            unconsumed=unconsumed,
+            cancelled=run.user_requested_stop.is_set(),
+        )
 
     async def _run_reflexes(
         self,
@@ -255,6 +263,18 @@ class LangGraphHarness(Harness):
                 await self.agent.aupdate_state(config, {"messages": note}, self._checkpointer)
         except Exception:
             logger.warning("record_stop_failed context=%s", context_id, exc_info=True)
+
+    async def _record_note(self, context_id: str, note: str) -> None:
+        """Add *note* to the history, so the next turn knows how this one ended.
+
+        Never raises: the turn is over either way.
+        """
+        try:
+            await self.agent.aupdate_state(
+                _config(context_id), {"messages": [HumanMessage(content=note)]}, self._checkpointer
+            )
+        except Exception:
+            logger.warning("record_note_failed context=%s", context_id, exc_info=True)
 
     async def _recent_history(self, context_id: str, n: int = 3) -> list[MessageContent]:
         """The last *n* user/assistant messages, as labelled strings, for reflexes."""
