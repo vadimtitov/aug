@@ -18,17 +18,24 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.errors import GraphRecursionError
 
 from aug.core.agents.base_agent import BaseAgent
-from aug.core.events import ChatModelStreamEvent, StatusEvent, ToolEndEvent, ToolStartEvent
 from aug.core.harness import (
     Address,
+    ApprovalDecision,
+    ApprovalRequested,
+    ApprovalResolved,
     HarnessError,
     Message,
     Sender,
+    StatusUpdate,
+    TextDelta,
     TextPart,
+    ToolEnded,
+    ToolStarted,
     TurnContext,
     TurnEnded,
     TurnStarted,
     error_text,
+    pending_approvals,
 )
 from aug.core.harness.langgraph import (
     UNATTENDED_MAX_TOOL_ROUNDS,
@@ -45,7 +52,7 @@ from aug.core.prompts import (
 from aug.core.reflexes import ReflexOutput
 from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, run_registry
 from aug.core.state import AgentState, AgentStateUpdate
-from aug.core.tools.approval import ApprovalDecision, requires_approval
+from aug.core.tools.approval import requires_approval
 from tests.harness_fakes import ScriptedHarness
 
 TURN = TurnContext(
@@ -71,8 +78,10 @@ def transcripts(tmp_path):
 @pytest.fixture(autouse=True)
 def clean_runs():
     run_registry.clear()
+    pending_approvals.clear()
     yield
     run_registry.clear()
+    pending_approvals.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -82,17 +91,15 @@ def clean_runs():
 
 class _Crashing(ScriptedHarness):
     async def _run(self, message, context_id, turn):
-        yield ChatModelStreamEvent(delta="partial")
+        yield TextDelta(text="partial")
         raise RuntimeError("boom")
 
 
 async def test_run_starts_with_turn_started_and_ends_with_turn_ended() -> None:
-    events = await _collect(
-        ScriptedHarness([ChatModelStreamEvent(delta="hi")]).run(_msg("x"), "c1", TURN)
-    )
+    events = await _collect(ScriptedHarness([TextDelta(text="hi")]).run(_msg("x"), "c1", TURN))
 
     assert events[0] == TurnStarted(context_id="c1")
-    assert events[1] == ChatModelStreamEvent(delta="hi")
+    assert events[1] == TextDelta(text="hi")
     assert events[-1] == TurnEnded()
 
 
@@ -105,19 +112,19 @@ async def test_an_exception_inside_run_becomes_turn_ended_internal() -> None:
 
 async def test_the_harness_turn_ended_is_passed_through_once() -> None:
     ended = TurnEnded(error=HarnessError(kind="rate_limited"))
-    harness = ScriptedHarness([ended, ChatModelStreamEvent(delta="never")])
+    harness = ScriptedHarness([ended, TextDelta(text="never")])
 
     events = await _collect(harness.run(_msg("x"), "c1", TURN))
 
     assert [e for e in events if isinstance(e, TurnEnded)] == [ended]
-    assert ChatModelStreamEvent(delta="never") not in events
+    assert TextDelta(text="never") not in events
 
 
 async def test_turn_is_written_to_the_conversation_transcript(transcripts) -> None:
     harness = ScriptedHarness(
         [
-            ToolStartEvent(run_id="r1", tool_name="note", args={"text": "x"}),
-            ChatModelStreamEvent(delta="done"),
+            ToolStarted(id="r1", name="note", args={"text": "x"}),
+            TextDelta(text="done"),
         ]
     )
     await _collect(harness.run(_msg("hello"), "tg-1-0", TURN))
@@ -134,9 +141,7 @@ async def test_a_failing_transcript_never_fails_the_turn(transcripts) -> None:
     transcripts.parent.mkdir(exist_ok=True)
     transcripts.write_text("a file where the directory should be")
 
-    events = await _collect(
-        ScriptedHarness([ChatModelStreamEvent(delta="hi")]).run(_msg("x"), "c1", TURN)
-    )
+    events = await _collect(ScriptedHarness([TextDelta(text="hi")]).run(_msg("x"), "c1", TURN))
 
     assert events[-1] == TurnEnded()
 
@@ -337,7 +342,7 @@ async def test_a_consumer_that_goes_away_takes_the_running_tool_with_it() -> Non
 
     async def consume() -> None:
         async for event in harness.run(_msg("go"), "c1", TURN):
-            if isinstance(event, ToolEndEvent):
+            if isinstance(event, ToolEnded):
                 finished.append(event.tool_name)
 
     task = asyncio.create_task(consume())
@@ -412,22 +417,53 @@ async def test_model_error_ends_the_turn_with_its_kind() -> None:
     assert events[-1].error == HarnessError(kind="rate_limited")
 
 
-async def test_approval_pauses_then_resume_finishes_the_turn() -> None:
+async def _until(condition) -> None:
+    while not condition():  # noqa: ASYNC110 — polls state the code under test owns
+        await asyncio.sleep(0.01)
+
+
+async def _answering(stream: AsyncIterator, answers: dict[str, ApprovalDecision]) -> list:
+    """Collect *stream*, answering each approval by its operation as the user would."""
+    events = []
+    async for event in stream:
+        events.append(event)
+        if isinstance(event, ApprovalRequested):
+            await asyncio.sleep(0.01)
+            assert pending_approvals.resolve(event.id, answers[event.request.operation])
+    return events
+
+
+async def test_approval_is_awaited_inside_the_tool() -> None:
     harness, agent = _harness(_call("guarded", {"command": "ls"}), AIMessage(content="done"))
 
-    paused = await _collect(harness.run(_msg("go"), "c1", TURN))
-    request = await harness.pending_approval("c1")
-    resumed = await _collect(harness.resume(ApprovalDecision.DENIED, "c1", TURN))
+    events = await _answering(
+        harness.run(_msg("go"), "c1", TURN), {"ls": ApprovalDecision.APPROVED_ONCE}
+    )
 
-    assert paused[-1].approval == request
-    assert request.operation == "ls"
-    assert resumed[0] == TurnStarted(context_id="c1")
-    assert resumed[-1] == TurnEnded()
+    [asked] = [e for e in events if isinstance(e, ApprovalRequested)]
+    assert asked.request.operation == "ls"
+    started = next(e for e in events if isinstance(e, ToolStarted))
+    assert asked.parent_id == started.id  # nested under the tool that asked
+    assert ApprovalResolved(asked.id, ApprovalDecision.APPROVED_ONCE, started.id) in events
+    assert [type(e) for e in events].count(TurnStarted) == 1  # the turn never paused
+    assert events[-1] == TurnEnded()
+    assert agent.seen[1][-1].content == "ran ls"
+    assert pending_approvals.for_context("c1") == []
+
+
+async def test_a_denied_tool_ends_as_an_error() -> None:
+    harness, agent = _harness(_call("guarded", {"command": "rm x"}), AIMessage(content="ok"))
+
+    events = await _answering(
+        harness.run(_msg("go"), "c1", TURN), {"rm x": ApprovalDecision.DENIED}
+    )
+
+    ended = next(e for e in events if isinstance(e, ToolEnded))
+    assert ended.error is True
     assert "NOT executed" in agent.seen[1][-1].content
-    assert await harness.pending_approval("c1") is None
 
 
-async def test_parallel_approvals_are_asked_one_after_another() -> None:
+async def test_parallel_approvals_are_all_asked_at_once() -> None:
     both = AIMessage(
         content="",
         tool_calls=[
@@ -437,16 +473,91 @@ async def test_parallel_approvals_are_asked_one_after_another() -> None:
     )
     harness, agent = _harness(both, AIMessage(content="done"))
 
-    first = await _collect(harness.run(_msg("go"), "c1", TURN))
-    second = await _collect(harness.resume(ApprovalDecision.DENIED, "c1", TURN))
-    last = await _collect(harness.resume(ApprovalDecision.APPROVED_ONCE, "c1", TURN))
+    async def answer_when_both_wait() -> None:
+        await _until(lambda: len(pending_approvals.for_context("c1")) == 2)
+        for p in pending_approvals.for_context("c1"):
+            decision = (
+                ApprovalDecision.DENIED
+                if p.request.operation == "a"
+                else (ApprovalDecision.APPROVED_ONCE)
+            )
+            assert pending_approvals.resolve(p.id, decision)
 
-    assert first[-1].approval.operation == "a"
-    assert second[-1].approval.operation == "b"  # not dropped once the first is answered
-    assert last[-1] == TurnEnded()
-    results = [m.content for m in agent.seen[1][-2:]]
+    events, _ = await asyncio.gather(
+        _collect(harness.run(_msg("go"), "c1", TURN)), answer_when_both_wait()
+    )
+
+    errors = {e.id: e.error for e in events if isinstance(e, ToolEnded)}
+    assert sorted(errors.values()) == [False, True]
+    assert [type(e) for e in events].count(TurnStarted) == 1
+    results = sorted(m.content for m in agent.seen[1][-2:])
     assert "NOT executed" in results[0]
     assert results[1] == "ran b"
+
+
+async def test_a_second_answer_to_the_same_request_is_refused() -> None:
+    harness, agent = _harness(
+        _call("guarded", {"command": "one"}),
+        _call("guarded", {"command": "two"}, call_id="c2"),
+        AIMessage(content="done"),
+    )
+    answered: list[bool] = []
+
+    async def double_tap() -> None:
+        first_id = None
+        while True:
+            waiting = pending_approvals.for_context("c1")
+            if waiting and first_id is None:
+                first_id = waiting[0].id
+                answered.append(pending_approvals.resolve(first_id, ApprovalDecision.DENIED))
+                answered.append(pending_approvals.resolve(first_id, ApprovalDecision.APPROVED_ONCE))
+            elif waiting and waiting[0].id != first_id:
+                pending_approvals.resolve(waiting[0].id, ApprovalDecision.DENIED)
+                return
+            await asyncio.sleep(0.01)
+
+    await asyncio.gather(_collect(harness.run(_msg("go"), "c1", TURN)), double_tap())
+
+    assert answered == [True, False]
+    # The second request was never approved by the stray tap.
+    assert all("NOT executed" in m.content for m in agent.seen[2] if isinstance(m, ToolMessage))
+
+
+async def test_an_unattended_turn_denies_approvals_at_once() -> None:
+    harness, agent = _harness(_call("guarded", {"command": "ls"}), AIMessage(content="ok"))
+    unattended = TurnContext(reply_to=TURN.reply_to, attended=False)
+
+    events = await _collect(harness.run(_msg("go"), "c1", unattended))
+
+    assert not any(isinstance(e, ApprovalRequested) for e in events)
+    assert "nobody is present" in agent.seen[1][-1].content
+
+
+async def test_an_unanswered_approval_times_out() -> None:
+    harness, agent = _harness(_call("guarded", {"command": "ls"}), AIMessage(content="ok"))
+
+    with patch("aug.core.harness.tool_context.APPROVAL_TIMEOUT_SECONDS", 0.05):
+        events = await _collect(harness.run(_msg("go"), "c1", TURN))
+
+    resolved = next(e for e in events if isinstance(e, ApprovalResolved))
+    assert resolved.decision == ApprovalDecision.TIMED_OUT
+    assert "in time" in agent.seen[1][-1].content
+    assert pending_approvals.for_context("c1") == []
+
+
+async def test_stop_while_waiting_for_approval_ends_the_turn() -> None:
+    harness, _ = _harness(_call("guarded", {"command": "ls"}), AIMessage(content="never"))
+
+    async def stop_once_asked() -> None:
+        await _until(lambda: pending_approvals.for_context("c1"))
+        await harness.cancel("c1")
+
+    events, _ = await asyncio.gather(
+        _collect(harness.run(_msg("go"), "c1", TURN)), stop_once_asked()
+    )
+
+    assert events[-1].cancelled is True
+    assert pending_approvals.for_context("c1") == []  # a late tap finds nothing
 
 
 async def test_oneshot_calls_the_agent_model() -> None:
@@ -527,8 +638,8 @@ async def test_a_failed_push_sends_nothing_before_the_retry() -> None:
     async def send_at_end(_context_id, stream) -> None:
         text = ""
         async for event in stream:
-            if isinstance(event, ChatModelStreamEvent):
-                text += event.delta
+            if isinstance(event, TextDelta):
+                text += event.text
         sent.append(text)
 
     iface = MagicMock()
@@ -539,7 +650,7 @@ async def test_a_failed_push_sends_nothing_before_the_retry() -> None:
     app.state.interfaces = {"telegram": iface}
     failing = ScriptedHarness(
         [
-            ChatModelStreamEvent(delta="Let me check"),
+            TextDelta(text="Let me check"),
             TurnEnded(error=HarnessError(kind="unavailable")),
         ]
     )
@@ -636,7 +747,7 @@ async def test_reflex_display_reaches_the_event_stream() -> None:
     events = await _collect(harness.run(_msg("turn on the light"), "c1", TURN))
 
     reflex.assert_awaited_once()
-    assert StatusEvent(text="🪄 light on") in events
+    assert StatusUpdate(text="🪄 light on") in events
 
 
 async def test_follow_up_turns_fire_no_reflexes() -> None:
@@ -704,7 +815,7 @@ async def test_a_stopped_turn_tells_the_user_it_stopped_not_that_it_failed() -> 
     iface.send_message = AsyncMock()
     harness = ScriptedHarness([TurnEnded(cancelled=True)])
 
-    await iface._deliver(lambda: harness.run(_msg("go"), "c1", TURN), "c1", MagicMock())
+    await iface._deliver(harness, _msg("go"), "c1", TURN, MagicMock())
 
     iface.send_message.assert_awaited_once()
     assert iface.send_message.await_args.args[0] == HARNESS_STOPPED_MESSAGE

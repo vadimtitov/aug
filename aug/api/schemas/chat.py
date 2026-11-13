@@ -34,22 +34,17 @@ class ChatResponse(BaseModel):
     tool_calls: list[ToolCallInfo] = Field(default_factory=list)
 
 
-class ApprovalRequest(BaseModel):
+class ApprovalAnswer(BaseModel):
+    id: str = Field(..., max_length=64, description="The id from the approval_requested SSE event.")
     decision: str = Field(
         ...,
         pattern=r"^(approved_once|approved_always|denied)$",
         description="Approval decision: approved_once | approved_always | denied",
     )
-    agent: str | None = Field(
-        default=None,
-        max_length=64,
-        description=(
-            "Agent version — must match the paused thread's agent. "
-            "Omit to use the version selected for this thread."
-        ),
-    )
-    sender_id: str = Field(
-        default="",
-        max_length=128,
-        description="Sender ID to attribute the resume to (e.g. context_id for REST).",
-    )
+
+
+class PendingApprovalInfo(BaseModel):
+    id: str
+    tool_name: str
+    resource: str
+    operation: str

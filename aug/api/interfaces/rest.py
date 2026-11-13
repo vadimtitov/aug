@@ -6,44 +6,61 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from typing import Any
 
 from aug.api.interfaces.base import BaseInterface, IncomingMessage, TextContent
 from aug.api.schemas.chat import ChatRequest
-from aug.core.events import ChatModelStreamEvent
-from aug.core.harness import HarnessEvent
-from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
+from aug.core.harness import (
+    ApprovalRequested,
+    ApprovalResolved,
+    HarnessEvent,
+    StatusUpdate,
+    TextDelta,
+    ToolEnded,
+    ToolProgress,
+    ToolStarted,
+    TurnEnded,
+    TurnStarted,
+)
 
 logger = logging.getLogger(__name__)
+
+# One SSE event: its name and its JSON payload.
+Frame = tuple[str, dict[str, Any]]
 
 
 @dataclass
 class _RestContext:
-    """Holds the incoming request and a queue that receives response chunks."""
+    """Holds the incoming request and a queue that receives the response's frames."""
 
     request: ChatRequest
     agent_version: str
-    _queue: asyncio.Queue[str | None] = field(default_factory=asyncio.Queue, init=False)
+    _queue: asyncio.Queue[Frame | None] = field(default_factory=asyncio.Queue, init=False)
+
+    def put(self, name: str, payload: dict[str, Any]) -> None:
+        self._queue.put_nowait((name, payload))
 
     def close(self) -> None:
         """Signal end-of-response to any consumer of this context."""
         self._queue.put_nowait(None)
 
     async def collect(self) -> str:
-        """Drain the queue into a single string (used by /invoke)."""
+        """Drain the queue into the reply text (used by /invoke)."""
         parts: list[str] = []
-        async for chunk in self:
-            parts.append(chunk)
+        async for name, payload in self:
+            if name in ("text_delta", "message"):
+                parts.append(payload["text"])
         return "".join(parts)
 
-    def __aiter__(self) -> AsyncIterator[str]:
+    def __aiter__(self) -> AsyncIterator[Frame]:
         return self._aiter()
 
-    async def _aiter(self) -> AsyncIterator[str]:
+    async def _aiter(self) -> AsyncIterator[Frame]:
         while True:
-            chunk = await self._queue.get()
-            if chunk is None:
+            frame = await self._queue.get()
+            if frame is None:
                 return
-            yield chunk
+            yield frame
 
 
 class RestApiInterface(BaseInterface[_RestContext]):
@@ -65,12 +82,15 @@ class RestApiInterface(BaseInterface[_RestContext]):
         )
 
     async def send_stream(self, stream: AsyncIterator[HarnessEvent], context: _RestContext) -> None:
+        """One SSE frame per harness event.  An approval_requested frame is answered
+        with POST /chat/{context_id}/approve while the stream stays open."""
         async for event in stream:
-            if isinstance(event, ChatModelStreamEvent) and event.delta:
-                context._queue.put_nowait(event.delta)
+            frame = _frame(event)
+            if frame is not None:
+                context.put(*frame)
 
     async def send_message(self, message: str, context: _RestContext) -> None:
-        context._queue.put_nowait(message)
+        context.put("message", {"text": message})
 
     async def send_notification(self, target_id: str, text: str) -> None:
         pass  # REST has no push channel — reminders set during REST sessions are silently dropped
@@ -112,13 +132,6 @@ class RestApiInterface(BaseInterface[_RestContext]):
         async for _ in stream:
             pass
 
-    async def request_approval(self, request: ApprovalRequest, context: _RestContext) -> None:
-        context._queue.put_nowait(
-            f"\n⏸ Approval required: [{request.tool_name}] `{request.description}`. "
-            f"Use POST /chat/{{context_id}}/approve with "
-            f'{{"decision": "approved_once" | "approved_always" | "denied"}}.'
-        )
-
     async def invoke(self, request: ChatRequest, agent_version: str) -> str:
         """Run the full pipeline and return the complete response text."""
         ctx = _RestContext(request=request, agent_version=agent_version)
@@ -132,34 +145,14 @@ class RestApiInterface(BaseInterface[_RestContext]):
         ctx = _RestContext(request=request, agent_version=agent_version)
         task = asyncio.create_task(self._run_and_close(ctx))
         try:
-            async for chunk in ctx:
-                yield f"event: text_delta\ndata: {json.dumps({'delta': chunk})}\n\n"
+            async for name, payload in ctx:
+                yield _sse(name, payload)
         finally:
             if not task.done():
                 task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-        done_payload = json.dumps({"context_id": request.context_id, "agent": agent_version})
-        yield f"event: done\ndata: {done_payload}\n\n"
-
-    async def invoke_resume(
-        self,
-        context_id: str,
-        agent_version: str,
-        sender_id: str,
-        decision: ApprovalDecision,
-    ) -> str:
-        """Resume a paused approval and return the complete response text."""
-        ctx = _RestContext(
-            request=ChatRequest(context_id=context_id, message="", agent=agent_version),
-            agent_version=agent_version,
-        )
-        task = asyncio.create_task(
-            self._resume_and_close(ctx, context_id, agent_version, sender_id, decision)
-        )
-        text = await ctx.collect()
-        await task
-        return text
+        yield _sse("done", {"context_id": request.context_id, "agent": agent_version})
 
     async def _run_and_close(self, ctx: _RestContext) -> None:
         try:
@@ -167,22 +160,52 @@ class RestApiInterface(BaseInterface[_RestContext]):
         finally:
             ctx.close()
 
-    async def _resume_and_close(
-        self,
-        ctx: _RestContext,
-        context_id: str,
-        agent_version: str,
-        sender_id: str,
-        decision: ApprovalDecision,
-    ) -> None:
-        try:
-            await self._execute_resume(
-                context_id=context_id,
-                agent_version=agent_version,
-                sender_id=sender_id,
-                interface="rest_api",
-                decision=decision,
-                context=ctx,
-            )
-        finally:
-            ctx.close()
+
+def _frame(event: HarnessEvent) -> Frame | None:
+    match event:
+        case TurnStarted(context_id=context_id):
+            return "turn_started", {"context_id": context_id}
+        case TextDelta(text=text, parent_id=parent_id):
+            return ("text_delta", {"text": text}) if text and parent_id is None else None
+        case ToolStarted(id=tool_id, name=name, args=args, parent_id=parent_id):
+            return "tool_started", {
+                "id": tool_id,
+                "name": name,
+                "args": args,
+                "parent_id": parent_id,
+            }
+        case ToolProgress(text=text, parent_id=parent_id):
+            return "tool_progress", {"text": text, "parent_id": parent_id}
+        case ToolEnded(id=tool_id, name=name, error=error, parent_id=parent_id):
+            return "tool_ended", {
+                "id": tool_id,
+                "name": name,
+                "error": error,
+                "parent_id": parent_id,
+            }
+        case StatusUpdate(text=text):
+            return "status", {"text": text}
+        case ApprovalRequested(id=approval_id, request=request, parent_id=parent_id):
+            return "approval_requested", {
+                "id": approval_id,
+                "tool_name": request.tool_name,
+                "resource": request.resource,
+                "operation": request.operation,
+                "parent_id": parent_id,
+            }
+        case ApprovalResolved(id=approval_id, decision=decision, parent_id=parent_id):
+            return "approval_resolved", {
+                "id": approval_id,
+                "decision": decision.value,
+                "parent_id": parent_id,
+            }
+        case TurnEnded(error=error, cancelled=cancelled):
+            return "turn_ended", {
+                "error": error.kind if error else None,
+                "cancelled": cancelled,
+            }
+    return None
+
+
+def _sse(name: str, payload: dict[str, Any]) -> str:
+    return f"event: {name}\ndata: {json.dumps(payload, default=str)}\n\n"

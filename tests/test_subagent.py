@@ -2,22 +2,22 @@
 
 Behavioral focus:
 - arun() yields events from a no-checkpointer graph run
-- run_subagent tool accumulates ChatModelStreamEvent text as the return value
+- run_subagent tool accumulates TextDelta text as the return value
 - tool returns a graceful error string when the subagent hits its recursion limit
-- tool forwards ToolStartEvent and ToolProgressEvent as send_tool_progress_update calls
+- tool re-emits ToolStarted and ToolProgress under its own call, approvals as they are
 """
 
 from collections.abc import AsyncIterator
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage
 
 from aug.core.agents.base_agent import BaseAgent
-from aug.core.events import (
-    ChatModelStreamEvent,
-    ToolProgressEvent,
-    ToolStartEvent,
+from aug.core.harness import (
+    TextDelta,
+    ToolProgress,
+    ToolStarted,
 )
 from aug.core.state import AgentState, AgentStateUpdate
 
@@ -45,7 +45,7 @@ class _FixedAgent(BaseAgent):
 def _make_fake_arun(*events) -> AsyncIterator:
     """Return an async generator that yields the given events."""
 
-    async def _gen(prompt, *, interface, sender_id, thread_id):
+    async def _gen(prompt, *, interface, sender_id, thread_id, tool_context=None):
         for event in events:
             yield event
 
@@ -123,15 +123,15 @@ async def test_arun_caches_subagent_graph():
 
 @pytest.mark.asyncio
 async def test_tool_accumulates_stream_events():
-    """run_subagent returns the accumulated ChatModelStreamEvent text."""
+    """run_subagent returns the accumulated TextDelta text."""
     from aug.core.tools.subagent import make_run_subagent_tool
 
     subagent = _FixedAgent()
     tool = make_run_subagent_tool(subagent)
 
     fake_arun = _make_fake_arun(
-        ChatModelStreamEvent(delta="Hello "),
-        ChatModelStreamEvent(delta="world"),
+        TextDelta(text="Hello "),
+        TextDelta(text="world"),
     )
     with patch.object(subagent, "arun", fake_arun):
         result = await tool.ainvoke({"prompt": "test"}, config=_config())
@@ -149,7 +149,7 @@ async def test_tool_returns_error_on_recursion_limit():
     subagent = _FixedAgent()
     tool = make_run_subagent_tool(subagent)
 
-    async def _raising_arun(prompt, *, interface, sender_id, thread_id):
+    async def _raising_arun(prompt, *, interface, sender_id, thread_id, tool_context=None):
         raise GraphRecursionError("limit")
         yield  # noqa: unreachable — makes this an async generator
 
@@ -169,8 +169,8 @@ async def test_tool_returns_partial_text_on_recursion_limit():
     subagent = _FixedAgent()
     tool = make_run_subagent_tool(subagent)
 
-    async def _partial_then_error(prompt, *, interface, sender_id, thread_id):
-        yield ChatModelStreamEvent(delta="partial answer")
+    async def _partial_then_error(prompt, *, interface, sender_id, thread_id, tool_context=None):
+        yield TextDelta(text="partial answer")
         raise GraphRecursionError("limit")
 
     with patch.object(subagent, "arun", _partial_then_error):
@@ -185,56 +185,57 @@ async def test_tool_returns_partial_text_on_recursion_limit():
 # ---------------------------------------------------------------------------
 
 
+def _capturing_context() -> MagicMock:
+    return MagicMock(emit=AsyncMock())
+
+
 @pytest.mark.asyncio
-async def test_tool_emits_subagent_tool_start_on_tool_start():
-    """ToolStartEvent from the subagent triggers send_subagent_tool_start in parent context."""
+async def test_tool_re_emits_subagent_tool_calls_under_its_own_call():
+    """A subagent's ToolStarted is re-emitted with no parent, so the harness nests it
+    under this run_subagent call."""
     from aug.core.tools.subagent import make_run_subagent_tool
 
     subagent = _FixedAgent()
     tool = make_run_subagent_tool(subagent)
+    ctx = _capturing_context()
 
     fake_arun = _make_fake_arun(
-        ToolStartEvent(run_id="r1", tool_name="brave_search", args={"query": "test query"}),
-        ChatModelStreamEvent(delta="done"),
+        ToolStarted(id="r1", name="brave_search", args={"query": "q"}, parent_id="inner"),
+        TextDelta(text="done"),
     )
-
-    calls: list[tuple[str, dict]] = []
-
-    async def _capture(tool_name: str, args: dict) -> None:
-        calls.append((tool_name, args))
-
     with (
         patch.object(subagent, "arun", fake_arun),
-        patch("aug.core.tools.subagent.send_subagent_tool_start", _capture),
+        patch("aug.core.tools.subagent.current_tool_context", return_value=ctx),
     ):
         await tool.ainvoke({"prompt": "test"}, config=_config())
 
-    assert len(calls) == 1
-    assert calls[0] == ("brave_search", {"query": "test query"})
+    ctx.emit.assert_awaited_once_with(
+        ToolStarted(id="r1", name="brave_search", args={"query": "q"})
+    )
 
 
 @pytest.mark.asyncio
-async def test_tool_forwards_tool_progress_events():
-    """ToolProgressEvent step text is forwarded verbatim to send_tool_progress_update."""
+async def test_tool_forwards_tool_progress_and_approvals():
+    from aug.core.harness import ApprovalRequest, ApprovalRequested
     from aug.core.tools.subagent import make_run_subagent_tool
 
     subagent = _FixedAgent()
     tool = make_run_subagent_tool(subagent)
-
-    fake_arun = _make_fake_arun(
-        ToolProgressEvent(step="Step 3 · example.com"),
-        ChatModelStreamEvent(delta="result"),
+    ctx = _capturing_context()
+    asked = ApprovalRequested(
+        id="a1", request=ApprovalRequest("run_ssh", "box", "ls"), parent_id="inner"
     )
 
-    progress_calls: list[str] = []
-
-    async def _capture_progress(text: str) -> None:
-        progress_calls.append(text)
-
+    fake_arun = _make_fake_arun(
+        ToolProgress(text="Step 3 · example.com", parent_id="inner"),
+        asked,
+        TextDelta(text="result"),
+    )
     with (
         patch.object(subagent, "arun", fake_arun),
-        patch("aug.core.tools.subagent.send_tool_progress_update", _capture_progress),
+        patch("aug.core.tools.subagent.current_tool_context", return_value=ctx),
     ):
         await tool.ainvoke({"prompt": "test"}, config=_config())
 
-    assert "Step 3 · example.com" in progress_calls
+    emitted = [call.args[0] for call in ctx.emit.await_args_list]
+    assert emitted == [ToolProgress(text="Step 3 · example.com"), asked]

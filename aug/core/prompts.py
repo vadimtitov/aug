@@ -452,6 +452,23 @@ HARNESS_TOOL_STOPPED_RESULT = (
 )
 HARNESS_TURN_STOPPED_NOTE = "[The user pressed /stop and ended your turn before you replied.]"
 
+# Tool results when an operation that needs approval did not run, keyed by
+# ApprovalDecision value.  Each says why, so the model reports the right thing.
+APPROVAL_NOT_GRANTED_RESULTS = {
+    "denied": "Operation denied by user. [{tool}] '{operation}' was NOT executed.",
+    "replied": (
+        "The user replied with a message instead of approving. [{tool}] '{operation}' "
+        "was NOT executed. Read their message before trying again."
+    ),
+    "timed_out": (
+        "Nobody answered the approval request in time. [{tool}] '{operation}' was NOT executed."
+    ),
+    "no_user": (
+        "Operation requires user approval, but nobody is present to approve it in this "
+        "run (a scheduled or background task). [{tool}] '{operation}' was NOT executed."
+    ),
+}
+
 # Rendered into the conversation when someone shares a location.  The sharer is named
 # because a group can have several live locations running at once, and coordinates alone
 # leave the agent unable to say whose is whose.

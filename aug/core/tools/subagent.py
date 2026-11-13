@@ -10,19 +10,21 @@ Usage (in registry.py):
 """
 
 import logging
+from dataclasses import replace
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
 from langgraph.errors import GraphRecursionError
 
 from aug.core.agents.base_agent import BaseAgent
-from aug.core.events import (
-    ChatModelStreamEvent,
-    ToolProgressEvent,
-    ToolStartEvent,
-    send_subagent_tool_start,
-    send_tool_progress_update,
+from aug.core.harness.types import (
+    ApprovalRequested,
+    ApprovalResolved,
+    TextDelta,
+    ToolProgress,
+    ToolStarted,
 )
+from aug.core.tools.context import current_tool_context
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +32,9 @@ logger = logging.getLogger(__name__)
 def make_run_subagent_tool(subagent: BaseAgent) -> BaseTool:
     """Return a run_subagent tool backed by *subagent*.
 
-    The tool iterates the subagent's event stream, forwards progress updates
-    to the parent agent's Telegram message via send_tool_progress_update, and
-    returns the accumulated final response text.
+    The tool iterates the subagent's event stream, re-emits its tool calls and
+    progress under its own call (so the user sees them nested), passes its approval
+    requests through, and returns the accumulated final response text.
     """
 
     @tool
@@ -58,6 +60,7 @@ def make_run_subagent_tool(subagent: BaseAgent) -> BaseTool:
         sender_id: str = configurable.get("sender_id", "")
         thread_id: str = configurable.get("thread_id", "")
 
+        ctx = current_tool_context()
         final_text = ""
         try:
             async for event in subagent.arun(
@@ -65,14 +68,16 @@ def make_run_subagent_tool(subagent: BaseAgent) -> BaseTool:
                 interface=interface,
                 sender_id=sender_id,
                 thread_id=thread_id,
+                tool_context=ctx,
             ):
                 match event:
-                    case ChatModelStreamEvent(delta=delta) if delta:
-                        final_text += delta
-                    case ToolStartEvent(tool_name=tool_name, args=args):
-                        await send_subagent_tool_start(tool_name, args)
-                    case ToolProgressEvent(step=s) if s:
-                        await send_tool_progress_update(s)
+                    case TextDelta(text=text) if text:
+                        final_text += text
+                    case ToolStarted() | ToolProgress() if ctx is not None:
+                        # Re-parented onto this call: the user sees one nested block.
+                        await ctx.emit(replace(event, parent_id=None))
+                    case ApprovalRequested() | ApprovalResolved() if ctx is not None:
+                        await ctx.emit(event)
         except GraphRecursionError:
             suffix = "\n\n⚠️ Subagent hit the step limit without finishing."
             return (final_text + suffix) if final_text else suffix.strip()

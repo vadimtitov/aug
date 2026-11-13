@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from aug.core.events import ChatModelStreamEvent
+from aug.core.harness import TextDelta
 from tests.harness_fakes import ScriptedHarness
 
 # ---------------------------------------------------------------------------
@@ -58,10 +58,10 @@ async def test_rest_send_proactive_stream_consumes_stream(rest_iface):
     """send_proactive_stream must drain the stream without raising."""
     consumed: list[str] = []
 
-    async def mock_stream() -> AsyncIterator[ChatModelStreamEvent]:
+    async def mock_stream() -> AsyncIterator[TextDelta]:
         for delta in ("a", "b", "c"):
             consumed.append(delta)
-            yield ChatModelStreamEvent(delta=delta)
+            yield TextDelta(text=delta)
 
     await rest_iface.send_proactive_stream("tg-12345-0", mock_stream())
     assert consumed == ["a", "b", "c"]
@@ -228,8 +228,8 @@ async def test_tg_send_proactive_stream_sends_final_text(tg_iface):
     """send_proactive_stream collects the full agent response and sends it as one message."""
 
     async def mock_stream() -> AsyncIterator:
-        yield ChatModelStreamEvent(delta="Hello")
-        yield ChatModelStreamEvent(delta=" world")
+        yield TextDelta(text="Hello")
+        yield TextDelta(text=" world")
 
     await tg_iface.send_proactive_stream("tg-12345-0", mock_stream())
 

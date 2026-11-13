@@ -22,14 +22,21 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import ToolException
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Command
 from typing_extensions import TypedDict
 
 import aug.core.tools.mcp as mcp_tools
 from aug.core.agents.chat_agent import ChatAgent
+from aug.core.harness import (
+    Address,
+    ApprovalDecision,
+    Sender,
+    ToolContext,
+    TurnContext,
+    pending_approvals,
+)
+from aug.core.harness.tool_context import TOOL_CONTEXT_CONFIG_KEY
 from aug.core.mcp.manager import MCPManager, _read_hushed_secret
 from aug.core.state import AgentState
-from aug.core.tools.approval import ApprovalDecision
 from aug.utils.file_settings import ApprovalRule, AppSettings, McpServerConfig, ToolSettings
 from aug.utils.mcp_registry import McpRegistryServer
 from aug.utils.state import AppState, McpOperation
@@ -458,7 +465,7 @@ async def test_real_http_session_connect_call_and_clean_shutdown(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 10. Approval interrupt/resume through a real LangGraph checkpoint
+# 10. Approval awaited inside a real LangGraph run
 # ---------------------------------------------------------------------------
 
 
@@ -472,37 +479,48 @@ async def _call_remove_mcp_server(state: _ApprovalGraphState) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_mcp_tool_approval_survives_a_real_checkpoint_interrupt_and_resume():
+async def test_mcp_tool_waits_for_approval_inside_a_real_graph_run():
     """Unlike the plan-persistence tests above (which call tools directly
-    with approval always pre-granted), this drives the actual LangGraph
-    interrupt: the graph must genuinely pause, park state in a real
-    checkpointer, and only run the tool once resumed with a decision."""
+    with approval always pre-granted), this runs the tool in a real graph: it
+    must wait for the user's answer and only run once approved."""
     graph = StateGraph(_ApprovalGraphState)
     graph.add_node("call", _call_remove_mcp_server)
     graph.add_edge(START, "call")
     graph.add_edge("call", END)
     compiled = graph.compile(checkpointer=MemorySaver())
-    config = {"configurable": {"thread_id": "approval-checkpoint-t1"}}
+    ctx = ToolContext(
+        context_id="approval-t1",
+        sender=Sender(interface="telegram", user_id="1"),
+        turn=TurnContext(
+            reply_to=Address(interface="telegram", conversation_id="tg-1"), attended=True
+        ),
+    )
+    config = {"configurable": {"thread_id": "approval-t1", TOOL_CONTEXT_CONFIG_KEY: ctx}}
 
     settings = AppSettings(
         mcp_servers=[McpServerConfig(name="postgres", transport="stdio", command="npx", args=[])]
     )
     saved = []
 
+    async def approve_when_asked() -> None:
+        while not pending_approvals.for_context("approval-t1"):  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+        [pending] = pending_approvals.for_context("approval-t1")
+        assert pending.request.tool_name == "remove_mcp_server"
+        assert saved == [], "the tool must not run before it is approved"
+        pending_approvals.resolve(pending.id, ApprovalDecision.APPROVED_ONCE)
+
     with (
-        patch(_P_APPROVAL, return_value=AppSettings()),  # no saved rule -> must interrupt
+        patch(_P_APPROVAL, return_value=AppSettings()),  # no saved rule -> must ask
         patch("aug.core.tools.mcp.load_settings", return_value=settings),
         patch("aug.utils.file_settings.load_settings", return_value=settings),
         patch("aug.utils.file_settings.save_settings", side_effect=lambda s: saved.append(s)),
         patch("aug.core.tools.mcp.record_operation", AsyncMock(return_value="op1")),
         patch("aug.core.tools.mcp.schedule_restart"),
     ):
-        await compiled.ainvoke({"result": ""}, config)
-        paused = await compiled.aget_state(config)
-        assert paused.interrupts, "graph must actually pause for approval, not just call the tool"
-        assert paused.interrupts[0].value.tool_name == "remove_mcp_server"
-
-        final = await compiled.ainvoke(Command(resume=ApprovalDecision.APPROVED_ONCE), config)
+        final, _ = await asyncio.gather(
+            compiled.ainvoke({"result": ""}, config), approve_when_asked()
+        )
 
     assert "removed" in final["result"].lower()
     assert saved[0].mcp_servers == []

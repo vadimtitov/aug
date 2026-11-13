@@ -18,9 +18,13 @@ class Harness(ABC):
 
 - `run()` never raises. Its first event is `TurnStarted` (from then on `inject()`
   reaches the turn), its last is always one `TurnEnded`, carrying `error:
-  HarnessError | None`, `cancelled`, `unconsumed` (messages injected too late, which
-  the caller runs as a follow-up turn) and, on LangGraph only, `approval` (the turn
-  paused on an approval interrupt; the caller asks the user and calls `resume()`).
+  HarnessError | None`, `cancelled` and `unconsumed` (messages injected too late,
+  which the caller runs as a follow-up turn).
+- In between come harness events, the only thing interfaces render: `TextDelta`,
+  `ToolStarted`, `ToolProgress`, `ToolEnded`, `StatusUpdate`, `ApprovalRequested`,
+  `ApprovalResolved`. Events inside a tool call carry `parent_id`, the id of that
+  call's `ToolStarted`; a subagent's tool calls are `ToolStarted` events whose parent
+  is the subagent's call. Tool names are canonical (no harness prefix).
 - Every harness maps its client's exceptions onto `HarnessError.kind`:
   `context_full`, `rate_limited`, `auth`, `unavailable`, `step_limit`, `internal`.
   What the user is told per kind is `HARNESS_ERROR_MESSAGES` in `prompts.py`.
@@ -31,11 +35,27 @@ class Harness(ABC):
   transcript, `data/transcripts/<conversation_id>.jsonl`, the same way on every
   harness. The transcript is a record; nothing feeds it back to a model.
 
+## Tools: `ToolContext` (`aug/core/harness/tool_context.py`)
+
+Every turn hands its tools a `ToolContext` (LangGraph: in the run config, read with
+`current_tool_context()`).
+
+- `ctx.emit(event)` adds a progress or status event to the turn's stream, under the
+  tool that emits it.
+- `await ctx.request_approval(request)` asks the user and waits inside the tool, so the
+  turn never pauses. The interface shows `ApprovalRequested` and answers it with
+  `pending_approvals.resolve(id, decision)` (Telegram buttons `ap:{id}:{o|a|d}`, REST
+  `POST /chat/{context_id}/approve`). A request answers once: a second tap is "already
+  handled". Unattended turns get `NO_USER` at once; a typed message instead of a tap
+  is `REPLIED` and joins the turn; no answer in 30 minutes is `TIMED_OUT`; `/stop`
+  cancels the wait. Each returns its own "NOT executed" string, and a tool whose
+  approval was not granted ends with `ToolEnded(error=True)`.
+
 ## Who holds which lock (`aug/core/run.py`)
 
 - `run_lock(context_id)`: held for a whole turn by whoever runs one: interfaces
-  (including the follow-up turn for unconsumed messages), approval resumes,
-  `/compact` and `fire_push`. Two turns never share a context.
+  (including the follow-up turn for unconsumed messages), `/compact` and
+  `fire_push`. Two turns never share a context.
 - `routing_lock(context_id)`: short. Serialises "inject into the turn in flight, or
   queue a new one". An interface starts its turn under it and holds it until
   `TurnStarted`, so a message arriving in between is injected, not queued behind.
@@ -45,11 +65,3 @@ class Harness(ABC):
 `context_id` is a chat's current session (Telegram's `/clear` starts a new one);
 `conversation_id` is the stable chat it belongs to. LangGraph's checkpoint key and
 the Postgres columns keep the old name `thread_id`.
-
-## What is still LangGraph-shaped
-
-Interfaces still render the parsed graph events (`ChatModelStreamEvent`,
-`ToolStartEvent`…) and approvals still pause the graph (`TurnEnded.approval` +
-`LangGraphHarness.resume()`). Both move behind harness events and
-`ToolContext.request_approval()` in the next step, after which no LangGraph type
-reaches an interface.

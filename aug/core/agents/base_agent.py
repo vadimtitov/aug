@@ -15,7 +15,9 @@ from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.types import StateSnapshot
 
-from aug.core.events import AgentEvent, parse_event
+from aug.core.harness.langgraph_events import parse_event
+from aug.core.harness.tool_context import TOOL_CONTEXT_CONFIG_KEY, ToolContext
+from aug.core.harness.types import AgentEvent
 from aug.core.reflexes import Reflex
 from aug.core.state import AgentState, AgentStateUpdate
 
@@ -118,12 +120,16 @@ class BaseAgent(ABC):
         interface: str,
         sender_id: str,
         thread_id: str,
+        tool_context: ToolContext | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Run the agent headlessly and yield events.
 
         Compiles a non-interruptible graph (no checkpointer, no interrupt_after) on
-        first call and caches it.  Callers should accumulate ChatModelStreamEvent deltas
-        for the final response text.  GraphRecursionError propagates to the caller.
+        first call and caches it.  Callers should accumulate TextDelta text for the
+        final response.  GraphRecursionError propagates to the caller.
+
+        *tool_context* is the calling turn's: the subagent's tools emit through it and
+        ask the same user for approval.
 
         The subagent graph runs in an isolated asyncio context with
         var_child_runnable_config cleared so its internal tool events do not leak
@@ -138,10 +144,7 @@ class BaseAgent(ABC):
                 "thread_id": thread_id,
                 "interface": interface,
                 "sender_id": sender_id,
-                # Subagents run without a checkpointer, so approval interrupts cannot
-                # pause/resume here.  Tools see this and fail honestly instead of
-                # silently halting the whole subagent graph.
-                "can_approve": False,
+                TOOL_CONTEXT_CONFIG_KEY: tool_context,
             },
         }
         state = AgentState(

@@ -80,6 +80,8 @@ async def _checkpointer_context(dsn: str):
     ``from_conn_string`` returns a context manager in langgraph-checkpoint-postgres 2+.
     """
 
+    # Checkpoints from before approvals were awaited inside the tool hold interrupts with
+    # these payloads; aug.core.tools.approval still exposes both names.
     serde = JsonPlusSerializer(
         allowed_msgpack_modules=[
             ("aug.core.tools.approval", "ApprovalRequest"),
