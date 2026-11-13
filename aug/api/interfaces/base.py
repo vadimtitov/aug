@@ -48,12 +48,14 @@ from aug.core.prompts import (
     HARNESS_STOPPED_MESSAGE,
     LOCATION_SHARE_TEMPLATE,
     LOCATION_SHARE_UNKNOWN_SENDER,
+    VOICE_TRANSCRIPT_TEMPLATE,
 )
 from aug.core.registry import get_harness, harnesses
 from aug.core.run import run_registry
 from aug.utils.file_settings import ConversationSettings, load_settings, save_settings
 from aug.utils.logging import set_context_id, set_correlation_id
 from aug.utils.state import ConversationLocationState, LiveLocationState, load_state, save_state
+from aug.utils.storage import file_store
 
 logger = logging.getLogger(__name__)
 
@@ -68,30 +70,20 @@ class TextContent(BaseModel):
 
 
 class FileContent(BaseModel):
-    """A file received from any interface, persisted to disk.
+    """A file received from any interface, already in the workspace inbox.
 
     Attributes:
-        path:       Absolute path where the file is stored on disk.
+        path:       Where the file is stored (see ``store_file``).
         mime_type:  MIME type of the file (e.g. ``"image/jpeg"``).
-        transcribe: If True, ``_preprocess`` will transcribe the audio to text
+        filename:   The name the user gave it, or one the interface made up.
+        transcribe: If True, ``_preprocess`` adds a transcript of the audio next to it
                     (intended for voice notes, not music/general audio files).
     """
 
     path: str
     mime_type: str
+    filename: str
     transcribe: bool = False
-
-    @property
-    def filename(self) -> str:
-        return Path(self.path).name
-
-    async def write(self, data: bytes) -> None:
-        """Write *data* to ``path``, creating parent directories as needed."""
-        await asyncio.to_thread(self._write_sync, data)
-
-    def _write_sync(self, data: bytes) -> None:
-        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        Path(self.path).write_bytes(data)
 
     async def read(self) -> bytes:
         """Read file bytes from disk.
@@ -145,6 +137,19 @@ class IncomingMessage(BaseModel):
     # Platform id of the person who sent this.  Distinct from sender_id, which addresses
     # a place: in a group chat many user_ids share one sender_id.
     user_id: str = ""
+
+
+async def store_file(
+    data: bytes, filename: str, mime_type: str, *, transcribe: bool = False
+) -> FileContent:
+    """Save a file the user sent to the workspace inbox (images normalised on the way)."""
+    stored = await file_store.save_inbound(data, filename, mime_type)
+    return FileContent(
+        path=str(stored.path),
+        mime_type=stored.media_type,
+        filename=stored.filename,
+        transcribe=transcribe,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -366,10 +371,13 @@ class BaseInterface[ContextT](ABC):
         save_state(state)
 
     async def run(self, context: ContextT) -> None:
-        """Route: inject into the turn in flight, or start a new one."""
+        """Receive one platform input and handle it."""
         incoming = await self.receive_message(context)
-        if incoming is None:
-            return
+        if incoming is not None:
+            await self.handle(incoming, context)
+
+    async def handle(self, incoming: IncomingMessage, context: ContextT) -> None:
+        """Route: inject into the turn in flight, or start a new one."""
         set_correlation_id(str(uuid4())[:8])
 
         # Record before preprocessing: the very first share must land in the state too,
@@ -595,7 +603,7 @@ def _live_until(location: LocationContent, previous: LiveLocationState, now: flo
 
 async def _preprocess(incoming: IncomingMessage) -> Message:
     """Turn what an interface received into the harness Message: files stay files,
-    voice notes become their transcript, locations become an address."""
+    voice notes get their transcript next to them, locations become an address."""
     parts: list[TextPart | FilePart] = []
     for part in incoming.parts:
         if isinstance(part, TextContent):
@@ -603,21 +611,10 @@ async def _preprocess(incoming: IncomingMessage) -> Message:
         elif isinstance(part, FileContent):
             if part.transcribe:
                 transcript = await _transcribe(await part.read(), part.mime_type)
-                parts.append(
-                    TextPart(
-                        text=(
-                            f"[Voice message, already transcribed]\n"
-                            f"{transcript}\n"
-                            f"[Audio saved to: {part.path}]"
-                        )
-                    )
-                )
-            else:
-                parts.append(
-                    FilePart(
-                        path=Path(part.path), media_type=part.mime_type, filename=part.filename
-                    )
-                )
+                parts.append(TextPart(text=VOICE_TRANSCRIPT_TEMPLATE.format(transcript=transcript)))
+            parts.append(
+                FilePart(path=Path(part.path), media_type=part.mime_type, filename=part.filename)
+            )
         elif isinstance(part, LocationContent):
             text = await _geocode(part.latitude, part.longitude, part.sender_name)
             parts.append(TextPart(text=text))

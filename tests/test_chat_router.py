@@ -26,7 +26,7 @@ def client():
         patch("aug.app.serve_gateway", new=AsyncMock()),
         patch.object(TelegramInterface, "start_polling", new=AsyncMock()),
         patch.object(TelegramInterface, "stop_polling", new=AsyncMock()),
-        patch.object(RestApiInterface, "invoke", new=AsyncMock(return_value="hi back")),
+        patch.object(RestApiInterface, "invoke", new=AsyncMock(return_value=("hi back", []))),
         TestClient(create_app()) as c,
     ):
         yield c

@@ -72,14 +72,10 @@ async def test_browser_not_configured() -> None:
     assert "not available" in result.content
 
 
-async def test_browser_returns_final_result(mock_browser_deps) -> None:
-    from aug.core.tools.output import ImageAttachment, ToolOutput
-
+async def test_browser_returns_final_result(mock_browser_deps, sent_files) -> None:
     result = await _invoke("check the weather")
-    assert isinstance(result.artifact, ToolOutput)
-    assert str(result.artifact) == "Order placed."
-    assert len(result.artifact.attachments) == 1
-    assert isinstance(result.artifact.attachments[0], ImageAttachment)
+    assert result.content == "Order placed."
+    assert [f.media_type for f in sent_files] == ["image/png"]  # the final screenshot
 
 
 async def test_browser_passes_task_to_agent(mock_browser_deps) -> None:

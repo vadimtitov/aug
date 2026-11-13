@@ -8,6 +8,7 @@ Behavioral focus:
 """
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,6 +19,7 @@ from aug.core.agents.base_agent import BaseAgent
 from aug.core.harness import (
     ApprovalRequest,
     ApprovalRequested,
+    FileEmitted,
     TextDelta,
     ToolEnded,
     ToolProgress,
@@ -220,6 +222,13 @@ async def test_tool_forwards_tool_progress_and_approvals():
         ToolProgress(text="Step 3 · example.com", parent_id="inner"),
         asked,
         ToolEnded(id="s1", name="run_ssh", output="ok", parent_id="inner"),
+        FileEmitted(
+            file_id="f1",
+            path=Path("/x.png"),
+            media_type="image/png",
+            filename="x.png",
+            parent_id="s1",
+        ),
         TextDelta(text="result"),
     )
     with (
@@ -233,4 +242,6 @@ async def test_tool_forwards_tool_progress_and_approvals():
         ToolProgress(text="Step 3 · example.com"),
         asked,
         ToolEnded(id="s1", name="run_ssh", output="ok"),
+        # The subagent's file reaches the user, filed under this call.
+        FileEmitted(file_id="f1", path=Path("/x.png"), media_type="image/png", filename="x.png"),
     ]

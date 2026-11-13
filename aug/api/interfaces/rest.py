@@ -8,11 +8,18 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from aug.api.interfaces.base import BaseInterface, IncomingMessage, TextContent
-from aug.api.schemas.chat import ChatRequest
+from aug.api.interfaces.base import (
+    BaseInterface,
+    ContentPart,
+    FileContent,
+    IncomingMessage,
+    TextContent,
+)
+from aug.api.schemas.chat import ChatFile, ChatRequest
 from aug.core.harness import (
     ApprovalRequested,
     ApprovalResolved,
+    FileEmitted,
     HarnessEvent,
     StatusUpdate,
     TextDelta,
@@ -22,6 +29,7 @@ from aug.core.harness import (
     TurnEnded,
     TurnStarted,
 )
+from aug.utils.storage import file_store
 
 logger = logging.getLogger(__name__)
 
@@ -52,13 +60,16 @@ class _RestContext:
         """The next frame; None at end of response.  Safe to cancel."""
         return await self._queue.get()
 
-    async def collect(self) -> str:
-        """Drain the queue into the reply text (used by /invoke)."""
+    async def collect(self) -> tuple[str, list[ChatFile]]:
+        """Drain the queue into the reply text and the files sent (used by /invoke)."""
         parts: list[str] = []
+        files: list[ChatFile] = []
         async for name, payload in self:
             if name in ("text_delta", "message"):
                 parts.append(payload["text"])
-        return "".join(parts)
+            elif name == "file":
+                files.append(ChatFile(**payload))
+        return "".join(parts), files
 
     def __aiter__(self) -> AsyncIterator[Frame]:
         return self._aiter()
@@ -80,8 +91,20 @@ class RestApiInterface(BaseInterface[_RestContext]):
 
     async def receive_message(self, context: _RestContext) -> IncomingMessage | None:
         req = context.request
+        parts: list[ContentPart] = []
+        for attachment in req.attachments:
+            # Checked by the router; a file gone since then is left out.
+            stored = file_store.get(attachment.file_id)
+            if stored is not None:
+                parts.append(
+                    FileContent(
+                        path=str(stored.path), mime_type=stored.media_type, filename=stored.filename
+                    )
+                )
+        if req.message:
+            parts.append(TextContent(text=req.message))
         return IncomingMessage(
-            parts=[TextContent(text=req.message)],
+            parts=parts,
             interface="rest_api",
             sender_id=req.context_id,
             context_id=req.context_id,
@@ -140,13 +163,13 @@ class RestApiInterface(BaseInterface[_RestContext]):
         async for _ in stream:
             pass
 
-    async def invoke(self, request: ChatRequest, agent_version: str) -> str:
-        """Run the full pipeline and return the complete response text."""
+    async def invoke(self, request: ChatRequest, agent_version: str) -> tuple[str, list[ChatFile]]:
+        """Run the full pipeline and return the complete response text and its files."""
         ctx = _RestContext(request=request, agent_version=agent_version)
         task = asyncio.create_task(self._run_and_close(ctx))
-        text = await ctx.collect()
+        reply = await ctx.collect()
         await task
-        return text
+        return reply
 
     async def stream_sse(self, request: ChatRequest, agent_version: str) -> AsyncIterator[str]:
         """Run the full pipeline, yielding Server-Sent Events."""
@@ -196,6 +219,21 @@ def _frame(event: HarnessEvent) -> Frame | None:
                 "id": tool_id,
                 "name": name,
                 "error": error,
+                "parent_id": parent_id,
+            }
+        case FileEmitted(
+            file_id=file_id,
+            filename=filename,
+            media_type=media_type,
+            caption=caption,
+            parent_id=parent_id,
+        ):
+            return "file", {
+                "id": file_id,
+                "filename": filename,
+                "media_type": media_type,
+                "caption": caption,
+                "url": f"/files/{file_id}/content",
                 "parent_id": parent_id,
             }
         case StatusUpdate(text=text):

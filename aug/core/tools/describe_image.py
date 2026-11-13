@@ -25,8 +25,8 @@ def make_describe_image_tool(model: str) -> BaseTool:
 
         Use this tool to understand what an image contains so you can respond
         naturally to the user — do NOT relay the description back verbatim.
-        Pass the image path exactly as it appears in the [[img:path|mime]] marker
-        and a specific question about what you need to know.
+        Pass the image path exactly as it appears in the "[Image from user: <path>]"
+        note and a specific question about what you need to know.
 
         Args:
             path: Absolute path to the image file on disk.

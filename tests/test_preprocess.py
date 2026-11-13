@@ -10,7 +10,9 @@ import pytest
 
 from aug.api.interfaces import base
 from aug.api.interfaces.base import FileContent, IncomingMessage, LocationContent, TextContent
+from aug.core.harness import FilePart, TextPart
 from aug.core.harness.langgraph import _render
+from aug.utils.storage import safe_filename
 
 
 async def _preprocess(parts) -> str:
@@ -26,30 +28,23 @@ async def _preprocess(parts) -> str:
 
 
 async def _image_fc(tmp_path, data: bytes = b"imgbytes", mime: str = "image/jpeg") -> FileContent:
-    fc = FileContent(path=str(tmp_path / "photo.jpg"), mime_type=mime)
-    await fc.write(data)
-    return fc
+    return await base.store_file(data, "photo.jpg", mime)
 
 
 async def _voice_fc(tmp_path, data: bytes = b"audiobytes") -> FileContent:
-    fc = FileContent(path=str(tmp_path / "voice.ogg"), mime_type="audio/ogg", transcribe=True)
-    await fc.write(data)
-    return fc
+    return await base.store_file(data, "voice.ogg", "audio/ogg", transcribe=True)
 
 
 async def _audio_fc(tmp_path, data: bytes = b"songbytes") -> FileContent:
-    fc = FileContent(path=str(tmp_path / "song.mp3"), mime_type="audio/mpeg")
-    await fc.write(data)
-    return fc
+    return await base.store_file(data, "song.mp3", "audio/mpeg")
 
 
 async def _doc_fc(tmp_path, data: bytes = b"docbytes") -> FileContent:
-    fc = FileContent(
-        path=str(tmp_path / "report.docx"),
-        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    return await base.store_file(
+        data,
+        "report.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
-    await fc.write(data)
-    return fc
 
 
 # ---------------------------------------------------------------------------
@@ -96,9 +91,7 @@ async def test_image_marker_contains_path(tmp_path):
 
 @pytest.mark.asyncio
 async def test_image_png_mime_type_in_marker(tmp_path):
-    path = str(tmp_path / "img.png")
-    fc = FileContent(path=path, mime_type="image/png")
-    await fc.write(b"png")
+    fc = await _image_fc(tmp_path, data=b"png", mime="image/png")
     result = await _preprocess([fc])
 
     assert isinstance(result, str)
@@ -122,13 +115,19 @@ async def test_voice_transcribed_to_text_block(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_voice_injects_path_in_result(tmp_path):
+async def test_voice_keeps_the_audio_file_next_to_its_transcript(tmp_path):
     fc = await _voice_fc(tmp_path)
 
     with patch("aug.api.interfaces.base._transcribe", new=AsyncMock(return_value="transcript")):
-        result = await _preprocess([fc])
+        incoming = IncomingMessage(
+            parts=[fc], interface="telegram", sender_id="1", context_id="tg-1-0", agent_version="x"
+        )
+        message = await base._preprocess(incoming)
 
-    assert fc.path in result
+    assert [type(p) for p in message.parts] == [TextPart, FilePart]
+    assert "transcript" in message.parts[0].text
+    assert str(message.parts[1].path) == fc.path
+    assert message.parts[1].media_type == "audio/ogg"
 
 
 @pytest.mark.asyncio
@@ -237,37 +236,27 @@ async def test_image_does_not_call_transcribe(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _safe_filename
+# safe_filename
 # ---------------------------------------------------------------------------
 
 
 def test_safe_filename_strips_path_components():
-    from aug.api.interfaces.telegram.interface import _safe_filename
-
-    assert _safe_filename("../../etc/passwd") == "passwd"
-    assert _safe_filename("/absolute/path/file.txt") == "file.txt"
+    assert safe_filename("../../etc/passwd") == "passwd"
+    assert safe_filename("/absolute/path/file.txt") == "file.txt"
 
 
 def test_safe_filename_replaces_unsafe_chars():
-    from aug.api.interfaces.telegram.interface import _safe_filename
-
-    assert _safe_filename("my file (1).docx") == "my_file__1_.docx"
+    assert safe_filename("my file (1).docx") == "my_file__1_.docx"
 
 
 def test_safe_filename_preserves_safe_chars():
-    from aug.api.interfaces.telegram.interface import _safe_filename
-
-    assert _safe_filename("report-2026_final.pdf") == "report-2026_final.pdf"
+    assert safe_filename("report-2026_final.pdf") == "report-2026_final.pdf"
 
 
 def test_safe_filename_truncates_long_names():
-    from aug.api.interfaces.telegram.interface import _safe_filename
-
-    assert len(_safe_filename("a" * 300)) == 200
+    assert len(safe_filename("a" * 300)) == 200
 
 
 def test_safe_filename_empty_falls_back():
-    from aug.api.interfaces.telegram.interface import _safe_filename
-
-    assert _safe_filename("") == "file"
-    assert _safe_filename("...") == "file" or _safe_filename("...") == "..."
+    assert safe_filename("") == "file"
+    assert safe_filename("...") == "file"

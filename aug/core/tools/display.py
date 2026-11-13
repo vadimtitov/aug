@@ -5,6 +5,7 @@ format_tool() returns (label, args_preview) suitable for single-line display.
 """
 
 import re
+from pathlib import Path
 from urllib.parse import urlparse
 
 _ARG_TRUNCATE = 40
@@ -55,7 +56,7 @@ _REGISTRY: dict[str, tuple[str, object]] = {
     "gmail_read_thread": ("📧 Gmail", _first_arg),
     "gmail_send": ("📤 Send email", _first_arg),
     "gmail_draft": ("📝 Draft email", _first_arg),
-    "respond_with_file": ("📎 Send file", lambda a: str(a.get("filename", ""))),
+    "respond_with_file": ("📎 Send file", lambda a: Path(str(a.get("path", ""))).name),
     "generate_image": ("🖼️ Image", _first_arg),
     "edit_image": ("✏️ Edit image", _first_arg),
     "portainer_list_containers": ("🐳 Portainer", _first_arg),

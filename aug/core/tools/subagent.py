@@ -20,6 +20,7 @@ from aug.core.agents.base_agent import BaseAgent
 from aug.core.harness.types import (
     ApprovalRequested,
     ApprovalResolved,
+    FileEmitted,
     TextDelta,
     ToolEnded,
     ToolProgress,
@@ -74,8 +75,11 @@ def make_run_subagent_tool(subagent: BaseAgent) -> BaseTool:
                 match event:
                     case TextDelta(text=text) if text:
                         final_text += text
-                    case ToolStarted() | ToolProgress() | ToolEnded() if ctx is not None:
-                        # Re-parented onto this call: the user sees one nested block.
+                    case ToolStarted() | ToolProgress() | ToolEnded() | FileEmitted() if (
+                        ctx is not None
+                    ):
+                        # Re-parented onto this call: the user sees one nested block, and
+                        # gets the subagent's files.
                         await ctx.emit(replace(event, parent_id=None))
                     case ApprovalRequested() | ApprovalResolved() if ctx is not None:
                         await ctx.emit(event)

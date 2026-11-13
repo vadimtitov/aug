@@ -1,5 +1,6 @@
 """Skills tools — create, read, update and delete agentskills.io-compatible skill files."""
 
+import asyncio
 import logging
 import shutil
 from pathlib import Path
@@ -13,7 +14,7 @@ from aug.core.skill_deps import (
     read_pep723_deps,
     resolve_dependencies,
 )
-from aug.core.tools.output import FileAttachment, ToolOutput
+from aug.core.tools.respond_with_file import send_path
 from aug.utils.skills import ALWAYS_ON_MAX_CHARS, SKILLS_DIR, validate_name, write_skill_md
 
 logger = logging.getLogger(__name__)
@@ -36,17 +37,17 @@ def get_skill(name: str) -> str:
     return skill_md.read_text() + _bundled_scripts_note(skill_dir)
 
 
-@tool(response_format="content_and_artifact")
-def save_skill(
+@tool
+async def save_skill(
     name: str,
     description: str,
     body: str,
     always_on: bool = False,
-) -> tuple[str, ToolOutput]:
+) -> str:
     """Create or overwrite a skill's SKILL.md.
 
-    On success: returns the written SKILL.md as a file attachment. Pass it through to the user
-    as-is — do not summarise or paraphrase. The user verifies the file directly.
+    On success: the written SKILL.md is sent to the user as a file, so they can verify it
+    directly. Do not summarise or paraphrase it.
     On failure: returns an error string. Do not proceed if an error is returned.
 
     Args:
@@ -58,43 +59,39 @@ def save_skill(
                    Body must be ≤ 1000 chars. Use for short, universally relevant skills only.
     """
     if err := validate_name(name):
-        return err, ToolOutput(text=err)
+        return err
     if not description:
         msg = "Description must not be empty."
-        return msg, ToolOutput(text=msg)
+        return msg
     if len(description) > 1024:
         msg = f"Description must be ≤ 1024 characters (got {len(description)})."
-        return msg, ToolOutput(text=msg)
+        return msg
     if always_on and len(body) > ALWAYS_ON_MAX_CHARS:
         msg = (
             f"Body is too large for always_on ({len(body)} chars). "
             f"Shorten to {ALWAYS_ON_MAX_CHARS} chars or fewer, or pass always_on=False."
         )
-        return msg, ToolOutput(text=msg)
+        return msg
 
     skill_dir = SKILLS_DIR / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     write_skill_md(skill_dir, name, description, body, always_on)
-    content = (skill_dir / "SKILL.md").read_text()
-    output = ToolOutput(
-        text=f"Skill '{name}' saved.",
-        attachments=[FileAttachment(data=content.encode(), filename="SKILL.md")],
-    )
-    return f"Skill '{name}' saved.", output
+    await send_path(skill_dir / "SKILL.md")
+    return f"Skill '{name}' saved."
 
 
-@tool(response_format="content_and_artifact")
-def write_skill_file(
+@tool
+async def write_skill_file(
     skill_name: str,
     path: str,
     content: str,
     dependencies: list[str] | None = None,
-) -> tuple[str, ToolOutput]:
+) -> str:
     """Add or update a file inside an existing skill directory (scripts, references, assets).
 
     Do not use this for SKILL.md — use save_skill instead.
-    On success: returns the written file as an attachment. Pass it through to the user
-    as-is — do not summarise or paraphrase.
+    On success: the written file is sent to the user as a file. Do not summarise or
+    paraphrase it.
     On failure: returns an error string.
 
     Dependencies (Python scripts): when a `.py` script imports any third-party package, you
@@ -119,7 +116,7 @@ def write_skill_file(
     skill_dir = SKILLS_DIR / skill_name
     if not skill_dir.exists():
         msg = f"Skill '{skill_name}' not found. Create it with save_skill first."
-        return msg, ToolOutput(text=msg)
+        return msg
 
     # Resolve and validate path stays inside skill_dir
     try:
@@ -128,15 +125,15 @@ def write_skill_file(
         target.relative_to(skill_dir_resolved)  # raises ValueError if outside
     except ValueError:
         msg = f"Path '{path}' escapes the skill directory — not allowed."
-        return msg, ToolOutput(text=msg)
+        return msg
 
     if target == (skill_dir / "SKILL.md").resolve():
         msg = "Use save_skill to update SKILL.md."
-        return msg, ToolOutput(text=msg)
+        return msg
 
     if dependencies and target.suffix != ".py":
         msg = f"dependencies are only supported for Python (.py) scripts, not '{path}'."
-        return msg, ToolOutput(text=msg)
+        return msg
 
     # Enforce one obvious path: declared dependencies always go through the `dependencies`
     # parameter, never a hand-written PEP 723 block. This guarantees the tool owns the block
@@ -150,7 +147,7 @@ def write_skill_file(
             "pass the packages in the `dependencies` parameter instead — the tool writes the "
             "block and installs them for you. Call write_skill_file again."
         )
-        return msg, ToolOutput(text=msg)
+        return msg
 
     if dependencies is not None:
         content = inject_dependencies(content, dependencies)
@@ -158,12 +155,10 @@ def write_skill_file(
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content)
 
-    text = _write_message(skill_name, path, target)
-    output = ToolOutput(
-        text=text,
-        attachments=[FileAttachment(data=content.encode(), filename=Path(path).name)],
-    )
-    return text, output
+    # Installing declared dependencies shells out to uv: keep it off the event loop.
+    text = await asyncio.to_thread(_write_message, skill_name, path, target)
+    await send_path(target)
+    return text
 
 
 @tool

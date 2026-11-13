@@ -41,6 +41,7 @@ from aug.core.prompts import (
     HARNESS_TOOL_STOPPED_RESULT,
     HARNESS_TURN_STOPPED_NOTE,
     MID_RUN_INJECTION_PREFIX,
+    USER_FILE_HINT,
 )
 from aug.core.reflexes import Reflex, run_reflexes
 from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, MessageContent, run_registry
@@ -53,6 +54,9 @@ logger = logging.getLogger(__name__)
 # recursion_limit: the graph pauses after every tool round and each resume starts a
 # fresh step count, so a recursion_limit never binds across rounds.
 UNATTENDED_MAX_TOOL_ROUNDS = 10
+
+# Image types a model accepts inline; any other image (an SVG, say) is sent as a file.
+_MODEL_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
 
 class LangGraphHarness(Harness):
@@ -279,18 +283,21 @@ def _config(context_id: str) -> RunnableConfig:
 def _render(message: Message) -> str:
     """The text the model sees for *message*.
 
-    Images become ``[[img:path|mime]]`` markers, which the agent expands into image
-    blocks (or describes, for models without vision) when it calls the model.
+    Images become ``[[img:path|mime]]`` markers, which the agent expands into the image
+    and its path hint (or just the hint, for models without vision) on every model
+    call.  Other files are a hint with their path, so the agent can pass it to tools.
     """
     blocks = []
     for part in message.parts:
         match part:
             case TextPart(text=text):
                 blocks.append(text)
-            case FilePart(path=path, media_type=media_type) if media_type.startswith("image/"):
+            case FilePart(path=path, media_type=media_type) if media_type in _MODEL_IMAGE_TYPES:
                 blocks.append(f"[[img:{path}|{media_type}]]")
             case FilePart(path=path, media_type=media_type, filename=filename):
-                blocks.append(f"[File uploaded: {filename} ({media_type}) — saved to {path}]")
+                blocks.append(
+                    USER_FILE_HINT.format(filename=filename, media_type=media_type, path=path)
+                )
     return "\n\n".join(blocks)
 
 

@@ -1,9 +1,11 @@
 """The Harness contract, and LangGraphHarness on a real graph with a scripted model."""
 
 import asyncio
+import hashlib
 import json
 import time
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -23,6 +25,8 @@ from aug.core.harness import (
     ApprovalDecision,
     ApprovalRequested,
     ApprovalResolved,
+    FileEmitted,
+    FilePart,
     HarnessError,
     Message,
     Sender,
@@ -137,6 +141,36 @@ async def test_turn_is_written_to_the_conversation_transcript(transcripts) -> No
     assert records[1]["tool"] == "note"
     assert records[2]["text"] == "done"
     assert {r["context_id"] for r in records} == {"tg-1-0"}
+
+
+async def test_transcript_logs_files_both_ways_without_their_bytes(transcripts, tmp_path) -> None:
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"jpeg bytes")
+    chart = tmp_path / "chart.png"
+    chart.write_bytes(b"png bytes")
+    sent = FileEmitted(
+        file_id="0123456789abcdef", path=chart, media_type="image/png", filename="chart.png"
+    )
+    message = Message(
+        parts=[FilePart(path=photo, media_type="image/jpeg", filename="photo.jpg")],
+        sender=SENDER,
+    )
+
+    await _collect(ScriptedHarness([sent]).run(message, "tg-1-0", TURN))
+
+    raw = (transcripts / "tg-1.jsonl").read_text()
+    records = [json.loads(line) for line in raw.splitlines()]
+    [received] = records[0]["files"]
+    file_sent = next(r for r in records if r["event"] == "file_sent")
+    assert received == {
+        "path": str(photo),
+        "media_type": "image/jpeg",
+        "filename": "photo.jpg",
+        "size": 10,
+        "sha256": hashlib.sha256(b"jpeg bytes").hexdigest(),
+    }
+    assert (file_sent["filename"], file_sent["size"]) == ("chart.png", 9)
+    assert "jpeg bytes" not in raw and "png bytes" not in raw
 
 
 async def test_a_failing_transcript_never_fails_the_turn(transcripts) -> None:
@@ -573,6 +607,20 @@ def test_status_from_outside_a_tool_gets_no_parent() -> None:
 
     assert parse_event(raw) == StatusUpdate(text="🗜")
     assert parse_event(progress) == ToolProgress(text="step", parent_id="node-run")
+
+
+def test_a_file_sent_from_a_tool_belongs_to_that_tool(tmp_path) -> None:
+    file = FileEmitted(
+        file_id="0123456789abcdef", path=tmp_path / "x", media_type="text/plain", filename="x"
+    )
+    raw = {
+        "event": "on_custom_event",
+        "name": "aug_event",
+        "run_id": "tool-run",
+        "data": {"event": file},
+    }
+
+    assert parse_event(raw) == replace(file, parent_id="tool-run")
 
 
 async def test_oneshot_calls_the_agent_model() -> None:

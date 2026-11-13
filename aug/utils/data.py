@@ -6,7 +6,9 @@ from pathlib import Path
 
 DATA_DIR = Path("/app/data")
 MEMORY_DIR = DATA_DIR / "memory"
-UPLOADS_DIR = DATA_DIR / "uploads"
+# The agent's workspace: one folder per AUG install, kept across /clear.
+WORKSPACE_DIR = DATA_DIR / "workspace"
+FILES_DIR = WORKSPACE_DIR / "files"
 
 
 def read_data_file(name: str) -> str:

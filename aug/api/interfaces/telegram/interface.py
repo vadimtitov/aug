@@ -6,19 +6,21 @@ Polling runs as a background task started during FastAPI lifespan — no public
 URL or webhook registration needed. If TELEGRAM_BOT_TOKEN is not set the bot
 is silently disabled.
 
-Supported input types: text, voice (transcribed), audio, photos, stickers, documents, location.
+Supported input types: text, voice (transcribed), audio, photos and albums, video, video
+notes, animations, stickers, documents, location.
 """
 
 import asyncio
+import contextlib
 import io
 import logging
 import re
 import subprocess
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from html.parser import HTMLParser
-from pathlib import Path
+from typing import Any
 
 import markdown as md
 from telegram import (
@@ -44,14 +46,21 @@ from telegram.ext import (
     TypeHandler,
     filters,
 )
-from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt
+from tenacity import (
+    RetryCallState,
+    retry,
+    retry_if_exception_type,
+    retry_if_not_exception_type,
+    stop_after_attempt,
+)
 
 from aug.api.interfaces.base import (
     BaseInterface,
-    FileContent,
+    ContentPart,
     IncomingMessage,
     LocationContent,
     TextContent,
+    store_file,
 )
 from aug.api.interfaces.telegram.ssh import _SshMixin
 from aug.api.interfaces.telegram.utils import (
@@ -69,6 +78,7 @@ from aug.core.harness import (
     ApprovalRequest,
     ApprovalRequested,
     ApprovalResolved,
+    FileEmitted,
     HarnessEvent,
     StatusUpdate,
     TextDelta,
@@ -79,15 +89,14 @@ from aug.core.harness import (
     pending_approvals,
 )
 from aug.core.memory import run_deep_consolidation, run_light_consolidation
-from aug.core.prompts import build_system_prompt
+from aug.core.prompts import USER_FILE_TOO_LARGE, build_system_prompt
 from aug.core.registry import list_agents
 from aug.core.run import run_registry
 from aug.core.state import AgentState
 from aug.core.tools.approval import list_approvals, revoke_approval
 from aug.core.tools.display import format_tool
-from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
-from aug.utils.data import UPLOADS_DIR
 from aug.utils.file_settings import load_settings
+from aug.utils.media import guess_media_type
 from aug.utils.skills import SKILLS_DIR, load_skills
 from aug.utils.state import TelegramChatState, load_state, save_state
 
@@ -119,6 +128,8 @@ _APPROVAL_OUTCOMES = {
     ApprovalDecision.NO_USER: "❌ Not run — nobody was there to approve it.",
 }
 _APPROVAL_STOPPED = "⏹ Not run — stopped."
+_FILE_SEND_FAILED = "⚠️ Couldn't send {filename}."
+_PHOTO_TYPES = {"image/jpeg", "image/png", "image/webp"}
 _APPROVAL_GONE = "⚠️ This approval has already been resolved."
 
 
@@ -134,6 +145,40 @@ class _ToolEntry:
     stopped: bool = False  # cut short by /stop
 
 
+class _AlbumCollector:
+    """Holds an album's items until the album is complete.
+
+    Telegram delivers an album as one update per item, sharing a media_group_id, with
+    no marker on the last one.  Each new item restarts a short wait; once it passes
+    with nothing new, the items go to *on_album* together, in the order they were sent.
+    """
+
+    def __init__(
+        self, on_album: Callable[[list[Update]], Awaitable[None]], wait: float = 1.0
+    ) -> None:
+        self._on_album = on_album
+        self._wait = wait
+        self._items: dict[str, list[Update]] = {}
+        self._timers: dict[str, asyncio.Task[None]] = {}
+
+    def add(self, update: Update) -> None:
+        group = str(update.message.media_group_id)  # type: ignore[union-attr]
+        self._items.setdefault(group, []).append(update)
+        if (timer := self._timers.get(group)) is not None:
+            timer.cancel()
+        self._timers[group] = asyncio.create_task(self._fire(group))
+
+    async def _fire(self, group: str) -> None:
+        await asyncio.sleep(self._wait)
+        # From here on this album is closed: a straggler starts a new one.
+        self._timers.pop(group, None)
+        items = sorted(self._items.pop(group, []), key=lambda u: u.message.message_id)  # type: ignore[union-attr]
+        try:
+            await self._on_album(items)
+        except Exception:
+            logger.exception("album handling failed group=%s", group)
+
+
 _TG_MAX_LEN = MessageLimit.MAX_TEXT_LENGTH
 _SECRET_NAME, _SECRET_VALUE = range(2)
 # Chats where sendMessageDraft is not supported — learned at runtime, reset on restart
@@ -146,6 +191,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     def __init__(self) -> None:
         super().__init__()
         self._bot_app = None
+        self._albums = _AlbumCollector(self._handle_album)
 
     # ------------------------------------------------------------------
     # BaseInterface implementation
@@ -163,71 +209,12 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             return None
 
         context_id = get_context_id(chat_id, topic_id=msg.message_thread_id)
-        upload_dir = UPLOADS_DIR / context_id
 
-        parts = []
-        if msg.voice:
-            tg_file = await msg.voice.get_file()
-            data = bytes(await tg_file.download_as_bytearray())
-            fc = FileContent(
-                path=str(upload_dir / f"voice_{msg.voice.file_unique_id}.ogg"),
-                mime_type=msg.voice.mime_type or "audio/ogg",
-                transcribe=True,
-            )
-            await fc.write(data)
-            parts.append(fc)
-        elif msg.audio:
-            tg_file = await msg.audio.get_file()
-            data = bytes(await tg_file.download_as_bytearray())
-            filename = _safe_filename(msg.audio.file_name or f"audio_{msg.audio.file_unique_id}")
-            fc = FileContent(
-                path=str(upload_dir / filename),
-                mime_type=msg.audio.mime_type or "audio/mpeg",
-            )
-            await fc.write(data)
-            parts.append(fc)
-            if msg.caption:
-                parts.append(TextContent(text=msg.caption))
-        elif msg.photo:
-            tg_file = await msg.photo[-1].get_file()
-            data = bytes(await tg_file.download_as_bytearray())
-            fc = FileContent(
-                path=str(upload_dir / f"photo_{msg.photo[-1].file_unique_id}.jpg"),
-                mime_type="image/jpeg",
-            )
-            await fc.write(data)
-            parts.append(fc)
-            if msg.caption:
-                parts.append(TextContent(text=msg.caption))
-        elif msg.sticker:
-            tg_file = await msg.sticker.get_file()
-            data = bytes(await tg_file.download_as_bytearray())
-            if msg.sticker.is_video:
-                mime_type, ext = "video/webm", "webm"
-            elif msg.sticker.is_animated:
-                mime_type, ext = "application/x-tgsticker", "tgs"
-            else:
-                mime_type, ext = "image/webp", "webp"
-            fc = FileContent(
-                path=str(upload_dir / f"sticker_{msg.sticker.file_unique_id}.{ext}"),
-                mime_type=mime_type,
-            )
-            await fc.write(data)
-            parts.append(fc)
-            if msg.sticker.emoji:
+        parts: list[ContentPart] = []
+        if media := _media_of(msg):
+            parts.append(await _download(media))
+            if msg.sticker and msg.sticker.emoji:
                 parts.append(TextContent(text=f"[sticker: {msg.sticker.emoji}]"))
-        elif msg.document:
-            tg_file = await msg.document.get_file()
-            data = bytes(await tg_file.download_as_bytearray())
-            filename = _safe_filename(
-                msg.document.file_name or f"document_{msg.document.file_unique_id}"
-            )
-            fc = FileContent(
-                path=str(upload_dir / filename),
-                mime_type=msg.document.mime_type or "application/octet-stream",
-            )
-            await fc.write(data)
-            parts.append(fc)
             if msg.caption:
                 parts.append(TextContent(text=msg.caption))
         elif msg.location:
@@ -501,15 +488,17 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                     case ToolEnded(parent_id=parent_id) if parent_id is not None:
                         pass  # a subagent's tool: its line stays as it is
 
-                    case ToolEnded(id=run_id, output=output, error=error):
+                    case ToolEnded(id=run_id, error=error):
                         entry = run_id_to_entry.get(run_id)
                         if entry:
                             entry.done = True
                             entry.error = error
                             await _push_tool_draft()
-                        if isinstance(output, ToolOutput) and output.attachments:
-                            for attachment in output.attachments:
-                                await _send_attachment(msg, attachment)  # type: ignore[arg-type]
+
+                    case FileEmitted() as file:
+                        # Sent as soon as it is made, a subagent's included.
+                        topic_id = msg.message_thread_id  # type: ignore[union-attr]
+                        await _deliver_file(bot, chat_id, topic_id, file, silent=True)
 
                     case ApprovalRequested(id=approval_id, request=request):
                         prompt = await self._send_approval_prompt(msg, approval_id, request)  # type: ignore[arg-type]
@@ -727,7 +716,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         bot = self._bot_app.bot
 
         accumulated_text = ""
-        attachments: list[Attachment] = []
+        files: list[FileEmitted] = []
         use_draft = chat_id not in _no_draft_chats
         last_draft_time = 0.0
         stream_msg = None
@@ -788,10 +777,8 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                                 last_stream_edit = now + e.retry_after
                             except Exception:
                                 logger.debug("proactive stream edit failed", exc_info=True)
-                case ToolEnded(output=output, parent_id=None) if (
-                    isinstance(output, ToolOutput) and output.attachments
-                ):
-                    attachments.extend(output.attachments)
+                case FileEmitted() as file:
+                    files.append(file)
 
         if accumulated_text:
             for i, chunk in enumerate(_chunk(accumulated_text)):
@@ -832,25 +819,9 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                             chat_id,
                         )
 
-        for attachment in attachments:
-            data = io.BytesIO(attachment.data)
-            caption = attachment.caption or None
-            if isinstance(attachment, ImageAttachment):
-                await self._bot_app.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=data,
-                    caption=caption,
-                    message_thread_id=topic_id,
-                )
-            elif isinstance(attachment, FileAttachment):
-                data.name = attachment.filename
-                await self._bot_app.bot.send_document(
-                    chat_id=chat_id,
-                    document=data,
-                    caption=caption,
-                    filename=attachment.filename,
-                    message_thread_id=topic_id,
-                )
+        # After the text: a push reads as a message with its files attached.
+        for file in files:
+            await _deliver_file(bot, chat_id, topic_id, file, silent=False)
 
     async def _send_approval_prompt(
         self, msg: Message, approval_id: str, request: ApprovalRequest
@@ -947,6 +918,10 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         bot_app.add_handler(MessageHandler(filters.VOICE, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.AUDIO, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.PHOTO, self._handle_input))
+        bot_app.add_handler(MessageHandler(filters.VIDEO, self._handle_input))
+        bot_app.add_handler(MessageHandler(filters.VIDEO_NOTE, self._handle_input))
+        # Before documents: an animation message carries a document too.
+        bot_app.add_handler(MessageHandler(filters.ANIMATION, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.Document.ALL, self._handle_input))
         bot_app.add_handler(
             MessageHandler(
@@ -1011,7 +986,22 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     async def _handle_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message:
             return
+        if update.message.media_group_id:
+            self._albums.add(update)
+            return
         await self.run(update)
+
+    async def _handle_album(self, updates: list[Update]) -> None:
+        """An album's items, received together, become one message and one turn."""
+        received = await asyncio.gather(*(self.receive_message(u) for u in updates))
+        incoming = [m for m in received if m is not None]
+        if not incoming:
+            return
+        parts: list[ContentPart] = []
+        for message in incoming:
+            # Each item repeats a forward's "[Forwarded from …]"; keep it once.
+            parts.extend(p for p in message.parts if p not in parts)
+        await self.handle(incoming[0].model_copy(update={"parts": parts}), updates[0])
 
     async def _handle_live_location(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -1391,17 +1381,6 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
 # ---------------------------------------------------------------------------
 
 
-def _safe_filename(filename: str) -> str:
-    """Return a filesystem-safe version of *filename*.
-
-    Strips any path components (prevents traversal) and replaces characters
-    that could cause issues on Linux filesystems. Truncates to 200 chars.
-    """
-    name = Path(filename).name  # strip any directory components
-    safe = re.sub(r"[^\w.\-]", "_", name)
-    return safe[:200] if safe else "file"
-
-
 def _render_tool_lines(entries: list[_ToolEntry], spin_tick: int) -> str:
     """Render the rolling tool list as plain text.
 
@@ -1459,22 +1438,69 @@ async def _close_approval_prompt(prompt: Message, text: str) -> None:
         logger.debug("approval prompt edit failed", exc_info=True)
 
 
+async def _deliver_file(
+    bot, chat_id: int, topic_id: int | None, file: FileEmitted, *, silent: bool
+) -> None:
+    """Send *file*; if that fails, tell the chat instead of dropping it silently."""
+    try:
+        await _send_file(bot, chat_id, topic_id, file, silent=silent)
+    except Exception:
+        logger.warning(
+            "file send failed id=%s type=%s", file.file_id, file.media_type, exc_info=True
+        )
+        with contextlib.suppress(Exception):
+            await bot.send_message(
+                chat_id=chat_id,
+                text=_FILE_SEND_FAILED.format(filename=file.filename),
+                message_thread_id=topic_id,
+            )
+
+
 @retry(
-    retry=retry_if_exception_type((RetryAfter, TimedOut, NetworkError)),
+    # BadRequest is a NetworkError too, but resending what Telegram refused never helps.
+    retry=retry_if_exception_type((RetryAfter, TimedOut, NetworkError))
+    & retry_if_not_exception_type(BadRequest),
     stop=stop_after_attempt(3),
     wait=_flood_wait,
     reraise=True,
 )
-async def _send_attachment(msg, attachment: Attachment) -> None:
-    data = io.BytesIO(attachment.data)
-    caption = attachment.caption or None
-    if isinstance(attachment, ImageAttachment):
-        await msg.reply_photo(photo=data, caption=caption, disable_notification=True)
-    elif isinstance(attachment, FileAttachment):
-        data.name = attachment.filename
-        await msg.reply_document(
-            document=data, caption=caption, filename=attachment.filename, disable_notification=True
-        )
+async def _send_file(
+    bot, chat_id: int, topic_id: int | None, file: FileEmitted, *, silent: bool
+) -> None:
+    """Send *file* the way its media type shows best: as a photo, voice note, audio,
+    video, animation or document.  A file Telegram refuses in that form (a photo too
+    large, say) goes again as a document."""
+    data = await asyncio.to_thread(file.path.read_bytes)
+    method, field = _send_method(file.media_type)
+    kwargs = {
+        "chat_id": chat_id,
+        "caption": file.caption[: MessageLimit.CAPTION_LENGTH] or None,
+        "message_thread_id": topic_id,
+        "disable_notification": silent,
+        "filename": file.filename,
+    }
+    try:
+        await getattr(bot, method)(**{field: data}, **kwargs)
+    except BadRequest:
+        if method == "send_document":
+            raise
+        logger.info("%s refused id=%s, sending as a document", method, file.file_id)
+        await bot.send_document(document=data, **kwargs)
+
+
+def _send_method(media_type: str) -> tuple[str, str]:
+    """The Bot API method for *media_type*, and its file parameter."""
+    if media_type in _PHOTO_TYPES:
+        return "send_photo", "photo"
+    if media_type == "image/gif":
+        return "send_animation", "animation"
+    if media_type in ("audio/ogg", "audio/opus"):
+        return "send_voice", "voice"
+    if media_type.startswith("audio/"):
+        return "send_audio", "audio"
+    if media_type in ("video/mp4", "video/quicktime"):
+        return "send_video", "video"
+    return "send_document", "document"
 
 
 async def _typing_loop(
@@ -1656,3 +1682,62 @@ def _location_content(msg: Message) -> LocationContent:
         reported_at=reported.timestamp() if reported else None,
         sender_name=msg.from_user.full_name if msg.from_user else None,
     )
+
+
+@dataclass(frozen=True)
+class _Media:
+    """A file in a Telegram message: the object to download it from, and what it is."""
+
+    source: Any  # PhotoSize, Voice, Audio, Video, VideoNote, Animation, Sticker, Document
+    filename: str
+    mime_type: str
+    transcribe: bool = False
+
+
+def _media_of(msg: Message) -> _Media | None:
+    """The file *msg* carries, if any.  Animation comes before document: an animation
+    message carries both."""
+    if msg.voice:
+        return _Media(msg.voice, "voice.ogg", msg.voice.mime_type or "audio/ogg", transcribe=True)
+    if msg.audio:
+        return _Media(
+            msg.audio, msg.audio.file_name or "audio.mp3", msg.audio.mime_type or "audio/mpeg"
+        )
+    if msg.photo:
+        return _Media(msg.photo[-1], "photo.jpg", "image/jpeg")
+    if msg.video:
+        return _Media(
+            msg.video, msg.video.file_name or "video.mp4", msg.video.mime_type or "video/mp4"
+        )
+    if msg.video_note:
+        return _Media(msg.video_note, "video_note.mp4", "video/mp4")
+    if msg.animation:
+        name = msg.animation.file_name or "animation.mp4"
+        return _Media(msg.animation, name, msg.animation.mime_type or "video/mp4")
+    if msg.sticker:
+        if msg.sticker.is_video:
+            return _Media(msg.sticker, "sticker.webm", "video/webm")
+        if msg.sticker.is_animated:
+            return _Media(msg.sticker, "sticker.tgs", "application/x-tgsticker")
+        return _Media(msg.sticker, "sticker.webp", "image/webp")
+    if msg.document:
+        name = msg.document.file_name or "document"
+        mime = msg.document.mime_type
+        if not mime or mime == "application/octet-stream":
+            mime = guess_media_type(name)
+        return _Media(msg.document, name, mime)
+    return None
+
+
+async def _download(media: _Media) -> ContentPart:
+    """Download *media* into the inbox.  A file over the Bot API's download limit
+    becomes a note saying so, so the agent can tell the user."""
+    try:
+        tg_file = await media.source.get_file()
+    except BadRequest as e:
+        if "too big" not in str(e).lower():
+            raise
+        logger.info("telegram file too big to download name=%s", media.filename)
+        return TextContent(text=USER_FILE_TOO_LARGE.format(filename=media.filename))
+    data = bytes(await tg_file.download_as_bytearray())
+    return await store_file(data, media.filename, media.mime_type, transcribe=media.transcribe)

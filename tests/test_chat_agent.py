@@ -99,7 +99,7 @@ async def test_expand_images_inlines_marker_in_last_human_message(tmp_path):
     marker = f"[[img:{img_path}|image/jpeg]]"
 
     messages = [HumanMessage(content=marker)]
-    result = await _expand_images(messages)
+    result = await _expand_images(messages, vision=True)
 
     last = result[-1]
     assert isinstance(last.content, list)
@@ -116,7 +116,7 @@ async def test_expand_images_preserves_caption_text(tmp_path):
     Path(img_path).write_bytes(b"x")
     content = f"[[img:{img_path}|image/jpeg]]\n\nWhat do you see?"
 
-    result = await _expand_images([HumanMessage(content=content)])
+    result = await _expand_images([HumanMessage(content=content)], vision=True)
 
     last = result[-1]
     text_blocks = [b for b in last.content if b.get("type") == "text"]
@@ -124,22 +124,47 @@ async def test_expand_images_preserves_caption_text(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_expand_images_does_not_expand_historical_messages(tmp_path):
+async def test_expand_images_expands_every_message_the_same_way_each_call(tmp_path):
+    """History keeps its images: expanding all markers identically on every call keeps
+    the prompt prefix byte-stable, so the cache holds across turns."""
     img_path = str(tmp_path / "photo.jpg")
     Path(img_path).write_bytes(b"x")
     marker = f"[[img:{img_path}|image/jpeg]]"
+    first_turn = [HumanMessage(content=marker, id="h1"), AIMessage(content="I see a photo.")]
+    second_turn = [*first_turn, HumanMessage(content="follow up", id="h2")]
 
-    messages = [
-        HumanMessage(content=marker),  # historical
-        AIMessage(content="I see a photo."),
-        HumanMessage(content="follow up"),  # current (no marker)
-    ]
-    result = await _expand_images(messages)
+    before = await _expand_images(first_turn, vision=True)
+    after = await _expand_images(second_turn, vision=True)
 
-    # Historical message must remain unchanged
-    assert result[0].content == marker
-    # Current message has no marker, no change
-    assert result[2].content == "follow up"
+    assert before[0].content == after[0].content
+    assert any(b.get("type") == "image_url" for b in after[0].content)
+    assert after[2].content == "follow up"
+    assert first_turn[0].content == marker  # the stored history is untouched
+
+
+@pytest.mark.asyncio
+async def test_expand_images_hints_the_path_next_to_the_image(tmp_path):
+    img_path = str(tmp_path / "photo.jpg")
+    Path(img_path).write_bytes(b"x")
+
+    result = await _expand_images(
+        [HumanMessage(content=f"[[img:{img_path}|image/jpeg]]")], vision=True
+    )
+
+    texts = [b["text"] for b in result[0].content if b.get("type") == "text"]
+    assert f"[Image from user: {img_path}]" in texts
+
+
+@pytest.mark.asyncio
+async def test_expand_images_without_vision_gives_only_the_hint(tmp_path):
+    img_path = str(tmp_path / "photo.jpg")
+    Path(img_path).write_bytes(b"x")
+
+    result = await _expand_images(
+        [HumanMessage(content=f"[[img:{img_path}|image/jpeg]]")], vision=False
+    )
+
+    assert result[0].content == [{"type": "text", "text": f"[Image from user: {img_path}]"}]
 
 
 @pytest.mark.asyncio
@@ -147,7 +172,7 @@ async def test_expand_images_file_not_found_falls_back_to_text(tmp_path):
     missing = str(tmp_path / "gone.jpg")
     marker = f"[[img:{missing}|image/jpeg]]"
 
-    result = await _expand_images([HumanMessage(content=marker)])
+    result = await _expand_images([HumanMessage(content=marker)], vision=True)
 
     last = result[-1]
     assert isinstance(last.content, list)
@@ -158,8 +183,8 @@ async def test_expand_images_file_not_found_falls_back_to_text(tmp_path):
 @pytest.mark.asyncio
 async def test_expand_images_no_marker_returns_unchanged():
     messages = [HumanMessage(content="plain text")]
-    result = await _expand_images(messages)
-    assert result is messages  # same object, no copy made
+    result = await _expand_images(messages, vision=True)
+    assert result == messages
 
 
 # ---------------------------------------------------------------------------

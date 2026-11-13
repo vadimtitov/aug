@@ -8,6 +8,7 @@ One process, two surfaces:
   /bot<token>/<method>    a Telegram Bot API server.  AUG's bot points here through
                           TELEGRAM_BASE_URL; updates are queued by the runner and every
                           outgoing call is recorded.
+  /file/bot<token>/<id>   the files those updates carry, uploaded by the runner first.
   /control/...            what scripts/scenarios.py uses to drive and read both.
 
 How a reply is picked: the runner uploads ``scripts = {"s1": [step, step, ...]}``.  A
@@ -26,6 +27,8 @@ Run: ``python scripts/fakes.py`` (port 8081).
 """
 
 import asyncio
+import base64
+import io
 import json
 import re
 import time
@@ -34,12 +37,14 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from PIL import Image
 
 app = FastAPI()
 
 _BOT_USER = {"id": 999000, "is_bot": True, "first_name": "AUG", "username": "aug_fake_bot"}
 _SUMMARY = "Summary of the conversation so far (fake)."
+_FILE_HINT = re.compile(r"\[(?:Image|File) from user: [^\]]*\]")
 
 
 class _State:
@@ -53,6 +58,7 @@ class _State:
         self.call_ids = count(1)
         self.new_update = asyncio.Event()
         self.polled = False
+        self.files: dict[str, bytes] = {}
 
     def reset(self, scripts: dict[str, list[dict[str, Any]]]) -> None:
         # Keep the event and the poll flag: a long poll already waiting holds this event.
@@ -91,6 +97,14 @@ async def control_update(request: Request) -> dict:
     return {"update_id": update["update_id"]}
 
 
+@app.post("/control/telegram/file")
+async def control_file(request: Request) -> dict:
+    """Make *data* downloadable as Telegram file *file_id*."""
+    body = await request.json()
+    state.files[body["file_id"]] = base64.b64decode(body["data"])
+    return {"ok": True}
+
+
 @app.get("/control/telegram/calls")
 async def control_calls() -> list[dict]:
     return state.calls
@@ -127,6 +141,8 @@ async def chat_completions(request: Request):
             "step": step_index,
             "tools": bool(body.get("tools")),
             "roles": [m.get("role") for m in messages],
+            "images": [_image_summary(b) for m in messages for b in _blocks(m, "image_url")],
+            "hints": _hints(messages),
         }
     )
     if "error" in step:
@@ -153,6 +169,27 @@ def _match_script(messages: list[dict]) -> tuple[str | None, int]:
                 after = messages[i + 1 :]
                 return key, sum(1 for m in after if m.get("role") == "assistant")
     return None, 0
+
+
+def _blocks(message: dict, kind: str) -> list[dict]:
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+    return [b for b in content if isinstance(b, dict) and b.get("type") == kind]
+
+
+def _image_summary(block: dict) -> str:
+    """'WxH type' of an inline image: what the model was actually sent."""
+    url = block["image_url"]["url"]
+    media_type, data = url[len("data:") :].split(";base64,", 1)
+    width, height = Image.open(io.BytesIO(base64.b64decode(data))).size
+    return f"{width}x{height} {media_type}"
+
+
+def _hints(messages: list[dict]) -> list[str]:
+    """The file hints in the last user message."""
+    last = next((m for m in reversed(messages) if m.get("role") == "user"), None)
+    return _FILE_HINT.findall(_text_of(last.get("content"))) if last else []
 
 
 def _text_of(content: Any) -> str:
@@ -250,6 +287,13 @@ def _error_response(step: dict) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 
+@app.get("/file/bot{token}/{file_path:path}")
+async def file_download(token: str, file_path: str) -> Response:
+    if file_path not in state.files:
+        return Response(status_code=404)
+    return Response(state.files[file_path], media_type="application/octet-stream")
+
+
 @app.post("/bot{token}/{method}")
 async def bot_method(token: str, method: str, request: Request) -> dict:
     params = await _params(request)
@@ -307,6 +351,7 @@ def _result(method: str, params: dict) -> Any:
         "sendAudio",
         "sendVideo",
         "sendVoice",
+        "sendAnimation",
     ):
         message = _message(params, next(state.message_ids))
         params["_message_id"] = message["message_id"]
@@ -320,7 +365,14 @@ def _result(method: str, params: dict) -> Any:
             "icon_color": 0,
         }
     if method == "getFile":
-        return {"file_id": params.get("file_id"), "file_unique_id": "u", "file_path": "file.bin"}
+        file_id = params.get("file_id")
+        size = len(state.files.get(file_id, b""))
+        return {
+            "file_id": file_id,
+            "file_unique_id": file_id,
+            "file_path": file_id,
+            "file_size": size,
+        }
     return True
 
 

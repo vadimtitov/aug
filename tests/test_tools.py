@@ -8,8 +8,9 @@ from unittest.mock import patch
 
 import pytest
 
+from aug.core.tools.blocked_paths import command_block_reason
 from aug.core.tools.note import note
-from aug.core.tools.run_bash import _WRAPPER, _check_blacklist, run_bash
+from aug.core.tools.run_bash import _WRAPPER, run_bash
 from aug.utils.file_settings import AppSettings, BashToolSettings, ToolSettings
 
 
@@ -65,28 +66,31 @@ def test_note_description_no_skill_update_instruction() -> None:
 # ---------------------------------------------------------------------------
 
 
+_BLACKLIST_SETTINGS = "aug.core.tools.blocked_paths.load_settings"
+
+
 def test_blacklist_allows_clean_command() -> None:
-    with patch("aug.core.tools.run_bash.load_settings", return_value=_bash_settings(["rm -rf"])):
-        assert _check_blacklist("ls -la") is None
+    with patch(_BLACKLIST_SETTINGS, return_value=_bash_settings(["rm -rf"])):
+        assert command_block_reason("ls -la") is None
 
 
 def test_blacklist_blocks_matching_command() -> None:
-    with patch("aug.core.tools.run_bash.load_settings", return_value=_bash_settings([r"rm\s+-rf"])):
-        result = _check_blacklist("rm -rf /")
+    with patch(_BLACKLIST_SETTINGS, return_value=_bash_settings([r"rm\s+-rf"])):
+        result = command_block_reason("rm -rf /")
         assert result is not None
         assert "blacklist" in result.lower()
 
 
 def test_blacklist_empty_by_default() -> None:
-    with patch("aug.core.tools.run_bash.load_settings", return_value=_bash_settings([])):
-        assert _check_blacklist("anything") is None
+    with patch(_BLACKLIST_SETTINGS, return_value=_bash_settings([])):
+        assert command_block_reason("anything") is None
 
 
 def test_blacklist_uses_regex() -> None:
     pattern = [r"DROP\s+TABLE"]
-    with patch("aug.core.tools.run_bash.load_settings", return_value=_bash_settings(pattern)):
-        assert _check_blacklist("DROP TABLE users") is not None
-        assert _check_blacklist("drop table users") is None  # case-sensitive
+    with patch(_BLACKLIST_SETTINGS, return_value=_bash_settings(pattern)):
+        assert command_block_reason("DROP TABLE users") is not None
+        assert command_block_reason("drop table users") is None  # case-sensitive
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +107,7 @@ def fake_hushed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     script.write_text('#!/bin/sh\nshift 2\nexec "$@"\n')
     script.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-    with patch("aug.core.tools.run_bash.load_settings", return_value=_bash_settings([])):
+    with patch(_BLACKLIST_SETTINGS, return_value=_bash_settings([])):
         yield tmp_path
 
 

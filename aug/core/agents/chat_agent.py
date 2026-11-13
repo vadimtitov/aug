@@ -13,7 +13,12 @@ from langchain_core.tools import BaseTool
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.compaction import compact_messages, count_tokens
 from aug.core.llm import build_chat_model
-from aug.core.prompts import IMAGE_DESCRIPTION_SYSTEM_NOTE, INTERFACE_PROMPTS, build_system_prompt
+from aug.core.prompts import (
+    IMAGE_DESCRIPTION_SYSTEM_NOTE,
+    INTERFACE_PROMPTS,
+    USER_IMAGE_HINT,
+    build_system_prompt,
+)
 from aug.core.reflexes import Reflex
 from aug.core.state import AgentState, AgentStateUpdate
 from aug.core.tools.describe_image import make_describe_image_tool
@@ -102,8 +107,7 @@ class ChatAgent(BaseAgent):
             )
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
-        if not self._vision_description_model:
-            messages = await _expand_images(messages)
+        messages = await _expand_images(messages, vision=not self._vision_description_model)
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
         response: AIMessage = await self._llm.ainvoke(messages)
         log_token_usage(response)
@@ -219,8 +223,7 @@ class AugAgent(BaseAgent):
             )
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
-        if not self._vision_description_model:
-            messages = await _expand_images(messages)
+        messages = await _expand_images(messages, vision=not self._vision_description_model)
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
         response: AIMessage = await self._llm.ainvoke(messages)
         log_token_usage(response)
@@ -237,42 +240,37 @@ def _stamp(content: str | list, now: str) -> str | list:
 _IMG_TAG = re.compile(r"\[\[img:([^|]+)\|([^\]]+)\]\]")
 
 
-async def _expand_images(messages: list[AnyMessage]) -> list[AnyMessage]:
-    """Re-inline [[img:path|mime]] markers in the last HumanMessage as image_url blocks.
+async def _expand_images(messages: list[AnyMessage], *, vision: bool) -> list[AnyMessage]:
+    """Expand the [[img:path|mime]] markers in every user message for the model call.
 
-    Markers in historical messages are left as plain text so the LLM understands
-    an image was present without re-sending the binary data on every turn.
+    With *vision* each marker becomes the image itself plus a hint with its path;
+    without, only the hint (the agent then has describe_image).  History keeps the
+    markers, and every call expands all of them the same way, re-reading each image
+    from its path, so the prompt prefix stays byte-identical and cached from turn to
+    turn.
     """
-    last_human_idx = max(
-        (i for i, m in enumerate(messages) if isinstance(m, HumanMessage)),
-        default=None,
-    )
-    if last_human_idx is None:
-        return messages
-    msg = messages[last_human_idx]
-    blocks = await _inline_image_markers(msg.content)
-    if blocks is None:
-        return messages
     result = list(messages)
-    result[last_human_idx] = HumanMessage(content=blocks, id=msg.id)
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, HumanMessage):
+            continue
+        blocks = await _inline_image_markers(msg.content, vision)
+        if blocks is not None:
+            result[i] = HumanMessage(content=blocks, id=msg.id)
     return result
 
 
-async def _inline_image_markers(content: str | list) -> list | None:
-    """Expand [[img:path|mime]] markers into image_url blocks.
-
-    Returns None when no markers are found (caller can skip the copy).
-    """
+async def _inline_image_markers(content: str | list, vision: bool) -> list | None:
+    """*content* with its markers expanded, or None when it has none."""
     if isinstance(content, str):
         if not _IMG_TAG.search(content):
             return None
-        return await _markers_to_blocks(content)
+        return await _markers_to_blocks(content, vision)
     if isinstance(content, list):
         expanded = []
         changed = False
         for block in content:
             if block.get("type") == "text" and _IMG_TAG.search(block["text"]):
-                expanded.extend(await _markers_to_blocks(block["text"]))
+                expanded.extend(await _markers_to_blocks(block["text"], vision))
                 changed = True
             else:
                 expanded.append(block)
@@ -280,7 +278,7 @@ async def _inline_image_markers(content: str | list) -> list | None:
     return None
 
 
-async def _markers_to_blocks(text: str) -> list:
+async def _markers_to_blocks(text: str, vision: bool) -> list:
     """Split a string containing [[img:path|mime]] markers into content blocks."""
     blocks = []
     pos = 0
@@ -289,15 +287,18 @@ async def _markers_to_blocks(text: str) -> list:
         if before:
             blocks.append({"type": "text", "text": before})
         path, mime_type = m.group(1), m.group(2)
-        try:
-            data = await asyncio.to_thread(Path(path).read_bytes)
+        if vision:
+            try:
+                data = await asyncio.to_thread(Path(path).read_bytes)
+            except FileNotFoundError:
+                blocks.append({"type": "text", "text": f"[Image not found: {path}]"})
+                pos = m.end()
+                continue
             encoded = base64.b64encode(data).decode()
             blocks.append(
                 {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}}
             )
-            blocks.append({"type": "text", "text": f"[Image: {path}]"})
-        except FileNotFoundError:
-            blocks.append({"type": "text", "text": f"[Image not found: {path}]"})
+        blocks.append({"type": "text", "text": USER_IMAGE_HINT.format(path=path)})
         pos = m.end()
     after = text[pos:].strip()
     if after:

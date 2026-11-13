@@ -57,7 +57,6 @@ from aug.utils.db import create_pool, set_pool
 from aug.utils.logging import configure_logging, set_correlation_id
 from aug.utils.ratelimit import RateLimiter
 from aug.utils.scheduler import start_scheduler, stop_scheduler
-from aug.utils.storage import LocalFileStorage
 
 logger = logging.getLogger(__name__)
 
@@ -148,9 +147,6 @@ async def lifespan(app: FastAPI):
     dsn = re.sub(r"^postgresql\+asyncpg://", "postgresql://", get_settings().DATABASE_URL)
     async with _checkpointer_context(dsn) as checkpointer:
         app.state.checkpointer = checkpointer
-
-        # File storage
-        app.state.storage = LocalFileStorage()
 
         # OAuth — provider registry, and the transport the flow uses (None = default).
         app.state.oauth_providers = ProviderRegistry(PROVIDERS_FILE)

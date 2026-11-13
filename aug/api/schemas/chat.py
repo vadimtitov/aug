@@ -4,8 +4,10 @@ from pydantic import BaseModel, Field
 
 
 class Attachment(BaseModel):
-    file_id: str
-    mime_type: str | None = None
+    file_id: str = Field(..., description="The file_id POST /files/upload returned.")
+    mime_type: str | None = Field(
+        default=None, description="Ignored: the type recorded at upload is used."
+    )
 
 
 class ChatRequest(BaseModel):
@@ -27,11 +29,22 @@ class ToolCallInfo(BaseModel):
     output: dict | None = None
 
 
+class ChatFile(BaseModel):
+    """A file the agent sent; the same fields as the ``file`` SSE event."""
+
+    id: str
+    filename: str
+    media_type: str
+    caption: str = ""
+    url: str = Field(..., description="Where to download it: GET, with the API key.")
+
+
 class ChatResponse(BaseModel):
     context_id: str
     agent: str
     response: str
     tool_calls: list[ToolCallInfo] = Field(default_factory=list)
+    files: list[ChatFile] = Field(default_factory=list)
 
 
 class ApprovalAnswer(BaseModel):

@@ -24,7 +24,7 @@ def _mock_openai_response_b64(data: bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
 
 
 @pytest.mark.asyncio
-async def test_generate_image_success():
+async def test_generate_image_success(sent_files):
     response, img_bytes = _mock_openai_response_b64()
 
     mock_openai = AsyncMock()
@@ -35,12 +35,14 @@ async def test_generate_image_success():
         result = await _invoke("a red cat")
 
     assert "a red cat" in result.content
-    assert result.artifact.attachments
-    assert result.artifact.attachments[0].data == img_bytes
+    assert len(sent_files) == 1
+    assert sent_files[0].media_type == "image/png"
+    assert sent_files[0].path.read_bytes() == img_bytes
+    assert str(sent_files[0].path) in result.content  # so the agent can edit it later
 
 
 @pytest.mark.asyncio
-async def test_generate_image_openai_error():
+async def test_generate_image_openai_error(sent_files):
     mock_openai = AsyncMock()
     mock_openai.images = AsyncMock()
     mock_openai.images.generate = AsyncMock(side_effect=Exception("model not found"))
@@ -49,11 +51,11 @@ async def test_generate_image_openai_error():
         result = await _invoke("a blue dog")
 
     assert "failed" in result.content.lower()
-    assert not result.artifact.attachments
+    assert not sent_files
 
 
 @pytest.mark.asyncio
-async def test_generate_image_no_data():
+async def test_generate_image_no_data(sent_files):
     response = MagicMock()
     response.data = []
 
@@ -65,4 +67,4 @@ async def test_generate_image_no_data():
         result = await _invoke("empty")
 
     assert "did not return" in result.content.lower()
-    assert not result.artifact.attachments
+    assert not sent_files

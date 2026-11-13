@@ -15,6 +15,8 @@ change" becomes a diff, not a belief.
 
 import argparse
 import asyncio
+import base64
+import io
 import json
 import re
 import shutil
@@ -25,6 +27,10 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from PIL import Image
+from pillow_heif import register_heif_opener
+
+register_heif_opener()
 
 AUG = "http://localhost:8013"
 FAKES = "http://localhost:8091"
@@ -32,6 +38,16 @@ API_KEY = "scenarios"
 USER_ID = 111  # also the DM chat id; matches TELEGRAM_ALLOWED_CHAT_IDS in the compose file
 QUIET_SECONDS = 2.5
 _ANIMATION = ("sendMessageDraft", "sendChatAction")  # repeats while a tool runs
+_SENT_FILE = {
+    "sendPhoto": "photo",
+    "sendDocument": "document",
+    "sendAudio": "audio",
+    "sendVoice": "voice",
+    "sendVideo": "video",
+    "sendAnimation": "animation",
+}
+# Files the scripted agent sends in S10, under the data dir (/app/data in the container).
+FIXTURES = "/app/data/fixtures"
 
 SCRIPTS: dict[str, list[dict[str, Any]]] = {
     "s1": [{"text": "Hello from the scripted agent."}],
@@ -62,6 +78,24 @@ SCRIPTS: dict[str, list[dict[str, Any]]] = {
     "s7b": [{"error": 400, "code": "context_length_exceeded"}],
     "s7c": [{"error": 401}],
     "s8": [{"text": "Scheduled reminder text."}],
+    "s9a": [{"text": "Nice photo."}],
+    "s9b": [{"text": "Converted the HEIC."}],
+    "s9c": [{"text": "Three photos."}],
+    "s9d": [{"text": "Heard you."}],
+    "s9e": [{"text": "Got the PDF."}],
+    "s9f": [{"text": "Got the video."}],
+    "s9r": [{"text": "Saw the attachment."}],
+    "s10": [
+        {"tool": "respond_with_file", "args": {"path": f"{FIXTURES}/chart.png", "caption": "Q3"}},
+        {"tool": "respond_with_file", "args": {"path": f"{FIXTURES}/report.pdf"}},
+        {"tool": "respond_with_file", "args": {"path": f"{FIXTURES}/clip.mp3"}},
+        {"tool": "respond_with_file", "args": {"path": "/app/data/settings.json"}},
+        {"text": "Sent three files."},
+    ],
+    "s10r": [
+        {"tool": "respond_with_file", "args": {"path": f"{FIXTURES}/report.pdf"}},
+        {"text": "Report attached."},
+    ],
 }
 
 
@@ -146,6 +180,31 @@ async def s8_push(d: "Driver") -> None:
     await d.quiet()
 
 
+async def s9_files_in(d: "Driver") -> None:
+    await d.tg_photo(_image((3000, 2000), "JPEG"), caption="what is this #s9a")
+    await d.quiet()
+    await d.tg_document(_image((4032, 3024), "HEIF"), "IMG_0042.HEIC", "image/heic", "#s9b")
+    await d.quiet()
+    colours = ((200, 0, 0), (0, 200, 0), (0, 0, 200))
+    album = [_image((800, 600), "JPEG", colour) for colour in colours]
+    await d.tg_album(album, caption="our trip #s9c")
+    await d.quiet()
+    await d.tg_voice(b"OggS fake voice", caption="#s9d")
+    await d.quiet()
+    await d.tg_document(b"%PDF-1.4 fake", "invoice.pdf", "application/pdf", "#s9e")
+    await d.quiet()
+    await d.tg_video(b"fake mp4", caption="#s9f")
+    await d.quiet()
+    file_id = await d.rest_upload(_image((1000, 1000), "PNG"), "diagram.png", "image/png")
+    await d.rest_stream("look at this #s9r", context="rest-s9", attachments=[file_id])
+
+
+async def s10_files_out(d: "Driver") -> None:
+    await d.tg_text("send me the files #s10")
+    await d.quiet()
+    await d.rest_stream("report over rest #s10r", context="rest-s10", download=True)
+
+
 SCENARIOS: dict[str, Callable[["Driver"], Awaitable[None]]] = {
     "s1": s1_reply,
     "s2": s2_tool,
@@ -155,6 +214,8 @@ SCENARIOS: dict[str, Callable[["Driver"], Awaitable[None]]] = {
     "s6": s6_compact_clear,
     "s7": s7_errors,
     "s8": s8_push,
+    "s9": s9_files_in,
+    "s10": s10_files_out,
 }
 
 
@@ -188,6 +249,65 @@ class Driver:
                 {"type": "bot_command", "offset": 0, "length": len(text.split()[0])}
             ]
         await self._fake("POST", "/control/telegram/update", json={"message": message})
+
+    async def tg_photo(self, data: bytes, caption: str = "", group: str = "") -> None:
+        width, height = Image.open(io.BytesIO(data)).size
+        file_id = await self._tg_file(data)
+        photo = [{"file_id": file_id, "file_unique_id": file_id, "width": width, "height": height}]
+        self.lines.append(f"> tg photo {width}x{height}: {caption}")
+        await self._tg_media({"photo": photo}, caption, group)
+
+    async def tg_album(self, photos: list[bytes], caption: str) -> None:
+        """An album: one update per photo, the caption on the first, as Telegram sends it."""
+        self.lines.append(f"> tg album of {len(photos)}")
+        for i, data in enumerate(photos):
+            await self.tg_photo(data, caption if i == 0 else "", group="album-1")
+
+    async def tg_document(self, data: bytes, filename: str, mime_type: str, caption: str) -> None:
+        file_id = await self._tg_file(data)
+        document = {
+            "file_id": file_id,
+            "file_unique_id": file_id,
+            "file_name": filename,
+            "mime_type": mime_type,
+        }
+        self.lines.append(f"> tg document {filename} ({mime_type}): {caption}")
+        await self._tg_media({"document": document}, caption)
+
+    async def tg_voice(self, data: bytes, caption: str) -> None:
+        file_id = await self._tg_file(data)
+        voice = {
+            "file_id": file_id,
+            "file_unique_id": file_id,
+            "duration": 2,
+            "mime_type": "audio/ogg",
+        }
+        self.lines.append(f"> tg voice: {caption}")
+        await self._tg_media({"voice": voice}, caption)
+
+    async def tg_video(self, data: bytes, caption: str) -> None:
+        file_id = await self._tg_file(data)
+        video = {
+            "file_id": file_id,
+            "file_unique_id": file_id,
+            "width": 640,
+            "height": 360,
+            "duration": 3,
+            "file_name": "clip.mp4",
+            "mime_type": "video/mp4",
+        }
+        self.lines.append(f"> tg video: {caption}")
+        await self._tg_media({"video": video}, caption)
+
+    async def rest_upload(self, data: bytes, filename: str, mime_type: str) -> str:
+        response = await self._client.post(
+            f"{AUG}/files/upload",
+            headers={"X-API-Key": API_KEY},
+            files={"file": (filename, data, mime_type)},
+        )
+        body = response.json()
+        self.lines.append(f"> rest upload {filename}: {response.status_code} {body['mime_type']}")
+        return body["file_id"]
 
     async def tg_press(self, label: str, on: str = "") -> None:
         """Press the most recent inline button whose label contains *label*, on a message
@@ -229,10 +349,21 @@ class Driver:
         )
         self.lines.append(f"< push status {response.status_code}")
 
-    async def rest_stream(self, message: str, context: str, approve: str = "") -> None:
-        """Stream a REST turn, answering each approval_requested frame with *approve*."""
+    async def rest_stream(
+        self,
+        message: str,
+        context: str,
+        approve: str = "",
+        attachments: list[str] | None = None,
+        download: bool = False,
+    ) -> None:
+        """Stream a REST turn, answering each approval_requested frame with *approve*,
+        and fetching each file frame's url when *download*."""
         self.lines.append(f"> rest: {message}")
-        body = {"message": message, self._id_field: context, "agent": "scripted"}
+        body: dict[str, Any] = {"message": message, self._id_field: context, "agent": "scripted"}
+        if attachments:
+            body["attachments"] = [{"file_id": f} for f in attachments]
+        urls: list[str] = []
         async with self._client.stream(
             "POST", f"{AUG}/chat/stream", headers={"X-API-Key": API_KEY}, json=body, timeout=60
         ) as response:
@@ -248,7 +379,19 @@ class Driver:
                     self.lines.append(f"< sse {event}: {_normalise(data)}")
                     if event == "approval_requested" and approve:
                         await self._rest_approve(context, json.loads(data)["id"], approve)
+                    if event == "file":
+                        urls.append(json.loads(data)["url"])
+        for url in urls if download else []:
+            await self._rest_download(url)
         await self._llm_lines()
+
+    async def _rest_download(self, url: str) -> None:
+        anonymous = await self._client.get(f"{AUG}{url}")
+        response = await self._client.get(f"{AUG}{url}", headers={"X-API-Key": API_KEY})
+        self.lines.append(
+            f"< download without key {anonymous.status_code}; with key {response.status_code} "
+            f"{response.headers.get('content-type')} {len(response.content)} bytes"
+        )
 
     async def _rest_approve(self, context: str, approval_id: str, decision: str) -> None:
         self.lines.append(f"> rest approve: {decision}")
@@ -296,11 +439,13 @@ class Driver:
         order: list[int] = []
         for call in new:
             method, params = call["method"], call["params"]
-            if method in ("sendMessage", "sendPhoto", "sendDocument"):
+            if method == "sendMessage" or method in _SENT_FILE:
                 mid = params["_message_id"]
-                messages[mid] = {
-                    "text": params.get("text") or f"[{method}] {params.get('caption', '')}"
-                }
+                text = params.get("text") or ""
+                if method in _SENT_FILE:
+                    sent = params.get(_SENT_FILE[method], "")
+                    text = f"[{method} {sent}] {params.get('caption', '')}".rstrip()
+                messages[mid] = {"text": text}
                 messages[mid]["markup"] = params.get("reply_markup")
                 messages[mid]["silent"] = params.get("disable_notification")
                 order.append(mid)
@@ -335,6 +480,30 @@ class Driver:
         for r in new:
             kind = f"{r['script']}[{r['step']}]" if r["tools"] else "no-tools"
             self.lines.append(f"  llm {kind}: {','.join(r['roles'])}")
+            if r.get("images"):
+                self.lines.append(f"    images: {', '.join(r['images'])}")
+            for hint in r.get("hints", []):
+                self.lines.append(f"    hint: {_normalise(hint)}")
+
+    async def _tg_file(self, data: bytes) -> str:
+        file_id = f"f{next(self._message_ids)}"
+        payload = {"file_id": file_id, "data": base64.b64encode(data).decode()}
+        await self._fake("POST", "/control/telegram/file", json=payload)
+        return file_id
+
+    async def _tg_media(self, media: dict[str, Any], caption: str, group: str = "") -> None:
+        message: dict[str, Any] = {
+            "message_id": next(self._message_ids),
+            "date": int(time.time()),
+            "chat": {"id": USER_ID, "type": "private"},
+            "from": {"id": USER_ID, "is_bot": False, "first_name": "Tester"},
+            **media,
+        }
+        if caption:
+            message["caption"] = caption
+        if group:
+            message["media_group_id"] = group
+        await self._fake("POST", "/control/telegram/update", json={"message": message})
 
     async def _calls(self) -> list[dict]:
         return (await self._fake("GET", "/control/telegram/calls")).json()
@@ -346,6 +515,12 @@ class Driver:
         response = await self._client.request(method, f"{FAKES}{path}", **kwargs)
         response.raise_for_status()
         return response
+
+
+def _image(size: tuple[int, int], fmt: str, colour: tuple[int, int, int] = (90, 140, 200)) -> bytes:
+    out = io.BytesIO()
+    Image.new("RGB", size, colour).save(out, format=fmt)
+    return out.getvalue()
 
 
 def _buttons(markup: Any) -> str:
@@ -364,6 +539,12 @@ def _normalise(text: str) -> str:
     text = re.sub(r"\b[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", "<uuid>", text)
     text = re.sub(r"\bap:[0-9a-f]{12}:", "ap:<id>:", text)
     text = re.sub(r'"id": "[0-9a-f]{12}"', '"id": "<id>"', text)
+    text = re.sub(r'"id": "[0-9a-f]{16}"', '"id": "<file id>"', text)
+    text = re.sub(r"/files/[0-9a-f]{16}/", "/files/<file id>/", text)
+    # Stored files: /app/data/workspace/files/inbox/2026-11/<id>-name → <inbox>/name
+    text = re.sub(
+        r"/app/data/workspace/files/(inbox|outbox)/\d{4}-\d{2}/[0-9a-f]{16}-", r"<\1>/", text
+    )
     return text.replace("\n", "\\n")
 
 
@@ -379,6 +560,11 @@ def seed(data_dir: Path) -> None:
     data_dir.mkdir(parents=True)
     conversations = {f"tg-{USER_ID}": {"agent": "scripted"}}
     (data_dir / "settings.json").write_text(json.dumps({"conversations": conversations}, indent=2))
+    fixtures = data_dir / "fixtures"
+    fixtures.mkdir()
+    (fixtures / "chart.png").write_bytes(_image((640, 480), "PNG"))
+    (fixtures / "report.pdf").write_bytes(b"%PDF-1.4 fake report")
+    (fixtures / "clip.mp3").write_bytes(b"ID3 fake audio")
 
 
 async def run(out: Path, only: list[str] | None, id_field: str) -> int:
