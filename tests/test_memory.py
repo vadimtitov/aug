@@ -26,13 +26,13 @@ def test_init_does_not_create_memory_md(tmp_path: Path) -> None:
     assert not (memory_dir / "memory.md").exists()
 
 
-def test_init_self_md_has_content(tmp_path: Path) -> None:
+def test_init_self_md_starts_empty(tmp_path: Path) -> None:
+    # The persona a fresh install runs with is the workspace's AGENTS.md template.
     memory_dir = tmp_path / "memory"
     with patch("aug.core.memory.MEMORY_DIR", memory_dir):
         init_memory_files()
 
-    content = (memory_dir / "self.md").read_text()
-    assert len(content.strip()) > 0
+    assert (memory_dir / "self.md").read_text() == ""
 
 
 def test_init_context_md_has_sections(tmp_path: Path) -> None:

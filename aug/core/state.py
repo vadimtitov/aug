@@ -13,15 +13,18 @@ class AgentState(BaseModel):
     messages:      Full conversation history, managed by LangGraph's
                    add_messages reducer (appends rather than replaces).
     thread_id:     Opaque identifier propagated from the API layer.
-    system_prompt: Built dynamically by preprocess(); read by respond().
-                   Empty by default — respond() skips it if not set.
+    session_prompt: The system prompt, built by preprocess() on a session's first turn
+                   and kept for the rest of it, so the cached prefix never changes
+                   mid-chat.  None until then.  It must default to None: LangGraph
+                   writes every non-None field a node returns, so an "" default would
+                   wipe it on the next node.
     interface:     The frontend surface ("telegram", "rest_api", "webhook", …).
                    Used to look up interface-specific prompts at runtime.
     """
 
     messages: Annotated[list[AnyMessage], add_messages] = []
     thread_id: str = ""
-    system_prompt: str = ""
+    session_prompt: str | None = None
     interface: str = ""
 
     def model_dump(self, **kwargs):

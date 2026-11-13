@@ -43,7 +43,7 @@ from aug.core.browser_view import BrowserViewHub
 from aug.core.dispatch import broadcast, deliver_unsolicited, fire_push
 from aug.core.mcp.manager import MCPManager, McpOperationOutcome
 from aug.core.mcp.manager import set_manager as set_mcp_manager
-from aug.core.memory import init_memory_files, start_consolidation_scheduler
+from aug.core.memory import start_consolidation_scheduler
 from aug.core.oauth.providers import PROVIDERS_FILE, ProviderRegistry
 from aug.core.registry import (
     configure_harnesses,
@@ -52,6 +52,7 @@ from aug.core.registry import (
     v12_base_tool_names,
 )
 from aug.core.skill_deps import warm_all_skills
+from aug.core.workspace import init_workspace
 from aug.utils.app_ref import set_app
 from aug.utils.db import create_pool, set_pool
 from aug.utils.logging import configure_logging, set_correlation_id
@@ -135,7 +136,7 @@ async def lifespan(app: FastAPI):
     """Manage startup and shutdown of shared resources."""
     configure_logging(debug=get_settings().DEBUG)
     logger.info("AUG %s starting up…", get_settings().APP_VERSION)
-    init_memory_files()
+    init_workspace()
 
     # Database pool
     pool = await create_pool(get_settings().DATABASE_URL)

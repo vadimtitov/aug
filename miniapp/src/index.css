@@ -762,12 +762,6 @@ input, select, textarea {
   flex-shrink: 0;
 }
 
-.skill-badge--always-on {
-  background: rgba(245, 158, 11, 0.15);
-  color: var(--brand);
-  border: 1px solid rgba(245, 158, 11, 0.3);
-}
-
 .skill-badge--installed {
   background: rgba(52, 199, 89, 0.15);
   color: #34c759;

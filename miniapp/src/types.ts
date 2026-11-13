@@ -1,7 +1,6 @@
 export interface SkillSummary {
   name: string;
   description: string;
-  always_on: boolean;
   file_count: number;
 }
 
@@ -9,7 +8,6 @@ export interface SkillDetail {
   name: string;
   description: string;
   body: string;
-  always_on: boolean;
   files: string[];
 }
 

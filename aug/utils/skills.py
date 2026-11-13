@@ -1,23 +1,20 @@
-"""Skills loader — reads agentskills.io-compatible skill directories from DATA_DIR/skills/.
+"""Skills loader — reads agentskills.io-compatible skill directories from workspace/skills/.
 
-Each skill is a directory containing a SKILL.md file with YAML frontmatter.
-AUG extension: metadata.always_on=true causes full content to be injected into every
-system prompt. All other skills appear only as a one-line index entry.
+Each skill is a directory containing a SKILL.md file with YAML frontmatter.  The
+session prompt lists every skill as one index line; the agent loads the rest on demand.
 """
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
-from aug.utils.data import DATA_DIR
+from aug.utils.data import SKILLS_DIR
 
 logger = logging.getLogger(__name__)
 
-SKILLS_DIR = DATA_DIR / "skills"
-ALWAYS_ON_MAX_CHARS = 1000
 
 # Name validation per agentskills.io spec
 _NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
@@ -29,7 +26,6 @@ class Skill:
     name: str
     description: str
     body: str
-    always_on: bool = False
 
 
 @dataclass(frozen=True)
@@ -37,14 +33,7 @@ class SkillDetail:
     name: str
     description: str
     body: str
-    always_on: bool
     files: list[str]
-
-
-@dataclass
-class SkillsIndex:
-    always_on: list[Skill] = field(default_factory=list)
-    on_demand: list[Skill] = field(default_factory=list)
 
 
 def validate_name(name: str) -> str | None:
@@ -63,57 +52,32 @@ def validate_name(name: str) -> str | None:
     return None
 
 
-def load_skills(skills_dir: Path | None = None) -> SkillsIndex:
-    """Read all skills from skills_dir (defaults to SKILLS_DIR) and return categorised index.
+def load_skills(skills_dir: Path | None = None) -> list[Skill]:
+    """Every skill in skills_dir (defaults to SKILLS_DIR), sorted by name.
 
     Malformed skill directories are skipped with a warning — never crash the prompt builder.
     """
     directory = skills_dir or SKILLS_DIR
-    index = SkillsIndex()
     if not directory.exists():
-        return index
-
-    for skill_dir in sorted(directory.iterdir()):
-        if not skill_dir.is_dir():
-            continue
-        skill = _load_skill(skill_dir)
-        if skill is None:
-            continue
-        if skill.always_on:
-            index.always_on.append(skill)
-        else:
-            index.on_demand.append(skill)
-
-    return index
+        return []
+    skills = (_load_skill(d) for d in sorted(directory.iterdir()) if d.is_dir())
+    return [s for s in skills if s is not None]
 
 
-def build_skills_prompt(index: SkillsIndex) -> str:
-    """Return the skills portion of the system prompt.
-
-    always_on skills: full SKILL.md content injected verbatim.
-    on_demand skills: one-line index entry only.
-    """
-    parts: list[str] = []
-
-    for skill in index.always_on:
-        parts.append(f"## {skill.name}\n{skill.body}")
-
-    if index.on_demand:
-        lines = "\n".join(f"- {s.name}: {s.description}" for s in index.on_demand)
-        parts.append(f"Available skills — call get_skill(name) to load full instructions:\n{lines}")
-
-    return "\n\n".join(parts)
-
-
-def write_skill_md(
-    skill_dir: Path, name: str, description: str, body: str, always_on: bool
-) -> None:
-    """Assemble and write SKILL.md from structured fields."""
-    frontmatter: dict = {"name": name, "description": description}
-    if always_on:
-        frontmatter["metadata"] = {"always_on": "true"}
-    content = f"---\n{yaml.dump(frontmatter, default_flow_style=False).strip()}\n---\n\n{body}\n"
-    (skill_dir / "SKILL.md").write_text(content)
+def write_skill_md(skill_dir: Path, name: str, description: str, body: str) -> None:
+    """Assemble and write SKILL.md from structured fields.  Any other frontmatter the
+    file already has (license, allowed-tools, metadata…) is kept."""
+    skill_md = skill_dir / "SKILL.md"
+    existing: dict = {}
+    if skill_md.exists():
+        try:
+            existing, _ = _parse_skill_md(skill_md.read_text())
+        except yaml.YAMLError:
+            logger.warning("write_skill_md %s: unreadable frontmatter replaced", skill_dir.name)
+    frontmatter = {**existing, "name": name, "description": description}
+    dumped = yaml.dump(frontmatter, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    content = f"---\n{dumped.strip()}\n---\n\n{body}\n"
+    skill_md.write_text(content)
 
 
 def set_skill_name(skill_dir: Path, name: str) -> None:
@@ -175,7 +139,6 @@ def load_skill(name: str, skills_dir: Path | None = None) -> SkillDetail | None:
         name=skill.name,
         description=skill.description,
         body=skill.body,
-        always_on=skill.always_on,
         files=files,
     )
 
@@ -217,10 +180,7 @@ def _load_skill(skill_dir: Path) -> Skill | None:
         )
         return None
 
-    metadata = frontmatter.get("metadata") or {}
-    always_on = str(metadata.get("always_on", "false")).lower() == "true"
-
-    return Skill(name=name, description=description, body=body.strip(), always_on=always_on)
+    return Skill(name=name, description=description, body=body.strip())
 
 
 def _split_frontmatter(raw: str) -> tuple[str, str] | None:

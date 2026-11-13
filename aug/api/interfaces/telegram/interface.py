@@ -89,10 +89,9 @@ from aug.core.harness import (
     pending_approvals,
 )
 from aug.core.memory import run_deep_consolidation, run_light_consolidation
-from aug.core.prompts import USER_FILE_FAILED, USER_FILE_TOO_LARGE, build_system_prompt
+from aug.core.prompts import USER_FILE_FAILED, USER_FILE_TOO_LARGE
 from aug.core.registry import list_agents
 from aug.core.run import run_registry
-from aug.core.state import AgentState
 from aug.core.tools.approval import list_approvals, revoke_approval
 from aug.core.tools.display import format_tool
 from aug.utils.file_settings import load_settings
@@ -1170,8 +1169,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
 
     @restricted
     async def _handle_skills(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        index = await asyncio.to_thread(load_skills)
-        all_skills = index.always_on + index.on_demand
+        all_skills = await asyncio.to_thread(load_skills)
         if not all_skills:
             await update.message.reply_text("No skills found.")  # type: ignore[union-attr]
             return
@@ -1215,12 +1213,11 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     @restricted
     async def _handle_prompt(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        state = AgentState(
-            messages=[],
-            thread_id=get_context_id(chat_id, update.effective_message.message_thread_id),  # type: ignore[union-attr]
-            interface="telegram",
-        )
-        prompt_text = build_system_prompt(state)
+        context_id = get_context_id(chat_id, update.effective_message.message_thread_id)  # type: ignore[union-attr]
+        prompt_text = await self.session_prompt(context_id, "telegram")
+        if prompt_text is None:
+            await update.message.reply_text("This chat's agent version is not registered.")  # type: ignore[union-attr]
+            return
         file = io.BytesIO(prompt_text.encode())
         file.name = "system_prompt.txt"
         await update.message.reply_document(document=file, filename="system_prompt.txt")  # type: ignore[union-attr]

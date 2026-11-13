@@ -28,6 +28,7 @@ Run: ``python scripts/fakes.py`` (port 8081).
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import re
@@ -44,6 +45,13 @@ app = FastAPI()
 
 _BOT_USER = {"id": 999000, "is_bot": True, "first_name": "AUG", "username": "aug_fake_bot"}
 _SUMMARY = "Summary of the conversation so far (fake)."
+# What the dream (memory consolidation, a call without tools) gets back; {kind} is
+# "light" or "deep", so a light run after the deep one at boot still changes the files.
+_DREAM = (
+    "<user>The tester sends scripted messages ({kind}).</user>"
+    "<memory_index>- user.md: the tester and their scripted messages ({kind})\n"
+    "- context.md: what is going on now</memory_index>"
+)
 _FILE_HINT = re.compile(r"\[(?:Image|File) from user: [^\]]*\]")
 
 
@@ -133,8 +141,9 @@ async def chat_completions(request: Request):
     step: dict[str, Any] = (
         state.scripts[key][step_index]
         if key is not None and step_index < len(state.scripts[key])
-        else {"text": _SUMMARY if not body.get("tools") else "(script exhausted)"}
+        else {"text": _untooled_reply(messages) if not body.get("tools") else "(script exhausted)"}
     )
+    system = next((_text_of(m.get("content")) for m in messages if m.get("role") == "system"), "")
     state.llm_requests.append(
         {
             "script": key,
@@ -143,6 +152,7 @@ async def chat_completions(request: Request):
             "roles": [m.get("role") for m in messages],
             "images": [_image_summary(b) for m in messages for b in _blocks(m, "image_url")],
             "hints": _hints(messages),
+            "system": system,
         }
     )
     if "error" in step:
@@ -157,6 +167,13 @@ async def chat_completions(request: Request):
 @app.post("/v1/audio/transcriptions")
 async def transcriptions() -> dict:
     return {"text": "fake transcript"}
+
+
+def _untooled_reply(messages: list[dict]) -> str:
+    system = next((_text_of(m.get("content")) for m in messages if m.get("role") == "system"), "")
+    if "consolidation process" not in system:
+        return _SUMMARY
+    return _DREAM.format(kind="deep" if "deep consolidation" in system else "light")
 
 
 def _match_script(messages: list[dict]) -> tuple[str | None, int]:
@@ -310,10 +327,13 @@ async def _params(request: Request) -> dict[str, Any]:
         raw = await request.json()
     else:
         form = await request.form()
-        raw = {
-            k: v if isinstance(v, str) else f"<file {getattr(v, 'filename', '')}>"
-            for k, v in form.items()
-        }
+        raw = {}
+        for k, v in form.items():
+            if isinstance(v, str):
+                raw[k] = v
+            else:
+                raw[k] = f"<file {getattr(v, 'filename', '')}>"
+                raw["_sha256"] = hashlib.sha256(await v.read()).hexdigest()
     params: dict[str, Any] = {}
     for k, v in raw.items():
         if isinstance(v, str) and v[:1] in "{[":

@@ -103,6 +103,11 @@ class LangGraphHarness(Harness):
     async def compact(self, context_id: str) -> bool:
         return await compact_thread(self.agent, context_id, self._checkpointer)
 
+    async def session_prompt(self, context_id: str, interface: str) -> str:
+        snapshot = await self.agent.aget_state(_config(context_id), self._checkpointer)
+        stored = (snapshot.values or {}).get("session_prompt")
+        return stored or await asyncio.to_thread(self.agent.new_session_prompt, interface)
+
     async def oneshot(self, prompt: str, tier: ModelTier = ModelTier.STRONG) -> str:
         if not self.agent.model_name:
             raise ValueError(f"Agent '{type(self.agent).__name__}' has no model for oneshot()")

@@ -121,9 +121,6 @@ function MineTab({ onNavigate }: { onNavigate: (s: PageState) => void }) {
         >
           <div className="skill-card-header">
             <span className="skill-card-name">{skill.name}</span>
-            {skill.always_on && (
-              <span className="skill-badge skill-badge--always-on">Always on</span>
-            )}
           </div>
           <p className="skill-card-desc">{skill.description}</p>
           {skill.file_count > 0 && (

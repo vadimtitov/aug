@@ -33,7 +33,7 @@ _MULTIMODAL_CONTENT = [_IMAGE_BLOCK, _TEXT_BLOCK]
 def aug_agent():
     with (
         patch("aug.core.llm.get_settings") as mock_settings,
-        patch("aug.core.agents.chat_agent.build_system_prompt", return_value="system prompt"),
+        patch("aug.core.agents.chat_agent.session_prompt", return_value="system prompt"),
     ):
         mock_settings.return_value.LLM_API_KEY = "test-key"
         mock_settings.return_value.LLM_BASE_URL = "http://localhost:4000"

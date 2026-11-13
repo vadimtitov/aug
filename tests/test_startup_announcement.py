@@ -189,7 +189,7 @@ def _boot(announce: bool) -> MagicMock:
         patch("aug.app.get_settings", return_value=settings),
         patch("aug.app.create_pool", new=AsyncMock(return_value=mock_pool)),
         patch("aug.app._checkpointer_context", return_value=_async_ctx(MagicMock())),
-        patch("aug.app.init_memory_files"),
+        patch("aug.app.init_workspace"),
         patch("aug.app.start_consolidation_scheduler", new=AsyncMock(return_value=MagicMock())),
         patch("aug.app.start_scheduler", new=AsyncMock(return_value=MagicMock())),
         patch("aug.app.stop_scheduler", new=AsyncMock()),

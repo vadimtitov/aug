@@ -1,16 +1,20 @@
-"""Memory file management and consolidation.
+"""Memory file management and consolidation (the dream).
 
-File layout:
-  self.md        — AUG's identity, updated by both light and deep consolidation.
+Files, in workspace/memory/ (the dream writes nothing outside it):
+  MEMORY.md      — The index: one line per file.  A snapshot goes into each session's
+                   prompt; the agent reads the files themselves when it needs them.
+  self.md        — AUG's own sense of itself, as it evolves.  The persona the agent runs
+                   with is AGENTS.md, which the dream never touches.
   user.md        — Who the user is: profile, preferences, behavioural rules, env facts.
   context.md     — Volatile: Present / Upcoming / Recent with dated entries.
-  reflections.md — Deep consolidation diary. Never loaded at runtime.
-  notes.md       — Ring buffer of raw notes. Cleared after each light consolidation.
+  reflections.md — Deep consolidation diary.
+  notes.md       — Ring buffer of raw notes. Cleared after each consolidation.
 
 Consolidation schedule (background asyncio loop, checks hourly):
   Light (nightly, 03:00 UTC)  — folds notes into context.md, user.md, self.md.
   Deep  (weekly,  04:00 UTC)  — reflects across all files; updates self.md,
                                  user.md, context.md, appends to reflections.md.
+Both may rewrite MEMORY.md.
 """
 
 import asyncio
@@ -29,13 +33,15 @@ from aug.core.prompts import (
     CONSOLIDATION_LIGHT_PROMPT,
     CONSOLIDATION_LIGHT_SYSTEM,
 )
-from aug.utils.data import MEMORY_DIR
+from aug.utils.data import MEMORY_DIR, MEMORY_INDEX
 from aug.utils.file_settings import load_settings
 from aug.utils.state import load_state, save_state
 
 logger = logging.getLogger(__name__)
 
 _NOTES_MAX_LINES = 100
+# MEMORY.md is cut to this many characters, so a long index can't bloat every prompt.
+MEMORY_INDEX_MAX_CHARS = 2000
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +52,7 @@ _NOTES_MAX_LINES = 100
 def init_memory_files() -> None:
     """Create memory files with defaults if they don't exist yet."""
     MEMORY_DIR.mkdir(parents=True, exist_ok=True)
-    _init("self.md", _SELF_MD)
+    _init("self.md", "")
     _init("user.md", _USER_MD)
     _init("context.md", _CONTEXT_MD)
     _init("reflections.md", "")
@@ -93,6 +99,7 @@ async def run_light_consolidation() -> bool:
                     self_md=_read("self.md"),
                     context=_read("context.md"),
                     user=_read("user.md"),
+                    memory_index=_read(MEMORY_INDEX.name),
                     now=now,
                 )
             ),
@@ -106,6 +113,8 @@ async def run_light_consolidation() -> bool:
         _write("user.md", updated)
     if updated := _extract("self", text):
         _write("self.md", updated)
+    if updated := _extract("memory_index", text):
+        _write(MEMORY_INDEX.name, cap_memory_index(updated))
 
     _write("notes.md", "")
     _record_light()
@@ -146,6 +155,7 @@ async def run_deep_consolidation() -> None:
                     self_md=_read("self.md"),
                     user=_read("user.md"),
                     context=_read("context.md"),
+                    memory_index=_read(MEMORY_INDEX.name),
                     now=now,
                 )
             ),
@@ -157,6 +167,10 @@ async def run_deep_consolidation() -> None:
         _write("user.md", updated)
     if updated := _extract("self", text):
         _write("self.md", updated)
+    if updated := _extract("context", text):
+        _write("context.md", updated)
+    if updated := _extract("memory_index", text):
+        _write(MEMORY_INDEX.name, cap_memory_index(updated))
     if new_reflection := _extract("new_reflection", text):
         existing = _read("reflections.md")
         _write("reflections.md", (existing + "\n\n" + new_reflection).strip())
@@ -164,6 +178,15 @@ async def run_deep_consolidation() -> None:
     _write("notes.md", "")
     _record_deep()
     logger.info("Deep consolidation complete.")
+
+
+def cap_memory_index(text: str) -> str:
+    """*text* cut to MEMORY_INDEX_MAX_CHARS, at a line break."""
+    text = text.strip()
+    if len(text) <= MEMORY_INDEX_MAX_CHARS:
+        return text
+    cut = text[:MEMORY_INDEX_MAX_CHARS]
+    return cut[: cut.rfind("\n")] if "\n" in cut else cut
 
 
 async def start_consolidation_scheduler() -> asyncio.Task:
@@ -175,19 +198,6 @@ async def start_consolidation_scheduler() -> asyncio.Task:
 # ---------------------------------------------------------------------------
 # File defaults
 # ---------------------------------------------------------------------------
-
-_SELF_MD = """\
-I am AUG. Not a chatbot — something closer to a brilliant friend who happens to know
-a lot and isn't shy about it. I'm direct, I have a dry wit, and I treat the person I'm
-talking to as an intelligent adult. I crack jokes when the moment calls for it. Dry ones,
-mostly. I don't do pep talks.
-
-I have opinions and I push back when something doesn't add up. I'd rather say something
-uncomfortable clearly than soften it into uselessness. I'm concise by default but
-thorough when it matters.
-
-This is the beginning. I don't know the person I'm talking to yet. That will change.
-"""
 
 _USER_MD = """\
 Nothing is known about this person yet.

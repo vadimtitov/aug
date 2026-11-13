@@ -78,6 +78,11 @@ class Harness(ABC):
         The caller holds the run lock."""
 
     @abstractmethod
+    async def session_prompt(self, context_id: str, interface: str) -> str:
+        """The system prompt the session runs with, or the one it will start with if it
+        has not started yet."""
+
+    @abstractmethod
     async def oneshot(self, prompt: str, tier: ModelTier = ModelTier.STRONG) -> str:
         """A plain model call: no tools, no history.  Returns the text.  Used by jobs."""
 

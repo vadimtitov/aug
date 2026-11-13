@@ -15,7 +15,7 @@ from aug.core.skill_deps import (
     resolve_dependencies,
 )
 from aug.core.tools.respond_with_file import send_path
-from aug.utils.skills import ALWAYS_ON_MAX_CHARS, SKILLS_DIR, validate_name, write_skill_md
+from aug.utils.skills import SKILLS_DIR, validate_name, write_skill_md
 
 logger = logging.getLogger(__name__)
 
@@ -24,17 +24,21 @@ logger = logging.getLogger(__name__)
 def get_skill(name: str) -> str:
     """Load the full instructions for a named skill.
 
-    Returns the complete SKILL.md content. Call this when the skills index lists a skill
-    that is relevant to the current task.
+    Returns the skill's folder and its complete SKILL.md.  Call this when the skills
+    index lists a skill that is relevant to the current task.  Paths the instructions
+    mention (scripts/, references/…) are relative to that folder.
 
     Args:
         name: Skill name as shown in the index (e.g. 'ha-automations').
     """
+    if validate_name(name):
+        return f"Skill '{name}' not found."
     skill_dir = SKILLS_DIR / name
     skill_md = skill_dir / "SKILL.md"
     if not skill_md.exists():
         return f"Skill '{name}' not found."
-    return skill_md.read_text() + _bundled_scripts_note(skill_dir)
+    header = f"Skill folder: {skill_dir.resolve()}\n\n"
+    return header + skill_md.read_text() + _bundled_scripts_note(skill_dir)
 
 
 @tool
@@ -42,7 +46,6 @@ async def save_skill(
     name: str,
     description: str,
     body: str,
-    always_on: bool = False,
 ) -> str:
     """Create or overwrite a skill's SKILL.md.
 
@@ -55,8 +58,8 @@ async def save_skill(
               Must not start or end with a hyphen or contain consecutive hyphens.
         description: What this skill does and when to use it. Max 1024 chars.
         body: Markdown instructions. The main content of the skill.
-        always_on: If True, full content is injected into every system prompt.
-                   Body must be ≤ 1000 chars. Use for short, universally relevant skills only.
+
+    A new or changed skill shows in the skills index from the next session on.
     """
     if err := validate_name(name):
         return err
@@ -66,16 +69,10 @@ async def save_skill(
     if len(description) > 1024:
         msg = f"Description must be ≤ 1024 characters (got {len(description)})."
         return msg
-    if always_on and len(body) > ALWAYS_ON_MAX_CHARS:
-        msg = (
-            f"Body is too large for always_on ({len(body)} chars). "
-            f"Shorten to {ALWAYS_ON_MAX_CHARS} chars or fewer, or pass always_on=False."
-        )
-        return msg
 
     skill_dir = SKILLS_DIR / name
     skill_dir.mkdir(parents=True, exist_ok=True)
-    write_skill_md(skill_dir, name, description, body, always_on)
+    write_skill_md(skill_dir, name, description, body)
     await send_path(skill_dir / "SKILL.md")
     return f"Skill '{name}' saved."
 

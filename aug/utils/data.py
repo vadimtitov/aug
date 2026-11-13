@@ -5,9 +5,13 @@ import tempfile
 from pathlib import Path
 
 DATA_DIR = Path("/app/data")
-MEMORY_DIR = DATA_DIR / "memory"
-# The agent's workspace: one folder per AUG install, kept across /clear.
+# The agent's workspace: one folder per AUG install, shared by every agent version and
+# kept across /clear.  See aug/core/workspace.py for its layout.
 WORKSPACE_DIR = DATA_DIR / "workspace"
+AGENTS_MD = WORKSPACE_DIR / "AGENTS.md"
+MEMORY_DIR = WORKSPACE_DIR / "memory"
+MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
+SKILLS_DIR = WORKSPACE_DIR / "skills"
 FILES_DIR = WORKSPACE_DIR / "files"
 
 

@@ -15,7 +15,9 @@ from aug.core.agents.chat_agent import AugAgent
 from aug.core.harness.types import ToolProgress
 from aug.core.tools.approval import requires_approval
 from aug.core.tools.context import current_tool_context
+from aug.core.tools.note import note
 from aug.core.tools.respond_with_file import respond_with_file
+from aug.core.tools.skills import save_skill
 
 SCRIPTED_MODEL = "scripted"
 
@@ -54,7 +56,7 @@ async def dev_wait(seconds: float) -> str:
 def build_scripted_agent() -> AugAgent:
     return AugAgent(
         model=SCRIPTED_MODEL,
-        tools=[dev_progress, dev_guarded, dev_wait, respond_with_file],
+        tools=[dev_progress, dev_guarded, dev_wait, respond_with_file, note, save_skill],
         temperature=0.0,
         recursion_limit=100,
         compaction_model=SCRIPTED_MODEL,

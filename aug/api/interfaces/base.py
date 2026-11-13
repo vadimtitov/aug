@@ -278,6 +278,12 @@ class BaseInterface[ContextT](ABC):
             return conversations[parent].agent
         return ConversationSettings().agent
 
+    async def session_prompt(self, context_id: str, interface: str) -> str | None:
+        """The system prompt *context_id*'s session runs with (or will start with), or
+        None when its agent version is not registered."""
+        harness = _harness_for(self.get_agent_version(context_id))
+        return await harness.session_prompt(context_id, interface) if harness else None
+
     def set_agent_version(self, context_id: str, agent: str) -> None:
         """Select *agent* for *context_id*'s conversation, leaving other conversations alone."""
         conversation = self.conversation_id(context_id)

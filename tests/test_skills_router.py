@@ -29,7 +29,7 @@ def client():
     with (
         patch("aug.app.create_pool", new=AsyncMock(return_value=mock_pool)),
         patch("aug.app._checkpointer_context", return_value=_async_ctx(mock_checkpointer)),
-        patch("aug.app.init_memory_files"),
+        patch("aug.app.init_workspace"),
         patch("aug.app.start_consolidation_scheduler", new=AsyncMock(return_value=MagicMock())),
         patch("aug.app.start_scheduler", new=AsyncMock(return_value=MagicMock())),
         patch("aug.app.stop_scheduler", new=AsyncMock()),
@@ -44,13 +44,10 @@ def client():
             yield c
 
 
-def _write_skill(
-    skills_dir: Path, name: str, description: str, body: str, always_on: bool = False
-) -> Path:
+def _write_skill(skills_dir: Path, name: str, description: str, body: str) -> Path:
     skill_dir = skills_dir / name
     skill_dir.mkdir(parents=True)
-    metadata_line = "\nmetadata:\n  always_on: 'true'" if always_on else ""
-    content = f"---\nname: {name}\ndescription: {description}{metadata_line}\n---\n\n{body}\n"
+    content = f"---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"
     (skill_dir / "SKILL.md").write_text(content)
     return skill_dir
 
@@ -69,7 +66,7 @@ def test_list_skills_returns_skills(client: TestClient, tmp_path: Path) -> None:
     assert len(items) == 1
     assert items[0]["name"] == "my-skill"
     assert items[0]["description"] == "Does X"
-    assert items[0]["always_on"] is False
+    assert "always_on" not in items[0]
     assert items[0]["file_count"] == 0
 
 
@@ -109,7 +106,7 @@ def test_get_skill_returns_detail(client: TestClient, tmp_path: Path) -> None:
     assert data["name"] == "my-skill"
     assert data["description"] == "Does X"
     assert data["body"] == "Follow these steps."
-    assert data["always_on"] is False
+    assert "always_on" not in data
     assert data["files"] == []
 
 
@@ -208,17 +205,18 @@ def test_update_skill_description(client: TestClient, tmp_path: Path) -> None:
     assert "old description" not in content
 
 
-def test_update_skill_always_on_toggle(client: TestClient, tmp_path: Path) -> None:
-    _write_skill(tmp_path, "my-skill", "Does X", "short body", always_on=False)
+def test_update_skill_keeps_other_frontmatter(client: TestClient, tmp_path: Path) -> None:
+    skill_dir = tmp_path / "my-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: my-skill\ndescription: Does X\nlicense: MIT\n---\n\nbody\n"
+    )
     with patch("aug.api.routers.skills.SKILLS_DIR", tmp_path):
-        response = client.put(
-            "/skills/my-skill",
-            json={"always_on": True},
-            headers=_HEADERS,
-        )
+        response = client.put("/skills/my-skill", json={"body": "new"}, headers=_HEADERS)
     assert response.status_code == 200
-    content = (tmp_path / "my-skill" / "SKILL.md").read_text()
-    assert "always_on" in content
+    content = (skill_dir / "SKILL.md").read_text()
+    assert "license: MIT" in content
+    assert content.endswith("\n\nnew\n")
 
 
 def test_update_skill_preserves_unpatched_fields(client: TestClient, tmp_path: Path) -> None:

@@ -16,14 +16,15 @@
 
 ## Memory
 
-The agent effectively writes its own system prompt. Four plain-text files on disk are injected into every conversation alongside hardcoded instructions — the agent reads them as context and writes back to them over time via background jobs and mid-conversation notes.
+Everything the agent knows and is lives in one workspace folder, `/app/data/workspace/`: `AGENTS.md` (its persona and approach — yours to edit), `memory/` (what it remembers), `skills/` and `files/`. Each session's system prompt is built once from it, when the session starts, and stays fixed for the whole chat so prompt caching holds; changes show from the next session.
 
-| File | What it is | Updated |
+| File in `memory/` | What it is | Updated |
 |------|------------|---------|
+| `MEMORY.md` | The index: one line per memory file, shown in every session's prompt | Nightly + Weekly |
 | `notes.md` | Raw notes captured mid-conversation, pending consolidation | During conversation |
 | `user.md` | Who you are — stable facts, preferences, rules, behavioural patterns | Nightly |
 | `context.md` | Timestamped active situations, upcoming events, recent activity. Pruned aggressively | Nightly |
-| `self.md` | The agent's identity: character, values, voice | Nightly + Weekly |
+| `self.md` | The agent's sense of itself as it evolves | Nightly + Weekly |
 
 The `note` tool is the write mechanism during a conversation. A nightly job folds notes into `context.md`, `user.md`, and `self.md` — all in one cross-file-aware pass. A weekly deep consolidation reflects across the full picture and evolves files where something has genuinely shifted.
 

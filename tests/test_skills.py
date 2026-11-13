@@ -4,10 +4,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from aug.utils.skills import (
-    ALWAYS_ON_MAX_CHARS,
-    Skill,
-    SkillsIndex,
-    build_skills_prompt,
     load_skill,
     load_skills,
     set_skill_name,
@@ -19,13 +15,10 @@ from aug.utils.skills import (
 # ---------------------------------------------------------------------------
 
 
-def _write_skill(
-    skills_dir: Path, name: str, description: str, body: str, always_on: bool = False
-) -> Path:
+def _write_skill(skills_dir: Path, name: str, description: str, body: str) -> Path:
     skill_dir = skills_dir / name
     skill_dir.mkdir(parents=True)
-    metadata_line = "\nmetadata:\n  always_on: 'true'" if always_on else ""
-    content = f"---\nname: {name}\ndescription: {description}{metadata_line}\n---\n\n{body}\n"
+    content = f"---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"
     (skill_dir / "SKILL.md").write_text(content)
     return skill_dir
 
@@ -77,15 +70,13 @@ def test_validate_name_underscore():
 def test_load_skills_empty_dir(tmp_path):
     with patch("aug.utils.skills.SKILLS_DIR", tmp_path / "skills"):
         index = load_skills()
-    assert index.always_on == []
-    assert index.on_demand == []
+    assert index == []
 
 
 def test_load_skills_missing_dir(tmp_path):
     with patch("aug.utils.skills.SKILLS_DIR", tmp_path / "nonexistent"):
         index = load_skills()
-    assert index.always_on == []
-    assert index.on_demand == []
+    assert index == []
 
 
 def test_load_skills_on_demand(tmp_path):
@@ -93,20 +84,7 @@ def test_load_skills_on_demand(tmp_path):
     _write_skill(skills_dir, "my-skill", "Does X when Y", "Follow these rules.")
     with patch("aug.utils.skills.SKILLS_DIR", skills_dir):
         index = load_skills()
-    assert len(index.on_demand) == 1
-    assert index.on_demand[0].name == "my-skill"
-    assert index.on_demand[0].always_on is False
-    assert index.always_on == []
-
-
-def test_load_skills_always_on(tmp_path):
-    skills_dir = tmp_path / "skills"
-    _write_skill(skills_dir, "style", "Response style", "Be concise.", always_on=True)
-    with patch("aug.utils.skills.SKILLS_DIR", skills_dir):
-        index = load_skills()
-    assert len(index.always_on) == 1
-    assert index.always_on[0].always_on is True
-    assert index.on_demand == []
+    assert [s.name for s in index] == ["my-skill"]
 
 
 def test_load_skills_skips_name_mismatch(tmp_path):
@@ -116,7 +94,7 @@ def test_load_skills_skips_name_mismatch(tmp_path):
     (skill_dir / "SKILL.md").write_text("---\nname: right-name\ndescription: test\n---\n\nbody\n")
     with patch("aug.utils.skills.SKILLS_DIR", skills_dir):
         index = load_skills()
-    assert index.on_demand == []
+    assert index == []
 
 
 def test_load_skills_skips_missing_description(tmp_path):
@@ -126,7 +104,7 @@ def test_load_skills_skips_missing_description(tmp_path):
     (skill_dir / "SKILL.md").write_text("---\nname: no-desc\n---\n\nbody\n")
     with patch("aug.utils.skills.SKILLS_DIR", skills_dir):
         index = load_skills()
-    assert index.on_demand == []
+    assert index == []
 
 
 def test_load_skills_skips_missing_skill_md(tmp_path):
@@ -134,7 +112,7 @@ def test_load_skills_skips_missing_skill_md(tmp_path):
     (skills_dir / "empty-skill").mkdir(parents=True)
     with patch("aug.utils.skills.SKILLS_DIR", skills_dir):
         index = load_skills()
-    assert index.on_demand == []
+    assert index == []
 
 
 def test_load_skills_skips_malformed_yaml(tmp_path):
@@ -144,7 +122,7 @@ def test_load_skills_skips_malformed_yaml(tmp_path):
     (skill_dir / "SKILL.md").write_text("---\n: :\n---\nbody\n")
     with patch("aug.utils.skills.SKILLS_DIR", skills_dir):
         index = load_skills()
-    assert index.on_demand == []
+    assert index == []
 
 
 # ---------------------------------------------------------------------------
@@ -234,47 +212,6 @@ def test_set_skill_name_noop_when_no_skill_md(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# build_skills_prompt
-# ---------------------------------------------------------------------------
-
-
-def test_build_skills_prompt_empty():
-    assert build_skills_prompt(SkillsIndex()) == ""
-
-
-def test_build_skills_prompt_on_demand_only():
-    index = SkillsIndex(
-        on_demand=[
-            Skill("my-skill", "Does X when Y", "body"),
-            Skill("other-skill", "Does Z when W", "body2"),
-        ]
-    )
-    prompt = build_skills_prompt(index)
-    assert "get_skill" in prompt
-    assert "my-skill: Does X when Y" in prompt
-    assert "other-skill: Does Z when W" in prompt
-    assert "body" not in prompt  # body not exposed in index
-
-
-def test_build_skills_prompt_always_on_injects_body():
-    index = SkillsIndex(always_on=[Skill("style", "Response style", "Be concise.", always_on=True)])
-    prompt = build_skills_prompt(index)
-    assert "Be concise." in prompt
-    assert "get_skill" not in prompt
-
-
-def test_build_skills_prompt_mixed():
-    index = SkillsIndex(
-        always_on=[Skill("style", "Style guide", "Be terse.", always_on=True)],
-        on_demand=[Skill("ha", "HA automation guide", "Follow these patterns.")],
-    )
-    prompt = build_skills_prompt(index)
-    assert "Be terse." in prompt
-    assert "ha: HA automation guide" in prompt
-    assert "Follow these patterns." not in prompt
-
-
-# ---------------------------------------------------------------------------
 # save_skill tool
 # ---------------------------------------------------------------------------
 
@@ -312,33 +249,6 @@ async def test_save_skill_invalid_name(tmp_path):
 
     assert "Bad_Name" not in [p.name for p in tmp_path.iterdir()]
     assert "name" in text.lower() or "invalid" in text.lower() or "lowercase" in text.lower()
-
-
-async def test_save_skill_always_on_size_enforcement(tmp_path):
-    from aug.core.tools.skills import save_skill
-
-    oversized_body = "x" * (ALWAYS_ON_MAX_CHARS + 1)
-    with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        text = await save_skill.coroutine(
-            name="big-skill", description="test", body=oversized_body, always_on=True
-        )
-
-    assert "too large" in text
-    assert str(ALWAYS_ON_MAX_CHARS) in text
-    assert not (tmp_path / "big-skill").exists()
-
-
-async def test_save_skill_always_on_within_limit(tmp_path):
-    from aug.core.tools.skills import save_skill
-
-    body = "x" * ALWAYS_ON_MAX_CHARS
-    with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        await save_skill.coroutine(
-            name="small-skill", description="test", body=body, always_on=True
-        )
-
-    assert (tmp_path / "small-skill" / "SKILL.md").exists()
-    assert "always_on" in (tmp_path / "small-skill" / "SKILL.md").read_text()
 
 
 async def test_save_skill_overwrites_existing(tmp_path, sent_files):

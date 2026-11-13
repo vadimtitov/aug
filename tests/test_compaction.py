@@ -363,7 +363,7 @@ def _make_aug_agent(**kwargs):
 def _state_with_research():
     from aug.core.state import AgentState
 
-    return AgentState(messages=_research_thread(), context_id="test", system_prompt="")
+    return AgentState(messages=_research_thread(), context_id="test")
 
 
 @pytest.mark.asyncio
@@ -373,7 +373,7 @@ async def test_agent_no_compaction_when_model_none():
         patch(
             "aug.core.agents.chat_agent.compact_messages", new_callable=AsyncMock
         ) as mock_compact,
-        patch("aug.core.agents.chat_agent.build_system_prompt", return_value=""),
+        patch("aug.core.agents.chat_agent.session_prompt", return_value=""),
     ):
         await agent.respond(_state_with_research())
     mock_compact.assert_not_called()
@@ -386,7 +386,7 @@ async def test_agent_no_compaction_below_threshold():
         patch(
             "aug.core.agents.chat_agent.compact_messages", new_callable=AsyncMock
         ) as mock_compact,
-        patch("aug.core.agents.chat_agent.build_system_prompt", return_value=""),
+        patch("aug.core.agents.chat_agent.session_prompt", return_value=""),
     ):
         await agent.respond(_state_with_research())
     mock_compact.assert_not_called()
@@ -407,7 +407,7 @@ async def test_agent_compacts_when_threshold_exceeded():
             new_callable=AsyncMock,
             return_value=(fake_compacted, [*remove_msgs, summary_msg]),
         ),
-        patch("aug.core.agents.chat_agent.build_system_prompt", return_value=""),
+        patch("aug.core.agents.chat_agent.session_prompt", return_value=""),
     ):
         update = await agent.respond(state)
 
@@ -431,7 +431,7 @@ async def test_agent_passes_context_window_and_max_summary_tokens_to_compact():
             new_callable=AsyncMock,
             return_value=(_research_thread(), []),
         ) as mock_compact,
-        patch("aug.core.agents.chat_agent.build_system_prompt", return_value=""),
+        patch("aug.core.agents.chat_agent.session_prompt", return_value=""),
     ):
         await agent.respond(state)
 

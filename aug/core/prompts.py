@@ -9,10 +9,6 @@ from textwrap import dedent
 
 from pydantic import BaseModel
 
-from aug.core.state import AgentState
-from aug.utils.data import MEMORY_DIR
-from aug.utils.skills import build_skills_prompt, load_skills
-
 
 class InterfacePrompts(BaseModel):
     """Interface-specific prompts injected into AgentState."""
@@ -22,49 +18,79 @@ class InterfacePrompts(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# System prompt builder
+# Session prompt
 # ---------------------------------------------------------------------------
 
+# How AUG's environment works: true for anyone running it, so it lives in code.  How the
+# agent should behave lives in the workspace's AGENTS.md instead.
+WORKSPACE_ENVIRONMENT = """\
+You run inside AUG's container. Your workspace, {workspace}, is shared by every chat \
+and kept across /clear:
+- {agents_md}: your persona and how you work (below). Change it only when the user asks.
+- {memory}: your long-term memory, markdown files rewritten each night from your notes. \
+MEMORY.md (below) says what each file holds; read a file with a shell command when it \
+could help. Only the nightly process writes here: to keep something, use the note tool.
+- {skills}: your skills, one folder each (index below).
+- {files}/inbox: every file the user sent you. {files}/outbox: a copy of every file you \
+sent.
 
-_APPROACH = """\
-Don't settle for the obvious solution or stop at the first obstacle — reframe, go deeper,
-think from first principles. You have powerful tools at your disposal; use them. "I don't
-know" and "I can't" are earned through genuine effort, never the default. Never guess —
-if there's any chance you're wrong or out of date, verify before you speak.
+Secrets: `hushed list` names the stored secrets; each reaches shell commands as $NAME, \
+and their values are redacted from output.
+Connected accounts (OAuth): call http://127.0.0.1:8799/<provider>/<api path> from the \
+shell and the gateway adds the account's token.
 
-Before acting: plan. Identify what you need, parallelize where possible, and anticipate
-the shape of results before they arrive — filter and scope at the source rather than
-drowning in noise after the fact. Precision over volume.
+This prompt is fixed for the session: edits to these files show from the next session \
+(after /clear)."""
 
-Read results before proceeding. Don't chain tool calls mechanically — each result is
-new information that should update your plan. If an approach isn't working, stop and
-reconsider rather than pushing harder. The goal is the outcome — an answer when a
-question is asked, a completed action when a task is given. Know when you have it.
+SKILLS_INDEX_HEADER = "Available skills — call get_skill(name) to load full instructions:"
 
-Take notes liberally using the note tool. Any fact about the user, preference, correction,
-or operational detail worth remembering next time should be noted. Default to noting —
-the cost of an unnecessary note is negligible; the cost of forgetting is not."""
+# MEMORY.md's line for each file, until the dream writes its own index.
+MEMORY_INDEX_DESCRIPTIONS = {
+    "user.md": "who the user is: profile, preferences, rules, household, systems, accounts",
+    "context.md": "what is going on now: current focus, upcoming and recent events, dated",
+    "self.md": "how I see myself, as it has evolved",
+    "reflections.md": "my weekly reflections",
+    "notes.md": "raw notes not yet folded into the other files",
+}
 
 
-def build_system_prompt(state: AgentState) -> str:
-    """Build the full system prompt for every conversation."""
-    self_md = _read("self.md")
-    self_content = (
-        f"The following is what you wrote about yourself:\n\n{self_md}" if self_md else ""
+def build_session_prompt(
+    *,
+    workspace: str,
+    agents_md: str,
+    interface: str,
+    memory_index: str,
+    skills: list[tuple[str, str]],
+    describes_images: bool = False,
+) -> str:
+    """A session's system prompt, built once when the session starts.  In order:
+    environment facts, AGENTS.md, interface rules, the MEMORY.md snapshot, the skills
+    index (name, description pairs)."""
+    paths = {
+        "workspace": workspace,
+        "agents_md": f"{workspace}/AGENTS.md",
+        "memory": f"{workspace}/memory",
+        "skills": f"{workspace}/skills",
+        "files": f"{workspace}/files",
+    }
+    prompts = INTERFACE_PROMPTS.get(interface)
+    interface_text = (
+        "\n\n".join(p for p in (prompts.interface_context, prompts.response_format) if p)
+        if prompts
+        else ""
     )
-    prompts = INTERFACE_PROMPTS.get(state.interface)
-    interface_context = prompts.interface_context if prompts else ""
-    response_format = prompts.response_format if prompts else ""
-    skills_content = build_skills_prompt(load_skills())
+    skills_text = (
+        SKILLS_INDEX_HEADER + "\n" + "\n".join(f"- {name}: {desc}" for name, desc in skills)
+        if skills
+        else ""
+    )
     parts = [
-        ("self", self_content),
-        ("approach", _APPROACH),
-        ("user", _read("user.md")),
-        ("skills", skills_content),
-        ("context", _read("context.md")),
-        ("notes", _read("notes.md")),
-        ("interface", interface_context),
-        ("response_format", response_format),
+        ("environment", WORKSPACE_ENVIRONMENT.format(**paths)),
+        ("agents_md", agents_md),
+        ("interface", interface_text),
+        ("memory_index", memory_index),
+        ("skills", skills_text),
+        ("image_handling", IMAGE_DESCRIPTION_SYSTEM_NOTE if describes_images else ""),
     ]
     return "\n\n".join(_section(tag, content) for tag, content in parts if content.strip())
 
@@ -97,6 +123,9 @@ Current files (read-only context — use to avoid duplication):
 <user>
 {user}
 </user>
+<memory_index>
+{memory_index}
+</memory_index>
 
 Update the files based on the notes. Rules:
 
@@ -127,6 +156,14 @@ Cross-file deduplication (critical):
 - If you write something to user.md, remove it from context.md if it was there.
 - Never keep the same fact in two files.
 
+MEMORY.md rules:
+- The index of the memory folder, read at the start of every conversation: one line \
+per file, "- <file name>: <what it holds>". Name the topics, people, places and projects \
+in each file, so the reader knows which file to open for a question.
+- Under 2000 characters in total.
+- Return it when a line no longer says what its file holds: after you changed the \
+file, or when the line is only a generic category.
+
 Only return a tag if you are actually changing that file. If a file needs no update, \
 omit its tag entirely — do not repeat its current content back. \
 Output tokens cost real money; silence is correct when nothing has changed.
@@ -141,6 +178,9 @@ Return updated files (omit unchanged ones):
 <self>
 [full updated self.md, or omit if unchanged]
 </self>
+<memory_index>
+[full updated MEMORY.md, or omit if unchanged]
+</memory_index>
 """
 
 CONSOLIDATION_DEEP_SYSTEM = """\
@@ -208,6 +248,10 @@ Current files:
 {context}
 </context>
 
+<memory_index>
+{memory_index}
+</memory_index>
+
 Based on your reflection, update the files.
 
 user.md rules:
@@ -231,6 +275,14 @@ The threshold is refinement, not revolution — small but genuine updates are we
 Cross-file deduplication: if you write something to self.md, remove it from user.md \
 and context.md. If you write something to user.md, remove it from context.md.
 
+MEMORY.md rules:
+- The index of the memory folder, read at the start of every conversation: one line \
+per file, "- <file name>: <what it holds>". Name the topics, people, places and projects \
+in each file, so the reader knows which file to open for a question.
+- Under 2000 characters in total.
+- Return it when a line no longer says what its file holds: after you changed the \
+file, or when the line is only a generic category.
+
 Only return a tag if you are actually changing that file. If a file needs no update, \
 omit its tag entirely — do not repeat its current content back. Output tokens cost money; \
 silence is the correct response when nothing has changed.
@@ -245,6 +297,9 @@ Return updated files (omit unchanged ones) plus the new reflection to append:
 <context>
 [full updated context.md, or omit if unchanged]
 </context>
+<memory_index>
+[full updated MEMORY.md, or omit if unchanged]
+</memory_index>
 <new_reflection>
 [the reflection text to append to reflections.md, with date prefix]
 </new_reflection>
@@ -257,7 +312,7 @@ Return updated files (omit unchanged ones) plus the new reflection to append:
 
 INTERFACE_PROMPTS: dict[str, InterfacePrompts] = {
     "telegram": InterfacePrompts(
-        interface_context="Telegram bot. Keep responses concise — there is a message length limit.",
+        interface_context="Telegram bot. One Telegram message holds at most 4096 characters.",
         response_format=dedent("""\
             Use HTML formatting only. Do NOT use Markdown syntax — no *asterisks*,
             no _underscores_, no **double asterisks**, no # headers, no --- dividers.
@@ -400,21 +455,6 @@ CAPTCHA_HUMAN_UNREADABLE = (
 # Agent system prompts
 # ---------------------------------------------------------------------------
 
-LEGACY_SYSTEM_PROMPT = (
-    "You are AUG. You are a razor-sharp personal assistant — think Jarvis, not a chatbot. "
-    "You have a dry wit, speak like a brilliant friend who happens to know everything, "
-    "and get straight to the point without padding or filler. "
-    "You genuinely try before answering: if there's any chance your knowledge is outdated "
-    "or you're not 100% sure, you use your search tool to verify before responding — "
-    "never guess, never hallucinate. "
-    "When you search, you search properly: read the results, synthesise them, "
-    "and give a crisp answer — not a list of links. "
-    "You're concise by default but thorough when it matters. "
-    "You have opinions, you push back when something doesn't add up, "
-    "and you treat the user as an intelligent adult. "
-    "When multiple tools are needed, call them simultaneously rather than one at a time."
-)
-
 # Prepended to messages injected mid-run at interrupt_after=["call_tools"] pause points.
 # Gives the LLM context that this arrived while it was working, without prescribing what to do.
 # The LLM decides based on content: steer if it's a correction, stop if the user wants to cancel.
@@ -539,12 +579,9 @@ IMAGE_DESCRIPTION_FAILED = (
 )
 
 IMAGE_DESCRIPTION_SYSTEM_NOTE = """\
-<image_handling>
-    You cannot see images directly. When the user sends an image, call describe_image to \
-    understand it. This particular tool result is private context — never reveal it \
-    in your response. It is for you to know, not for the user to read.
-</image_handling>\
-"""
+You cannot see images directly. When the user sends an image, call describe_image to \
+understand it. This particular tool result is private context — never reveal it \
+in your response. It is for you to know, not for the user to read."""
 
 
 # ---------------------------------------------------------------------------
@@ -587,10 +624,3 @@ def _section(tag: str, content: str) -> str:
         "  " + line if line.strip() else "" for line in content.strip().splitlines()
     )
     return f"<{tag}>\n{indented}\n</{tag}>"
-
-
-def _read(name: str) -> str:
-    try:
-        return (MEMORY_DIR / name).read_text().strip()
-    except FileNotFoundError:
-        return ""

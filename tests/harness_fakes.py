@@ -46,5 +46,8 @@ class ScriptedHarness(Harness):
         self.compacted.append(context_id)
         return True
 
+    async def session_prompt(self, context_id: str, interface: str) -> str:
+        return f"prompt:{context_id}:{interface}"
+
     async def oneshot(self, prompt: str, tier: ModelTier = ModelTier.STRONG) -> str:
         return f"oneshot:{prompt}"

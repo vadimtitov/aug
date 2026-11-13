@@ -101,6 +101,10 @@ class BaseAgent(ABC):
             self._compiled_graph = self._build(checkpointer)
         await self._compiled_graph.aupdate_state(config, values)
 
+    def new_session_prompt(self, interface: str) -> str:
+        """The system prompt a session on *interface* would start with now."""
+        return ""
+
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
         """Prepare state before the LLM is called."""
         return AgentStateUpdate()

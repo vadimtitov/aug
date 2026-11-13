@@ -36,7 +36,6 @@ router = APIRouter(
 class SkillUpdateRequest(BaseModel):
     description: str | None = None
     body: str | None = None
-    always_on: bool | None = None
 
 
 class FileUpdateRequest(BaseModel):
@@ -56,17 +55,14 @@ class InstallRequest(BaseModel):
 @router.get("/skills")
 async def list_skills_endpoint() -> list[dict]:
     """List all local skills with metadata."""
-    index = load_skills(SKILLS_DIR)
-    all_skills = index.always_on + index.on_demand
     result = []
-    for skill in all_skills:
+    for skill in load_skills(SKILLS_DIR):
         skill_dir = SKILLS_DIR / skill.name
         file_count = len(list_skill_files(skill_dir))
         result.append(
             {
                 "name": skill.name,
                 "description": skill.description,
-                "always_on": skill.always_on,
                 "file_count": file_count,
             }
         )
@@ -91,7 +87,6 @@ async def get_skill_endpoint(name: str) -> dict:
         "name": detail.name,
         "description": detail.description,
         "body": detail.body,
-        "always_on": detail.always_on,
         "files": detail.files,
     }
 
@@ -125,7 +120,7 @@ async def get_skill_file(name: str, path: str = Query(...)) -> PlainTextResponse
 
 @router.put("/skills/{name}")
 async def update_skill(name: str, req: SkillUpdateRequest) -> dict:
-    """Patch a local skill's description, body, and/or always_on flag."""
+    """Patch a local skill's description and/or body."""
     _require_valid_name(name)
     detail = load_skill(name, SKILLS_DIR)
     if detail is None:
@@ -135,9 +130,8 @@ async def update_skill(name: str, req: SkillUpdateRequest) -> dict:
 
     description = req.description if req.description is not None else detail.description
     body = req.body if req.body is not None else detail.body
-    always_on = req.always_on if req.always_on is not None else detail.always_on
 
-    write_skill_md(SKILLS_DIR / name, name, description, body, always_on)
+    write_skill_md(SKILLS_DIR / name, name, description, body)
     return {"ok": True}
 
 
