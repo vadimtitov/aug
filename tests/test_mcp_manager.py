@@ -63,7 +63,7 @@ def _fake_run_writes(value: bytes):
 
 def test_read_hushed_secret_success():
     with patch(
-        "aug.core.mcp.manager.subprocess.run", side_effect=_fake_run_writes(b"super-secret")
+        "aug.utils.hushed.subprocess.run", side_effect=_fake_run_writes(b"super-secret")
     ):
         value = _read_hushed_secret("MY_TOKEN")
     assert value == "super-secret"
@@ -78,14 +78,14 @@ def test_read_hushed_secret_never_reads_from_stdout():
             os.write(fd, b"the-real-value")
         return subprocess.CompletedProcess(cmd, 0, stdout="[REDACTED]", stderr="")
 
-    with patch("aug.core.mcp.manager.subprocess.run", side_effect=_run):
+    with patch("aug.utils.hushed.subprocess.run", side_effect=_run):
         value = _read_hushed_secret("MY_TOKEN")
     assert value == "the-real-value"
 
 
 def test_read_hushed_secret_missing_raises():
     with (
-        patch("aug.core.mcp.manager.subprocess.run", side_effect=_fake_run_writes(b"")),
+        patch("aug.utils.hushed.subprocess.run", side_effect=_fake_run_writes(b"")),
         pytest.raises(McpSecretError, match="not set"),
     ):
         _read_hushed_secret("MISSING_TOKEN")
@@ -96,7 +96,7 @@ def test_read_hushed_secret_command_failure_raises():
         return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="hushed: boom")
 
     with (
-        patch("aug.core.mcp.manager.subprocess.run", side_effect=_run),
+        patch("aug.utils.hushed.subprocess.run", side_effect=_run),
         pytest.raises(McpSecretError, match="boom"),
     ):
         _read_hushed_secret("MY_TOKEN")
@@ -107,7 +107,7 @@ def test_read_hushed_secret_rejects_shell_metacharacters_in_name():
     to a Python child), but it's still validated up front so a malformed name
     fails clearly instead of silently not matching anything."""
     with (
-        patch("aug.core.mcp.manager.subprocess.run") as mock_run,
+        patch("aug.utils.hushed.subprocess.run") as mock_run,
         pytest.raises(McpSecretError, match="invalid secret name"),
     ):
         _read_hushed_secret('TOKEN"; rm -rf / #')
@@ -117,7 +117,7 @@ def test_read_hushed_secret_rejects_shell_metacharacters_in_name():
 def test_read_hushed_secret_timeout_raises():
     with (
         patch(
-            "aug.core.mcp.manager.subprocess.run",
+            "aug.utils.hushed.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="hushed", timeout=15),
         ),
         pytest.raises(McpSecretError),
@@ -138,7 +138,7 @@ def test_read_hushed_secret_passes_fd_as_argv_not_shell_redirection():
             os.write(fd, b"value")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    with patch("aug.core.mcp.manager.subprocess.run", side_effect=_run):
+    with patch("aug.utils.hushed.subprocess.run", side_effect=_run):
         _read_hushed_secret("MY_TOKEN")
 
     cmd = captured["cmd"]
