@@ -17,7 +17,6 @@ from aug.core.harness.types import (
     ApprovalRequest,
     ApprovalRequested,
     ApprovalResolved,
-    Sender,
     TurnContext,
 )
 
@@ -46,20 +45,15 @@ class PendingApprovals:
     def __init__(self) -> None:
         self._waiting: dict[str, tuple[PendingApproval, asyncio.Future[ApprovalDecision]]] = {}
 
-    def open(self, context_id: str, request: ApprovalRequest) -> PendingApproval:
+    def open(
+        self, context_id: str, request: ApprovalRequest
+    ) -> tuple[PendingApproval, asyncio.Future[ApprovalDecision]]:
+        """Register *request*; the future resolves with the user's decision.  It may be
+        answered as soon as this returns, before anyone has shown it."""
         pending = PendingApproval(id=uuid4().hex[:12], context_id=context_id, request=request)
         future = asyncio.get_running_loop().create_future()
         self._waiting[pending.id] = (pending, future)
-        return pending
-
-    async def wait(self, approval_id: str) -> ApprovalDecision:
-        """The user's decision on *approval_id*, or TIMED_OUT after
-        APPROVAL_TIMEOUT_SECONDS."""
-        _, future = self._waiting[approval_id]
-        try:
-            return await asyncio.wait_for(asyncio.shield(future), APPROVAL_TIMEOUT_SECONDS)
-        except TimeoutError:
-            return ApprovalDecision.TIMED_OUT
+        return pending, future
 
     def close(self, approval_id: str) -> None:
         """Stop waiting for *approval_id*: a later tap on it is "already handled"."""
@@ -103,7 +97,6 @@ class ToolContext:
     """
 
     context_id: str
-    sender: Sender
     turn: TurnContext
     stopped: asyncio.Event = field(default_factory=asyncio.Event)
     _emit: Callable[[AgentEvent], Awaitable[None]] | None = None
@@ -121,7 +114,7 @@ class ToolContext:
         """
         if not self.turn.attended:
             return ApprovalDecision.NO_USER
-        pending = pending_approvals.open(self.context_id, request)
+        pending, answer = pending_approvals.open(self.context_id, request)
         logger.info(
             "approval_requested context=%s id=%s tool=%s",
             self.context_id,
@@ -130,7 +123,10 @@ class ToolContext:
         )
         try:
             await self.emit(ApprovalRequested(id=pending.id, request=request))
-            decision = await pending_approvals.wait(pending.id)
+            try:
+                decision = await asyncio.wait_for(answer, APPROVAL_TIMEOUT_SECONDS)
+            except TimeoutError:
+                decision = ApprovalDecision.TIMED_OUT
         finally:
             # However the wait ended, /stop (cancellation) included.
             pending_approvals.close(pending.id)

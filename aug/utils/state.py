@@ -128,8 +128,8 @@ class McpCredentialBinding(BaseModel):
 
 class McpInstallPlan(BaseModel):
     """An immutable, durable snapshot of one install decision — built once and
-    persisted before the approval interrupt pauses the graph, so resuming (even
-    after a crash) installs exactly what was previewed.
+    persisted before the user is asked to approve it, so the install does exactly
+    what was previewed.
     """
 
     model_config = ConfigDict(extra="ignore")

@@ -8,9 +8,11 @@ import pytest
 from fastapi import FastAPI
 
 from aug.api.interfaces.rest import RestApiInterface, _frame, _RestContext
+from aug.api.interfaces.telegram.interface import TelegramInterface
 from aug.api.routers.chat import router as chat_router
 from aug.api.schemas.chat import ChatRequest
 from aug.core.harness import (
+    Address,
     ApprovalDecision,
     ApprovalRequest,
     ApprovalRequested,
@@ -18,13 +20,17 @@ from aug.core.harness import (
     HarnessError,
     StatusUpdate,
     TextDelta,
+    ToolContext,
     ToolEnded,
     ToolProgress,
     ToolStarted,
+    TurnContext,
     TurnEnded,
     TurnStarted,
     pending_approvals,
 )
+from aug.core.tools.approval import requires_approval
+from aug.utils.file_settings import AppSettings
 
 _HEADERS = {"X-API-Key": "test-api-key"}
 REQUEST = ApprovalRequest(tool_name="run_ssh", resource="box", operation="ls")
@@ -37,11 +43,9 @@ def clean_pending():
     pending_approvals.clear()
 
 
-async def _open(context_id: str) -> tuple[str, asyncio.Task]:
-    pending = pending_approvals.open(context_id, REQUEST)
-    waiter = asyncio.create_task(pending_approvals.wait(pending.id))
-    await asyncio.sleep(0)
-    return pending.id, waiter
+async def _open(context_id: str) -> tuple[str, asyncio.Future]:
+    pending, answer = pending_approvals.open(context_id, REQUEST)
+    return pending.id, answer
 
 
 # ---------------------------------------------------------------------------
@@ -61,8 +65,6 @@ def _press(data: str, chat_id: int = 42) -> MagicMock:
 
 @pytest.fixture()
 def telegram():
-    from aug.api.interfaces.telegram.interface import TelegramInterface
-
     with patch("aug.api.interfaces.telegram.utils.is_allowed", return_value=True):
         yield TelegramInterface()
 
@@ -215,3 +217,81 @@ async def test_rest_approve_refuses_a_request_from_another_thread() -> None:
     assert response.status_code == 409
     assert not waiter.done()
     waiter.cancel()
+
+
+# ---------------------------------------------------------------------------
+# ToolContext.request_approval
+# ---------------------------------------------------------------------------
+
+
+def _tool_context(emit) -> ToolContext:
+    turn = TurnContext(
+        reply_to=Address(interface="telegram", conversation_id="tg-1"), attended=True
+    )
+    return ToolContext(context_id="tg-1-0", turn=turn, _emit=emit)
+
+
+async def test_an_answer_that_arrives_while_the_request_is_being_shown_is_kept() -> None:
+    async def answer_at_once(event) -> None:
+        if isinstance(event, ApprovalRequested):
+            pending_approvals.deny_all("tg-1-0", ApprovalDecision.REPLIED)
+
+    decision = await _tool_context(answer_at_once).request_approval(REQUEST)
+
+    assert decision == ApprovalDecision.REPLIED
+    assert pending_approvals.for_context("tg-1-0") == []
+
+
+async def test_stop_while_waiting_runs_on_denied() -> None:
+    cleaned: list[str] = []
+
+    async def run_ssh(target: str, command: str) -> str:
+        return "executed"
+
+    decorated = requires_approval(
+        describe=lambda target, command: (target, command),
+        on_denied=lambda target, command: cleaned.append(command),
+    )(run_ssh)
+    ctx = _tool_context(AsyncMock())
+
+    with (
+        patch("aug.core.tools.approval.load_settings", return_value=AppSettings()),
+        patch("aug.core.tools.approval.current_tool_context", return_value=ctx),
+    ):
+        task = asyncio.create_task(decorated(target="box", command="install x"))
+        while not pending_approvals.for_context("tg-1-0"):  # noqa: ASYNC110
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert cleaned == ["install x"]
+    assert pending_approvals.for_context("tg-1-0") == []
+
+
+async def test_compact_is_refused_while_an_approval_waits() -> None:
+    await _open("rest-1")
+
+    with pytest.raises(ValueError, match="approval is waiting"):
+        await RestApiInterface()._execute_compact("rest-1", "fake")
+
+
+async def test_an_idle_stream_sends_keepalives() -> None:
+    iface = RestApiInterface()
+    gate = asyncio.Event()
+
+    async def slow_run(ctx) -> None:
+        await gate.wait()
+        ctx.put("text_delta", {"text": "hi"})
+
+    with (
+        patch.object(RestApiInterface, "run", side_effect=slow_run, autospec=False),
+        patch("aug.api.interfaces.rest._KEEPALIVE_SECONDS", 0.01),
+    ):
+        stream = iface.stream_sse(ChatRequest(context_id="rest-1", message="go"), "fake")
+        first = await anext(stream)
+        gate.set()
+        rest = [chunk async for chunk in stream]
+
+    assert first == ": keepalive\n\n"
+    assert any("event: text_delta" in chunk for chunk in rest)

@@ -21,6 +21,7 @@ from aug.core.harness.types import (
     ApprovalRequested,
     ApprovalResolved,
     TextDelta,
+    ToolEnded,
     ToolProgress,
     ToolStarted,
 )
@@ -73,7 +74,7 @@ def make_run_subagent_tool(subagent: BaseAgent) -> BaseTool:
                 match event:
                     case TextDelta(text=text) if text:
                         final_text += text
-                    case ToolStarted() | ToolProgress() if ctx is not None:
+                    case ToolStarted() | ToolProgress() | ToolEnded() if ctx is not None:
                         # Re-parented onto this call: the user sees one nested block.
                         await ctx.emit(replace(event, parent_id=None))
                     case ApprovalRequested() | ApprovalResolved() if ctx is not None:

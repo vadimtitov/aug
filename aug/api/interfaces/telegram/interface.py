@@ -14,7 +14,7 @@ import io
 import logging
 import re
 import subprocess
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from html.parser import HTMLParser
@@ -259,7 +259,10 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         bot = msg.get_bot()  # type: ignore[union-attr]
 
         stop_typing = asyncio.Event()
-        typing_task = asyncio.create_task(_typing_loop(context, stop_typing))
+        approval_prompts: dict[str, Message] = {}  # request id → its prompt, until answered
+        typing_task = asyncio.create_task(
+            _typing_loop(context, stop_typing, paused=lambda: bool(approval_prompts))
+        )
 
         # Rolling tool-status draft state
         tool_entries: list[_ToolEntry] = []
@@ -278,7 +281,6 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         stream_completed_normally = False
         turn_failed = False
         spinner_stop = asyncio.Event()
-        approval_prompts: dict[str, Message] = {}  # request id → its prompt, until answered
 
         async def _push_tool_draft() -> None:
             nonlocal spin_tick, use_draft, tool_status_msg, last_tool_edit
@@ -362,7 +364,9 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                 await asyncio.sleep(1.0 if use_draft else _TOOL_EDIT_THROTTLE)
                 if spinner_stop.is_set():
                     break
-                if any(not e.done for e in tool_entries):
+                # Waiting on the user can take minutes: no animation (and no edits
+                # against the chat's rate limit) until they answer.
+                if any(not e.done for e in tool_entries) and not approval_prompts:
                     await _push_tool_draft()
 
         spinner_task = asyncio.create_task(_spinner_loop())
@@ -1447,12 +1451,6 @@ async def _reply_text_with_retry(msg: Message, text: str, **kwargs) -> Message:
     return await msg.reply_text(text, do_quote=False, **kwargs)
 
 
-@retry(
-    retry=retry_if_exception_type((RetryAfter, TimedOut, NetworkError)),
-    stop=stop_after_attempt(3),
-    wait=_flood_wait,
-    reraise=True,
-)
 async def _close_approval_prompt(prompt: Message, text: str) -> None:
     """Replace an approval prompt (and its buttons) with how it ended."""
     try:
@@ -1461,6 +1459,12 @@ async def _close_approval_prompt(prompt: Message, text: str) -> None:
         logger.debug("approval prompt edit failed", exc_info=True)
 
 
+@retry(
+    retry=retry_if_exception_type((RetryAfter, TimedOut, NetworkError)),
+    stop=stop_after_attempt(3),
+    wait=_flood_wait,
+    reraise=True,
+)
 async def _send_attachment(msg, attachment: Attachment) -> None:
     data = io.BytesIO(attachment.data)
     caption = attachment.caption or None
@@ -1473,13 +1477,16 @@ async def _send_attachment(msg, attachment: Attachment) -> None:
         )
 
 
-async def _typing_loop(update: Update, stop_event: asyncio.Event) -> None:
+async def _typing_loop(
+    update: Update, stop_event: asyncio.Event, paused: Callable[[], bool] = lambda: False
+) -> None:
     chat_id = update.effective_chat.id  # type: ignore[union-attr]
     topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
     while not stop_event.is_set():
-        await update.get_bot().send_chat_action(
-            chat_id=chat_id, action=ChatAction.TYPING, message_thread_id=topic_id
-        )
+        if not paused():
+            await update.get_bot().send_chat_action(
+                chat_id=chat_id, action=ChatAction.TYPING, message_thread_id=topic_id
+            )
         try:
             await asyncio.wait_for(asyncio.shield(stop_event.wait()), timeout=4.0)
         except TimeoutError:

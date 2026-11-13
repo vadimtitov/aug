@@ -12,14 +12,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage
+from langgraph.errors import GraphRecursionError
 
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.harness import (
+    ApprovalRequest,
+    ApprovalRequested,
     TextDelta,
+    ToolEnded,
     ToolProgress,
     ToolStarted,
 )
 from aug.core.state import AgentState, AgentStateUpdate
+from aug.core.tools.subagent import make_run_subagent_tool
 
 # ---------------------------------------------------------------------------
 # Minimal concrete agent — no LLM, no tools, fixed response
@@ -124,8 +129,6 @@ async def test_arun_caches_subagent_graph():
 @pytest.mark.asyncio
 async def test_tool_accumulates_stream_events():
     """run_subagent returns the accumulated TextDelta text."""
-    from aug.core.tools.subagent import make_run_subagent_tool
-
     subagent = _FixedAgent()
     tool = make_run_subagent_tool(subagent)
 
@@ -142,10 +145,6 @@ async def test_tool_accumulates_stream_events():
 @pytest.mark.asyncio
 async def test_tool_returns_error_on_recursion_limit():
     """run_subagent returns a graceful error string when GraphRecursionError is raised."""
-    from langgraph.errors import GraphRecursionError
-
-    from aug.core.tools.subagent import make_run_subagent_tool
-
     subagent = _FixedAgent()
     tool = make_run_subagent_tool(subagent)
 
@@ -162,10 +161,6 @@ async def test_tool_returns_error_on_recursion_limit():
 @pytest.mark.asyncio
 async def test_tool_returns_partial_text_on_recursion_limit():
     """When the subagent produces some text before hitting the limit, it is included."""
-    from langgraph.errors import GraphRecursionError
-
-    from aug.core.tools.subagent import make_run_subagent_tool
-
     subagent = _FixedAgent()
     tool = make_run_subagent_tool(subagent)
 
@@ -193,8 +188,6 @@ def _capturing_context() -> MagicMock:
 async def test_tool_re_emits_subagent_tool_calls_under_its_own_call():
     """A subagent's ToolStarted is re-emitted with no parent, so the harness nests it
     under this run_subagent call."""
-    from aug.core.tools.subagent import make_run_subagent_tool
-
     subagent = _FixedAgent()
     tool = make_run_subagent_tool(subagent)
     ctx = _capturing_context()
@@ -216,9 +209,6 @@ async def test_tool_re_emits_subagent_tool_calls_under_its_own_call():
 
 @pytest.mark.asyncio
 async def test_tool_forwards_tool_progress_and_approvals():
-    from aug.core.harness import ApprovalRequest, ApprovalRequested
-    from aug.core.tools.subagent import make_run_subagent_tool
-
     subagent = _FixedAgent()
     tool = make_run_subagent_tool(subagent)
     ctx = _capturing_context()
@@ -229,6 +219,7 @@ async def test_tool_forwards_tool_progress_and_approvals():
     fake_arun = _make_fake_arun(
         ToolProgress(text="Step 3 · example.com", parent_id="inner"),
         asked,
+        ToolEnded(id="s1", name="run_ssh", output="ok", parent_id="inner"),
         TextDelta(text="result"),
     )
     with (
@@ -238,4 +229,8 @@ async def test_tool_forwards_tool_progress_and_approvals():
         await tool.ainvoke({"prompt": "test"}, config=_config())
 
     emitted = [call.args[0] for call in ctx.emit.await_args_list]
-    assert emitted == [ToolProgress(text="Step 3 · example.com"), asked]
+    assert emitted == [
+        ToolProgress(text="Step 3 · example.com"),
+        asked,
+        ToolEnded(id="s1", name="run_ssh", output="ok"),
+    ]

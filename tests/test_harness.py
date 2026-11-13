@@ -30,6 +30,7 @@ from aug.core.harness import (
     TextDelta,
     TextPart,
     ToolEnded,
+    ToolProgress,
     ToolStarted,
     TurnContext,
     TurnEnded,
@@ -42,6 +43,7 @@ from aug.core.harness.langgraph import (
     LangGraphHarness,
     _harness_error,
 )
+from aug.core.harness.langgraph_events import parse_event
 from aug.core.prompts import (
     HARNESS_ERROR_MESSAGES,
     HARNESS_STOPPED_MESSAGE,
@@ -558,6 +560,19 @@ async def test_stop_while_waiting_for_approval_ends_the_turn() -> None:
 
     assert events[-1].cancelled is True
     assert pending_approvals.for_context("c1") == []  # a late tap finds nothing
+
+
+def test_status_from_outside_a_tool_gets_no_parent() -> None:
+    raw = {
+        "event": "on_custom_event",
+        "name": "aug_event",
+        "run_id": "node-run",
+        "data": {"event": StatusUpdate(text="🗜")},
+    }
+    progress = {**raw, "data": {"event": ToolProgress(text="step")}}
+
+    assert parse_event(raw) == StatusUpdate(text="🗜")
+    assert parse_event(progress) == ToolProgress(text="step", parent_id="node-run")
 
 
 async def test_oneshot_calls_the_agent_model() -> None:

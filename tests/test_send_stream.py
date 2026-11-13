@@ -6,7 +6,19 @@ import pytest
 from telegram.error import BadRequest
 
 import aug.api.interfaces.telegram.interface as _iface_mod
-from aug.core.harness import TextDelta, ToolEnded, ToolStarted
+from aug.api.interfaces.telegram.interface import TelegramInterface
+from aug.core.harness import (
+    ApprovalDecision,
+    ApprovalRequest,
+    ApprovalRequested,
+    ApprovalResolved,
+    HarnessError,
+    TextDelta,
+    ToolEnded,
+    ToolProgress,
+    ToolStarted,
+    TurnEnded,
+)
 
 
 def _make_context(chat_id: int = 123, context_id: int | None = None):
@@ -56,8 +68,6 @@ def _no_typing_loop():
 
 @pytest.fixture()
 def interface():
-    from aug.api.interfaces.telegram.interface import TelegramInterface
-
     return TelegramInterface()
 
 
@@ -205,8 +215,6 @@ async def test_failed_turn_sends_no_partial_answer_and_marks_open_tools_failed(i
     """A turn ending in an error behaves like the old raised exception: nothing more is
     committed (the caller sends the error instead), and a tool still running is frozen
     as failed."""
-    from aug.core.harness import HarnessError, TurnEnded
-
     context, _msg, _bot, sent = _make_context()
 
     await interface.send_stream(
@@ -223,8 +231,6 @@ async def test_failed_turn_sends_no_partial_answer_and_marks_open_tools_failed(i
 
 @pytest.mark.asyncio
 async def test_stopped_turn_marks_its_open_tools_stopped_not_failed(interface):
-    from aug.core.harness import TurnEnded
-
     context, _msg, _bot, sent = _make_context()
 
     await interface.send_stream(
@@ -248,8 +254,6 @@ async def test_stopped_turn_marks_its_open_tools_stopped_not_failed(interface):
 
 @pytest.mark.asyncio
 async def test_subagent_tool_calls_nest_under_the_subagent_line(interface):
-    from aug.core.harness import ToolProgress
-
     context, _msg, _bot, sent = _make_context()
 
     await interface.send_stream(
@@ -270,12 +274,6 @@ async def test_subagent_tool_calls_nest_under_the_subagent_line(interface):
 
 
 def _approval_events(decision):
-    from aug.core.harness import (
-        ApprovalRequest,
-        ApprovalRequested,
-        ApprovalResolved,
-    )
-
     request = ApprovalRequest(tool_name="run_ssh", resource="box", operation="rm x")
     return [
         ToolStarted(id="r1", name="run_ssh", args={"target": "box", "command": "rm x"}),
@@ -286,8 +284,6 @@ def _approval_events(decision):
 
 @pytest.mark.asyncio
 async def test_approval_prompt_carries_request_id_buttons_and_shows_the_answer(interface):
-    from aug.core.harness import ApprovalDecision
-
     context, _msg, _bot, sent = _make_context()
 
     await interface.send_stream(
@@ -310,8 +306,6 @@ async def test_approval_prompt_carries_request_id_buttons_and_shows_the_answer(i
 
 @pytest.mark.asyncio
 async def test_an_unanswered_prompt_loses_its_buttons_when_the_turn_stops(interface):
-    from aug.core.harness import ApprovalRequest, ApprovalRequested, TurnEnded
-
     context, _msg, _bot, sent = _make_context()
     request = ApprovalRequest(tool_name="run_ssh", resource="box", operation="ls")
 

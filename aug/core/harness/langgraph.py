@@ -140,7 +140,6 @@ class LangGraphHarness(Harness):
                 AGENT_RUN_CONFIG_KEY: run,
                 TOOL_CONTEXT_CONFIG_KEY: ToolContext(
                     context_id=context_id,
-                    sender=message.sender,
                     turn=turn,
                     stopped=run.user_requested_stop,
                     _emit=dispatch,

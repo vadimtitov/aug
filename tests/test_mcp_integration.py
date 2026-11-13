@@ -29,7 +29,6 @@ from aug.core.agents.chat_agent import ChatAgent
 from aug.core.harness import (
     Address,
     ApprovalDecision,
-    Sender,
     ToolContext,
     TurnContext,
     pending_approvals,
@@ -490,7 +489,6 @@ async def test_mcp_tool_waits_for_approval_inside_a_real_graph_run():
     compiled = graph.compile(checkpointer=MemorySaver())
     ctx = ToolContext(
         context_id="approval-t1",
-        sender=Sender(interface="telegram", user_id="1"),
         turn=TurnContext(
             reply_to=Address(interface="telegram", conversation_id="tg-1"), attended=True
         ),

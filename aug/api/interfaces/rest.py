@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 # One SSE event: its name and its JSON payload.
 Frame = tuple[str, dict[str, Any]]
 
+# An SSE comment sent when nothing else was, so proxies keep an idle stream open (a
+# tool waiting for approval can be silent for minutes).
+_KEEPALIVE_SECONDS = 15.0
+
 
 @dataclass
 class _RestContext:
@@ -43,6 +47,10 @@ class _RestContext:
     def close(self) -> None:
         """Signal end-of-response to any consumer of this context."""
         self._queue.put_nowait(None)
+
+    async def next_frame(self) -> Frame | None:
+        """The next frame; None at end of response.  Safe to cancel."""
+        return await self._queue.get()
 
     async def collect(self) -> str:
         """Drain the queue into the reply text (used by /invoke)."""
@@ -145,8 +153,15 @@ class RestApiInterface(BaseInterface[_RestContext]):
         ctx = _RestContext(request=request, agent_version=agent_version)
         task = asyncio.create_task(self._run_and_close(ctx))
         try:
-            async for name, payload in ctx:
-                yield _sse(name, payload)
+            while True:
+                try:
+                    frame = await asyncio.wait_for(ctx.next_frame(), _KEEPALIVE_SECONDS)
+                except TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                if frame is None:
+                    break
+                yield _sse(*frame)
         finally:
             if not task.done():
                 task.cancel()

@@ -452,6 +452,11 @@ HARNESS_TOOL_STOPPED_RESULT = (
 )
 HARNESS_TURN_STOPPED_NOTE = "[The user pressed /stop and ended your turn before you replied.]"
 
+# Told when /compact is asked for while a tool waits for the user's approval.
+APPROVAL_PENDING_COMPACT_MESSAGE = (
+    "An approval is waiting for your answer. Answer it (or /stop) before /compact."
+)
+
 # Tool results when an operation that needs approval did not run, keyed by
 # ApprovalDecision value.  Each says why, so the model reports the right thing.
 APPROVAL_NOT_GRANTED_RESULTS = {

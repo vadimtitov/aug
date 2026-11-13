@@ -15,7 +15,7 @@ from typing import Any
 from langchain_core.callbacks.manager import adispatch_custom_event
 from langchain_core.runnables.schema import StreamEvent
 
-from aug.core.harness.types import AgentEvent, TextDelta, ToolEnded, ToolStarted
+from aug.core.harness.types import AgentEvent, StatusUpdate, TextDelta, ToolEnded, ToolStarted
 from aug.core.tools.output import ToolOutput
 
 _AUG_EVENT = "aug_event"
@@ -57,7 +57,12 @@ def parse_event(event: StreamEvent) -> AgentEvent | None:
         )
     if kind == "on_custom_event" and event["name"] == _AUG_EVENT:
         emitted = event["data"]["event"]
-        if getattr(emitted, "parent_id", None) is None and event.get("run_id"):
+        # Status comes from outside any tool (compaction runs in a graph node).
+        if (
+            not isinstance(emitted, StatusUpdate)
+            and emitted.parent_id is None
+            and event.get("run_id")
+        ):
             emitted = replace(emitted, parent_id=event["run_id"])
         return emitted
     return None

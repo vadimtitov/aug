@@ -19,6 +19,7 @@ Anchor with ^ / $ for stricter matching.
 ``target`` and ``tool`` support ``"*"`` as a wildcard that matches anything.
 """
 
+import asyncio
 import inspect
 import re
 from functools import wraps
@@ -91,16 +92,17 @@ def requires_approval(fn=None, *, describe=None, on_denied=None):
 
             if not is_approved(tool_name, resource, operation):
                 ctx = current_tool_context()
-                decision = (
-                    await ctx.request_approval(request)
-                    if ctx is not None
-                    else ApprovalDecision.NO_USER
-                )
+                try:
+                    decision = (
+                        await ctx.request_approval(request)
+                        if ctx is not None
+                        else ApprovalDecision.NO_USER
+                    )
+                except asyncio.CancelledError:  # /stop while waiting: not approved either
+                    await _call(on_denied, kwargs)
+                    raise
                 if not decision.approved:
-                    if on_denied is not None:
-                        outcome = on_denied(**kwargs)
-                        if inspect.isawaitable(outcome):
-                            await outcome
+                    await _call(on_denied, kwargs)
                     return APPROVAL_NOT_GRANTED_RESULTS[decision.value].format(
                         tool=tool_name, operation=request.description
                     )
@@ -166,3 +168,12 @@ def revoke_approval(index: int) -> None:
         raise IndexError(f"Approval index {index} out of range (have {n} rules)")
     s.tools.approvals.pop(index)
     save_settings(s)
+
+
+async def _call(fn, kwargs: dict) -> None:
+    """Call the optional, sync or async *fn* with the tool's kwargs."""
+    if fn is None:
+        return
+    outcome = fn(**kwargs)
+    if inspect.isawaitable(outcome):
+        await outcome

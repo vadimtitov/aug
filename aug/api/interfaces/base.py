@@ -44,6 +44,7 @@ from aug.core.harness import (
     pending_approvals,
 )
 from aug.core.prompts import (
+    APPROVAL_PENDING_COMPACT_MESSAGE,
     HARNESS_STOPPED_MESSAGE,
     LOCATION_SHARE_TEMPLATE,
     LOCATION_SHARE_UNKNOWN_SENDER,
@@ -530,8 +531,11 @@ class BaseInterface[ContextT](ABC):
         """Compact the message history for *context_id*, waiting for any turn in flight.
 
         Returns True if compaction ran, False if there was nothing to compact.
-        Raises ValueError if the agent has no compaction_model configured.
+        Raises ValueError if the agent has no compaction_model configured, or if a
+        tool is waiting for approval (the turn holds the run lock until it is answered).
         """
+        if pending_approvals.for_context(context_id):
+            raise ValueError(APPROVAL_PENDING_COMPACT_MESSAGE)
         harness = get_harness(agent_version)
         async with run_registry.run_lock(context_id):
             return await harness.compact(context_id)
