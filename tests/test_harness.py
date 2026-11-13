@@ -43,6 +43,7 @@ from aug.core.harness import (
     pending_approvals,
 )
 from aug.core.harness.langgraph import (
+    ATTENDED_MAX_TOOL_ROUNDS,
     UNATTENDED_MAX_TOOL_ROUNDS,
     LangGraphHarness,
     _harness_error,
@@ -845,7 +846,7 @@ async def test_stop_run_cancels_whatever_agent_the_turn_uses() -> None:
 
 
 async def test_unattended_turns_are_capped_at_a_few_steps() -> None:
-    """A push that loops on tools stops at the cap with step_limit; a chat turn doesn't."""
+    """A push that loops on tools stops at its low cap with step_limit."""
     loop = [_call("slow", {"seconds": 0}, f"c{i}") for i in range(30)]
     harness, agent = _harness(*loop)
     loop = agent.replies
@@ -857,13 +858,26 @@ async def test_unattended_turns_are_capped_at_a_few_steps() -> None:
     assert len(loop) == 30 - UNATTENDED_MAX_TOOL_ROUNDS  # stopped asking the model
 
 
-async def test_attended_turns_have_no_tool_round_cap() -> None:
+async def test_attended_turns_get_room_for_long_work() -> None:
     loop = [_call("slow", {"seconds": 0}, f"c{i}") for i in range(15)]
     harness, _ = _harness(*loop, AIMessage(content="done"))
 
     events = await _collect(harness.run(_msg("chat"), "c1", TURN))
 
     assert events[-1] == TurnEnded()
+
+
+async def test_a_chat_turn_looping_on_tools_is_stopped_at_the_cap() -> None:
+    """A model that keeps calling tools (say, a note after every note) is stopped."""
+    total = ATTENDED_MAX_TOOL_ROUNDS + 20
+    loop = [_call("slow", {"seconds": 0}, f"c{i}") for i in range(total)]
+    harness, agent = _harness(*loop)
+    loop = agent.replies
+
+    events = await _collect(harness.run(_msg("chat"), "c1", TURN))
+
+    assert events[-1].error == HarnessError(kind="step_limit")
+    assert len(loop) == total - ATTENDED_MAX_TOOL_ROUNDS
 
 
 async def test_a_stopped_turn_tells_the_user_it_stopped_not_that_it_failed() -> None:

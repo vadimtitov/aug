@@ -50,11 +50,13 @@ from aug.utils.media import MODEL_IMAGE_TYPES, image_marker
 
 logger = logging.getLogger(__name__)
 
-# Tool rounds an unattended turn (a push, a scheduled task) may take.  Nobody is
-# watching it, so a runaway task is stopped early.  Counted here, not with LangGraph's
-# recursion_limit: the graph pauses after every tool round and each resume starts a
-# fresh step count, so a recursion_limit never binds across rounds.
+# Tool rounds a turn may take before it is stopped as a loop.  An unattended turn (a
+# push, a scheduled task) has nobody watching, so it is stopped early; a chat turn gets
+# room for long real work.  Counted here, not with LangGraph's recursion_limit: the
+# graph pauses after every tool round and each resume starts a fresh step count, so a
+# recursion_limit never binds across rounds.
 UNATTENDED_MAX_TOOL_ROUNDS = 10
+ATTENDED_MAX_TOOL_ROUNDS = 100
 
 
 class LangGraphHarness(Harness):
@@ -173,9 +175,13 @@ class LangGraphHarness(Harness):
                     finished = True
                     break
                 tool_rounds += 1
-                if not turn.attended and tool_rounds >= UNATTENDED_MAX_TOOL_ROUNDS:
+                cap = ATTENDED_MAX_TOOL_ROUNDS if turn.attended else UNATTENDED_MAX_TOOL_ROUNDS
+                if tool_rounds >= cap:
                     logger.warning(
-                        "unattended turn hit %d tool rounds context=%s", tool_rounds, context_id
+                        "turn hit %d tool rounds context=%s attended=%s",
+                        tool_rounds,
+                        context_id,
+                        turn.attended,
                     )
                     yield TurnEnded(error=HarnessError(kind="step_limit"))
                     return
