@@ -74,7 +74,6 @@ def isolated_registry():
 @pytest.fixture()
 def interface(isolated_registry, harness):
     from aug.api.interfaces.base import BaseInterface
-    from aug.core.tools.approval import ApprovalRequest
 
     class _TestInterface(BaseInterface[str]):
         _debounce_window = 0.05  # 50ms — fast enough for tests
@@ -83,9 +82,6 @@ def interface(isolated_registry, harness):
             return _make_incoming(context)
 
         async def send_notification(self, target_id: str, text: str) -> None:
-            pass
-
-        async def request_approval(self, request: ApprovalRequest, context: str) -> None:
             pass
 
         async def resolve_context(self, context_id, *, topic_name=None, chat_id=None) -> str:

@@ -3,6 +3,10 @@
 A harness (LangGraph today, Claude Code later) takes a Message for a context_id and
 streams events back.  Interfaces build the Message and render the events; nothing in
 here knows which harness runs the turn.
+
+Events that belong to a tool call carry ``parent_id``: the id of the ToolStarted they
+belong under.  A subagent's own tool calls are ToolStarted events whose parent is the
+subagent's call.
 """
 
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -12,8 +16,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Literal
 
-from aug.core.events import AgentEvent as GraphEvent
-from aug.core.tools.approval import ApprovalRequest
+from aug.core.tools.output import ToolOutput
 
 
 @dataclass(frozen=True)
@@ -89,6 +92,108 @@ class Usage:
 
 
 @dataclass(frozen=True)
+class ApprovalRequest:
+    """An operation a tool wants the user to approve before it runs.
+
+    tool_name: the tool asking (e.g. ``"run_ssh"``).
+    resource:  what is acted on (an SSH target, a file path); "" if the tool has none.
+    operation: what is done (a shell command, a file transfer).
+    """
+
+    tool_name: str
+    resource: str
+    operation: str
+
+    @property
+    def description(self) -> str:
+        """Human-readable string used in denial messages and fallback display."""
+        return f"{self.resource}: {self.operation}" if self.resource else self.operation
+
+
+class ApprovalDecision(Enum):
+    APPROVED_ONCE = "approved_once"
+    APPROVED_ALWAYS = "approved_always"
+    DENIED = "denied"
+    # Never chosen by the user; each tells the model why the tool did not run.
+    REPLIED = "replied"  # the user typed a message instead of tapping a button
+    TIMED_OUT = "timed_out"
+    NO_USER = "no_user"  # an unattended turn: nobody is there to ask
+
+    @property
+    def approved(self) -> bool:
+        return self in (ApprovalDecision.APPROVED_ONCE, ApprovalDecision.APPROVED_ALWAYS)
+
+
+@dataclass(frozen=True)
+class TextDelta:
+    text: str
+    parent_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ToolStarted:
+    id: str
+    name: str  # canonical: no harness prefix, so display and approval rules match
+    args: dict
+    parent_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ToolProgress:
+    """A step a running tool reports (a browser step, say)."""
+
+    text: str
+    parent_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ToolEnded:
+    id: str
+    name: str
+    output: ToolOutput | str | None
+    error: bool = False  # also True when the tool's approval was not granted
+    parent_id: str | None = None
+
+
+@dataclass(frozen=True)
+class StatusUpdate:
+    """A brief notice outside any tool (e.g. 'Compacting conversation…')."""
+
+    text: str
+    parent_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ApprovalRequested:
+    """A tool is waiting for the user's decision on *request*.
+
+    The interface asks the user and answers with ``pending_approvals.resolve(id, …)``.
+    """
+
+    id: str
+    request: ApprovalRequest
+    parent_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ApprovalResolved:
+    id: str
+    decision: ApprovalDecision
+    parent_id: str | None = None
+
+
+AgentEvent = (
+    TextDelta
+    | ToolStarted
+    | ToolProgress
+    | ToolEnded
+    | StatusUpdate
+    | ApprovalRequested
+    | ApprovalResolved
+)
+
+
+@dataclass(frozen=True)
 class TurnStarted:
     context_id: str
 
@@ -99,19 +204,15 @@ class TurnEnded:
 
     unconsumed: messages injected too late for the turn to use; the caller starts a
                 follow-up turn with them.
-    approval:   the turn paused on this approval request (LangGraph's interrupt).  The
-                caller asks the user and resumes.  Goes away once approvals are awaited
-                inside the tool (ToolContext.request_approval).
     """
 
     unconsumed: list[Message] = field(default_factory=list)
     error: HarnessError | None = None
     cancelled: bool = False
     usage: Usage = field(default_factory=Usage)
-    approval: ApprovalRequest | None = None
 
 
-HarnessEvent = GraphEvent | TurnStarted | TurnEnded
+HarnessEvent = AgentEvent | TurnStarted | TurnEnded
 
 # Receives a turn the harness started by itself (Claude Code finishing background work).
 UnsolicitedSink = Callable[[str, AsyncIterator[HarnessEvent]], Awaitable[None]]

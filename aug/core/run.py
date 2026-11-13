@@ -76,8 +76,9 @@ class RunRegistry:
         return self._locks[context_id]
 
     def run_lock(self, context_id: str) -> asyncio.Lock:
-        """The run lock: held for a whole turn by whoever runs one — interfaces, approval
-        resumes, pushes, /compact — so two turns never share a context_id at once."""
+        """The run lock: held for a whole turn by whoever runs one — interfaces, pushes,
+        /compact — so two turns never share a context_id at once.  A tool waiting for
+        approval keeps it held until the user answers."""
         if context_id not in self._run_locks:
             self._run_locks[context_id] = asyncio.Lock()
         return self._run_locks[context_id]

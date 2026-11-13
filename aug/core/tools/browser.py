@@ -20,7 +20,7 @@ from langchain_core.tools import tool
 from langchain_core.tools.base import InjectedToolArg
 
 from aug.config import get_settings
-from aug.core.events import send_tool_progress_update
+from aug.core.harness.types import ToolProgress
 from aug.core.llm import build_chat_model
 from aug.core.prompts import (
     ASK_HUMAN_CAPTCHA_DESCRIPTION,
@@ -30,6 +30,7 @@ from aug.core.prompts import (
     CAPTCHA_TRANSCRIPTION_PROMPT,
 )
 from aug.core.run import AGENT_RUN_CONFIG_KEY, MessageContent
+from aug.core.tools.context import current_tool_context
 from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
 from aug.utils.cdp import resolve_cdp_url
 from aug.utils.file_settings import load_settings
@@ -118,6 +119,7 @@ async def browser(
 
     sensitive_data = _resolve_secrets(secrets)
     run = (config or {}).get("configurable", {}).get(AGENT_RUN_CONFIG_KEY)
+    ctx = current_tool_context()
 
     # Forward reference — populated after Agent is created below.
     agent_ref: list[Agent] = []
@@ -139,7 +141,8 @@ async def browser(
         goal = (output.next_goal or "").strip().replace("\n", " ")
         netloc = urlparse(state.url).netloc or state.url
         text = f"Step {step} · {goal}" if goal else f"Step {step} · {netloc}"
-        await send_tool_progress_update(text)
+        if ctx is not None:
+            await ctx.emit(ToolProgress(text=text))
 
     async def _should_stop() -> bool:
         return run is not None and run.user_requested_stop.is_set()

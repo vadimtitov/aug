@@ -28,9 +28,10 @@ from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage, Sys
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from aug.core.events import dispatch_status
+from aug.core.harness.types import StatusUpdate
 from aug.core.llm import build_chat_model
 from aug.core.prompts import COMPACTION_LOOP_GUARD, COMPACTION_PROMPT
+from aug.core.tools.context import current_tool_context
 
 if TYPE_CHECKING:
     from aug.core.agents.base_agent import BaseAgent
@@ -103,7 +104,9 @@ async def compact_messages(
         len(to_keep),
     )
 
-    await dispatch_status("🗜 Compacting conversation…")
+    ctx = current_tool_context()
+    if ctx is not None:
+        await ctx.emit(StatusUpdate(text="🗜 Compacting conversation…"))
     summary = await _summarise(to_summarise, compaction_model, max_summary_tokens)
 
     logger.info(

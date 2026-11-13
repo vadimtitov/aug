@@ -9,13 +9,12 @@ and free.  The tools below exist so scenarios can exercise progress, approvals a
 
 import asyncio
 
-from langchain_core.runnables.config import RunnableConfig
 from langchain_core.tools import tool
 
 from aug.core.agents.chat_agent import AugAgent
-from aug.core.events import send_tool_progress_update
-from aug.core.run import AGENT_RUN_CONFIG_KEY
+from aug.core.harness.types import ToolProgress
 from aug.core.tools.approval import requires_approval
+from aug.core.tools.context import current_tool_context
 
 SCRIPTED_MODEL = "scripted"
 
@@ -23,8 +22,10 @@ SCRIPTED_MODEL = "scripted"
 @tool
 async def dev_progress(steps: int) -> str:
     """Report *steps* progress updates, then finish."""
+    ctx = current_tool_context()
     for i in range(1, steps + 1):
-        await send_tool_progress_update(f"Step {i} of {steps}")
+        if ctx is not None:
+            await ctx.emit(ToolProgress(text=f"Step {i} of {steps}"))
         await asyncio.sleep(0.05)
     return f"Completed {steps} steps."
 
@@ -37,13 +38,13 @@ async def dev_guarded(command: str) -> str:
 
 
 @tool
-async def dev_wait(seconds: float, config: RunnableConfig) -> str:
+async def dev_wait(seconds: float) -> str:
     """Wait *seconds*, stopping early if the user asks the run to stop."""
-    run = (config or {}).get("configurable", {}).get(AGENT_RUN_CONFIG_KEY)
+    ctx = current_tool_context()
     loop = asyncio.get_running_loop()
     deadline = loop.time() + seconds
     while loop.time() < deadline:
-        if run is not None and run.user_requested_stop.is_set():
+        if ctx is not None and ctx.stopped.is_set():
             return "Stopped by the user before the wait finished."
         await asyncio.sleep(0.05)
     return f"Waited {seconds} seconds."

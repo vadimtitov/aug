@@ -1,4 +1,4 @@
-"""Chat router — /chat/invoke and /chat/stream."""
+"""Chat router — /chat/invoke, /chat/stream and approvals."""
 
 import logging
 
@@ -6,10 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from aug.api.interfaces.rest import RestApiInterface
-from aug.api.schemas.chat import ApprovalRequest, ChatRequest, ChatResponse
+from aug.api.schemas.chat import ApprovalAnswer, ChatRequest, ChatResponse, PendingApprovalInfo
 from aug.api.security import require_api_key
+from aug.core.harness import ApprovalDecision, pending_approvals
 from aug.core.registry import list_agents
-from aug.core.tools.approval import ApprovalDecision
 from aug.utils.logging import set_context_id
 
 logger = logging.getLogger(__name__)
@@ -67,28 +67,40 @@ async def cancel_run(context_id: str, request: Request) -> None:
         logger.info("cancel_run thread=%s", context_id)
 
 
-@router.post("/{context_id}/approve", response_model=ChatResponse)
-async def approve_command(context_id: str, body: ApprovalRequest, request: Request) -> ChatResponse:
-    """Resume an agent run paused on a command approval interrupt.
+@router.get("/{context_id}/approvals", response_model=list[PendingApprovalInfo])
+async def list_pending_approvals(context_id: str) -> list[PendingApprovalInfo]:
+    """Approval requests a running turn in *context_id* is waiting on.
 
-    Call this after receiving the approval prompt text in the /invoke or /stream
-    response.  The agent will continue with the given decision and return its
-    next response.
+    The same requests arrive as ``approval_requested`` events on /chat/stream; this is
+    for /chat/invoke callers, whose response only returns once the turn is over.
     """
+    return [
+        PendingApprovalInfo(
+            id=p.id,
+            tool_name=p.request.tool_name,
+            resource=p.request.resource,
+            operation=p.request.operation,
+        )
+        for p in pending_approvals.for_context(context_id)
+    ]
+
+
+@router.post("/{context_id}/approve", status_code=status.HTTP_204_NO_CONTENT)
+async def approve(context_id: str, body: ApprovalAnswer) -> None:
+    """Answer an approval request.  The waiting turn carries on in its own response."""
     set_context_id(context_id)
-    interface = _get_interface(request)
-    agent = body.agent or interface.get_agent_version(context_id)
-    _validate_agent(agent)
+    pending = pending_approvals.get(body.id)
     decision = ApprovalDecision(body.decision)
-    sender_id = body.sender_id or context_id
-    if await interface.get_pending_approval(context_id, agent) is None:
+    if (
+        pending is None
+        or pending.context_id != context_id
+        or not pending_approvals.resolve(body.id, decision)
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Thread '{context_id}' has no pending approval interrupt.",
+            detail=f"Approval '{body.id}' is not pending in thread '{context_id}'.",
         )
-    logger.info("approve_command thread=%s agent=%s decision=%s", context_id, agent, decision)
-    text = await interface.invoke_resume(context_id, agent, sender_id, decision)
-    return ChatResponse(context_id=context_id, agent=agent, response=text, tool_calls=[])
+    logger.info("approve thread=%s id=%s decision=%s", context_id, body.id, decision.value)
 
 
 def _get_interface(request: Request) -> RestApiInterface:

@@ -1,14 +1,12 @@
 """Unit tests for the approval rules engine (aug/core/tools/approval.py)."""
 
 import re
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from aug.core.harness import ApprovalDecision, ApprovalRequest
 from aug.core.tools.approval import (
-    _SUBAGENT_APPROVAL_UNAVAILABLE,
-    ApprovalDecision,
-    ApprovalRequest,
     is_approved,
     list_approvals,
     requires_approval,
@@ -16,6 +14,13 @@ from aug.core.tools.approval import (
     save_approval,
 )
 from aug.utils.file_settings import ApprovalRule, AppSettings, ToolSettings
+
+_P_CTX = "aug.core.tools.approval.current_tool_context"
+
+
+def _ctx(**request_approval) -> MagicMock:
+    """A ToolContext whose request_approval answers as configured."""
+    return MagicMock(request_approval=AsyncMock(**request_approval))
 
 
 def _settings_with_rules(rules: list[ApprovalRule]) -> AppSettings:
@@ -217,11 +222,11 @@ def test_revoke_approval_out_of_range_raises():
 
 
 @pytest.mark.asyncio
-async def test_decorator_calls_interrupt_when_not_approved():
-    interrupt_values: list = []
+async def test_decorator_asks_the_user_when_not_approved():
+    asked: list = []
 
-    def fake_interrupt(value):
-        interrupt_values.append(value)
+    def fake_ask(value):
+        asked.append(value)
         return ApprovalDecision.APPROVED_ONCE
 
     async def run_ssh(target: str, command: str) -> str:
@@ -231,12 +236,12 @@ async def test_decorator_calls_interrupt_when_not_approved():
 
     with (
         patch("aug.core.tools.approval.load_settings", return_value=_settings_with_rules([])),
-        patch("aug.core.tools.approval.interrupt", side_effect=fake_interrupt),
+        patch(_P_CTX, return_value=_ctx(side_effect=fake_ask)),
     ):
         result = await decorated(target="homeserver", command="df -h")
 
-    assert len(interrupt_values) == 1
-    req = interrupt_values[0]
+    assert len(asked) == 1
+    req = asked[0]
     assert isinstance(req, ApprovalRequest)
     assert req.tool_name == "run_ssh"
     assert req.resource == ""
@@ -247,10 +252,10 @@ async def test_decorator_calls_interrupt_when_not_approved():
 
 @pytest.mark.asyncio
 async def test_decorator_infers_tool_name_from_function():
-    interrupt_values: list = []
+    asked: list = []
 
-    def fake_interrupt(value):
-        interrupt_values.append(value)
+    def fake_ask(value):
+        asked.append(value)
         return ApprovalDecision.APPROVED_ONCE
 
     async def download_ssh_file(target: str, remote_path: str) -> str:
@@ -262,17 +267,17 @@ async def test_decorator_infers_tool_name_from_function():
 
     with (
         patch("aug.core.tools.approval.load_settings", return_value=_settings_with_rules([])),
-        patch("aug.core.tools.approval.interrupt", side_effect=fake_interrupt),
+        patch(_P_CTX, return_value=_ctx(side_effect=fake_ask)),
     ):
         await decorated(target="homeserver", remote_path="/etc/hosts")
 
-    assert interrupt_values[0].tool_name == "download_ssh_file"
-    assert interrupt_values[0].resource == "homeserver"
-    assert interrupt_values[0].operation == "download /etc/hosts"
+    assert asked[0].tool_name == "download_ssh_file"
+    assert asked[0].resource == "homeserver"
+    assert asked[0].operation == "download /etc/hosts"
 
 
 @pytest.mark.asyncio
-async def test_decorator_skips_interrupt_when_approved():
+async def test_decorator_skips_asking_when_approved():
     interrupt_called = []
 
     async def run_ssh(target: str, command: str) -> str:
@@ -283,10 +288,7 @@ async def test_decorator_skips_interrupt_when_approved():
 
     with (
         patch("aug.core.tools.approval.load_settings", return_value=_settings_with_rules(rules)),
-        patch(
-            "aug.core.tools.approval.interrupt",
-            side_effect=lambda v: interrupt_called.append(v),
-        ),
+        patch(_P_CTX, return_value=_ctx(side_effect=interrupt_called.append)),
     ):
         result = await decorated(target="homeserver", command="df -h")
 
@@ -305,7 +307,7 @@ async def test_decorator_saves_rule_on_approved_always():
 
     with (
         patch("aug.core.tools.approval.load_settings", return_value=_settings_with_rules([])),
-        patch("aug.core.tools.approval.interrupt", return_value=ApprovalDecision.APPROVED_ALWAYS),
+        patch(_P_CTX, return_value=_ctx(return_value=ApprovalDecision.APPROVED_ALWAYS)),
         patch("aug.core.tools.approval.save_settings", side_effect=saved.append),
     ):
         result = await decorated(target="homeserver", command="df -h")
@@ -327,7 +329,7 @@ async def test_decorator_returns_denial_string_on_denied():
 
     with (
         patch("aug.core.tools.approval.load_settings", return_value=_settings_with_rules([])),
-        patch("aug.core.tools.approval.interrupt", return_value=ApprovalDecision.DENIED),
+        patch(_P_CTX, return_value=_ctx(return_value=ApprovalDecision.DENIED)),
     ):
         result = await decorated(target="homeserver", command="rm -rf /tmp/test")
 
@@ -348,7 +350,7 @@ async def test_decorator_executes_tool_on_approved_once():
 
     with (
         patch("aug.core.tools.approval.load_settings", return_value=_settings_with_rules([])),
-        patch("aug.core.tools.approval.interrupt", return_value=ApprovalDecision.APPROVED_ONCE),
+        patch(_P_CTX, return_value=_ctx(return_value=ApprovalDecision.APPROVED_ONCE)),
         patch("aug.core.tools.approval.save_settings"),
     ):
         result = await decorated(target="homeserver", command="uptime")
@@ -359,10 +361,10 @@ async def test_decorator_executes_tool_on_approved_once():
 
 @pytest.mark.asyncio
 async def test_decorator_default_formats_all_kwargs():
-    interrupt_values: list = []
+    asked: list = []
 
-    def fake_interrupt(value):
-        interrupt_values.append(value)
+    def fake_ask(value):
+        asked.append(value)
         return ApprovalDecision.APPROVED_ONCE
 
     async def my_tool(target: str, remote_path: str) -> str:
@@ -372,24 +374,24 @@ async def test_decorator_default_formats_all_kwargs():
 
     with (
         patch("aug.core.tools.approval.load_settings", return_value=_settings_with_rules([])),
-        patch("aug.core.tools.approval.interrupt", side_effect=fake_interrupt),
+        patch(_P_CTX, return_value=_ctx(side_effect=fake_ask)),
     ):
         await decorated(target="homeserver", remote_path="/etc/nginx/nginx.conf")
 
-    assert len(interrupt_values) == 1
-    assert interrupt_values[0].resource == ""
-    assert "target" in interrupt_values[0].operation
-    assert "homeserver" in interrupt_values[0].operation
-    assert "remote_path" in interrupt_values[0].operation
-    assert "/etc/nginx/nginx.conf" in interrupt_values[0].operation
+    assert len(asked) == 1
+    assert asked[0].resource == ""
+    assert "target" in asked[0].operation
+    assert "homeserver" in asked[0].operation
+    assert "remote_path" in asked[0].operation
+    assert "/etc/nginx/nginx.conf" in asked[0].operation
 
 
 @pytest.mark.asyncio
 async def test_decorator_describe_tuple_sets_resource_and_operation():
-    interrupt_values: list = []
+    asked: list = []
 
-    def fake_interrupt(value):
-        interrupt_values.append(value)
+    def fake_ask(value):
+        asked.append(value)
         return ApprovalDecision.APPROVED_ONCE
 
     async def upload_ssh_file(target: str, local_path: str, remote_path: str) -> str:
@@ -404,26 +406,33 @@ async def test_decorator_describe_tuple_sets_resource_and_operation():
 
     with (
         patch("aug.core.tools.approval.load_settings", return_value=_settings_with_rules([])),
-        patch("aug.core.tools.approval.interrupt", side_effect=fake_interrupt),
+        patch(_P_CTX, return_value=_ctx(side_effect=fake_ask)),
     ):
         await decorated(target="homeserver", local_path="/tmp/foo", remote_path="/etc/foo")
 
-    assert len(interrupt_values) == 1
-    assert interrupt_values[0].tool_name == "upload_ssh_file"
-    assert interrupt_values[0].resource == "homeserver"
-    assert interrupt_values[0].operation == "upload /tmp/foo → /etc/foo"
-    assert interrupt_values[0].description == "homeserver: upload /tmp/foo → /etc/foo"
+    assert len(asked) == 1
+    assert asked[0].tool_name == "upload_ssh_file"
+    assert asked[0].resource == "homeserver"
+    assert asked[0].operation == "upload /tmp/foo → /etc/foo"
+    assert asked[0].description == "homeserver: upload /tmp/foo → /etc/foo"
 
 
 # ---------------------------------------------------------------------------
-# @requires_approval — no approval channel (subagent runs)
+# @requires_approval — operations that were not approved
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_decorator_denies_when_approval_unavailable():
-    """A subagent (can_approve=False) must not pause; it fails honestly instead."""
-    interrupt_called = []
+@pytest.mark.parametrize(
+    ("decision", "phrase"),
+    [
+        (ApprovalDecision.DENIED, "denied by user"),
+        (ApprovalDecision.REPLIED, "replied with a message"),
+        (ApprovalDecision.TIMED_OUT, "in time"),
+        (ApprovalDecision.NO_USER, "nobody is present"),
+    ],
+)
+async def test_each_unapproved_outcome_says_why_and_that_nothing_ran(decision, phrase):
     executed = []
 
     async def run_ssh(target: str, command: str) -> str:
@@ -434,53 +443,39 @@ async def test_decorator_denies_when_approval_unavailable():
 
     with (
         patch("aug.core.tools.approval.load_settings", return_value=_settings_with_rules([])),
-        patch(
-            "aug.core.tools.approval.get_config",
-            return_value={"configurable": {"can_approve": False}},
-        ),
-        patch(
-            "aug.core.tools.approval.interrupt",
-            side_effect=lambda v: interrupt_called.append(v),
-        ),
+        patch(_P_CTX, return_value=_ctx(return_value=decision)),
     ):
         result = await decorated(target="homeserver", command="rm -rf /tmp/x")
 
-    assert result == _SUBAGENT_APPROVAL_UNAVAILABLE
-    assert not interrupt_called  # never paused
-    assert not executed  # tool body never ran
+    assert phrase in result
+    assert "NOT executed" in result
+    assert not executed
 
 
 @pytest.mark.asyncio
-async def test_decorator_interrupts_when_can_approve_true_in_config():
-    """When the run can approve (default), the interrupt path is preserved."""
-    interrupt_values: list = []
+async def test_decorator_does_not_run_outside_a_turn():
+    """No ToolContext (called outside any turn): nobody can be asked, so nothing runs."""
+    executed = []
 
     async def run_ssh(target: str, command: str) -> str:
+        executed.append(command)
         return "executed"
 
     decorated = requires_approval(describe=lambda target, command: (target, command))(run_ssh)
 
     with (
         patch("aug.core.tools.approval.load_settings", return_value=_settings_with_rules([])),
-        patch(
-            "aug.core.tools.approval.get_config",
-            return_value={"configurable": {"can_approve": True}},
-        ),
-        patch(
-            "aug.core.tools.approval.interrupt",
-            side_effect=lambda v: interrupt_values.append(v) or ApprovalDecision.APPROVED_ONCE,
-        ),
+        patch(_P_CTX, return_value=None),
     ):
-        result = await decorated(target="homeserver", command="df -h")
+        result = await decorated(target="homeserver", command="rm -rf /tmp/x")
 
-    assert len(interrupt_values) == 1
-    assert result == "executed"
+    assert "NOT executed" in result
+    assert not executed
 
 
 @pytest.mark.asyncio
-async def test_decorator_executes_preapproved_even_without_approval_channel():
-    """A saved rule means no prompt is needed, so the tool runs even in a subagent."""
-    interrupt_called = []
+async def test_decorator_executes_preapproved_without_asking():
+    """A saved rule means no prompt is needed, so the tool runs even with nobody there."""
 
     async def run_ssh(target: str, command: str) -> str:
         return "executed"
@@ -490,16 +485,8 @@ async def test_decorator_executes_preapproved_even_without_approval_channel():
 
     with (
         patch("aug.core.tools.approval.load_settings", return_value=_settings_with_rules(rules)),
-        patch(
-            "aug.core.tools.approval.get_config",
-            return_value={"configurable": {"can_approve": False}},
-        ),
-        patch(
-            "aug.core.tools.approval.interrupt",
-            side_effect=lambda v: interrupt_called.append(v),
-        ),
+        patch(_P_CTX, return_value=None),
     ):
         result = await decorated(target="homeserver", command="df -h")
 
     assert result == "executed"
-    assert not interrupt_called

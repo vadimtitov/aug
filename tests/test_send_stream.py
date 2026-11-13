@@ -6,7 +6,19 @@ import pytest
 from telegram.error import BadRequest
 
 import aug.api.interfaces.telegram.interface as _iface_mod
-from aug.core.events import ChatModelStreamEvent, ToolEndEvent, ToolStartEvent
+from aug.api.interfaces.telegram.interface import TelegramInterface
+from aug.core.harness import (
+    ApprovalDecision,
+    ApprovalRequest,
+    ApprovalRequested,
+    ApprovalResolved,
+    HarnessError,
+    TextDelta,
+    ToolEnded,
+    ToolProgress,
+    ToolStarted,
+    TurnEnded,
+)
 
 
 def _make_context(chat_id: int = 123, context_id: int | None = None):
@@ -56,8 +68,6 @@ def _no_typing_loop():
 
 @pytest.fixture()
 def interface():
-    from aug.api.interfaces.telegram.interface import TelegramInterface
-
     return TelegramInterface()
 
 
@@ -73,8 +83,8 @@ async def test_draft_called_during_stream_and_final_message_commits(interface):
 
     await interface.send_stream(
         _stream(
-            ChatModelStreamEvent(delta="Hello"),
-            ChatModelStreamEvent(delta=" world"),
+            TextDelta(text="Hello"),
+            TextDelta(text=" world"),
         ),
         context,
     )
@@ -97,7 +107,7 @@ async def test_rapid_tokens_throttled_to_one_draft_call(interface):
     """Ten tokens delivered in rapid succession produce only one draft call (300 ms throttle)."""
     context, _msg, bot, _sent = _make_context()
 
-    tokens = [ChatModelStreamEvent(delta=c) for c in "Hello world!"]
+    tokens = [TextDelta(text=c) for c in "Hello world!"]
     await interface.send_stream(_stream(*tokens), context)
 
     # Only the first token triggers a draft; the rest are throttled
@@ -116,12 +126,10 @@ async def test_tool_interlude_commits_pretext_silently(interface):
 
     await interface.send_stream(
         _stream(
-            ChatModelStreamEvent(delta="Before"),
-            ToolStartEvent(
-                run_id="r1", tool_name="brave_search", args={"query": "q"}, parent_ids=[]
-            ),
-            ToolEndEvent(run_id="r1", tool_name="brave_search", output=None, error=False),
-            ChatModelStreamEvent(delta="After"),
+            TextDelta(text="Before"),
+            ToolStarted(id="r1", name="brave_search", args={"query": "q"}),
+            ToolEnded(id="r1", name="brave_search", output=None, error=False),
+            TextDelta(text="After"),
         ),
         context,
     )
@@ -152,8 +160,8 @@ async def test_draft_generic_failure_logs_warning_and_falls_back(interface):
     with patch("aug.api.interfaces.telegram.interface.logger") as mock_logger:
         await interface.send_stream(
             _stream(
-                ChatModelStreamEvent(delta="Hello"),
-                ChatModelStreamEvent(delta=" world"),
+                TextDelta(text="Hello"),
+                TextDelta(text=" world"),
             ),
             context,
         )
@@ -171,7 +179,7 @@ async def test_peer_invalid_error_logged_at_info_and_chat_cached(interface):
     try:
         with patch("aug.api.interfaces.telegram.interface.logger") as mock_logger:
             await interface.send_stream(
-                _stream(ChatModelStreamEvent(delta="Hello")),
+                _stream(TextDelta(text="Hello")),
                 context,
             )
 
@@ -181,7 +189,7 @@ async def test_peer_invalid_error_logged_at_info_and_chat_cached(interface):
 
         # Second request: draft never attempted
         bot.send_message_draft.reset_mock()
-        await interface.send_stream(_stream(ChatModelStreamEvent(delta="Hi")), context)
+        await interface.send_stream(_stream(TextDelta(text="Hi")), context)
         bot.send_message_draft.assert_not_called()
     finally:
         _iface_mod._no_draft_chats.discard(999)
@@ -207,13 +215,11 @@ async def test_failed_turn_sends_no_partial_answer_and_marks_open_tools_failed(i
     """A turn ending in an error behaves like the old raised exception: nothing more is
     committed (the caller sends the error instead), and a tool still running is frozen
     as failed."""
-    from aug.core.harness import HarnessError, TurnEnded
-
     context, _msg, _bot, sent = _make_context()
 
     await interface.send_stream(
         _stream(
-            ToolStartEvent(run_id="r1", tool_name="run_bash", args={"command": "ls"}),
+            ToolStarted(id="r1", name="run_bash", args={"command": "ls"}),
             TurnEnded(error=HarnessError(kind="rate_limited")),
         ),
         context,
@@ -225,15 +231,13 @@ async def test_failed_turn_sends_no_partial_answer_and_marks_open_tools_failed(i
 
 @pytest.mark.asyncio
 async def test_stopped_turn_marks_its_open_tools_stopped_not_failed(interface):
-    from aug.core.harness import TurnEnded
-
     context, _msg, _bot, sent = _make_context()
 
     await interface.send_stream(
         _stream(
-            ToolStartEvent(run_id="r1", tool_name="run_bash", args={"command": "ls"}),
-            ToolEndEvent(run_id="r1", tool_name="run_bash", output="ok"),
-            ToolStartEvent(run_id="r2", tool_name="run_bash", args={"command": "sleep 60"}),
+            ToolStarted(id="r1", name="run_bash", args={"command": "ls"}),
+            ToolEnded(id="r1", name="run_bash", output="ok"),
+            ToolStarted(id="r2", name="run_bash", args={"command": "sleep 60"}),
             TurnEnded(cancelled=True),
         ),
         context,
@@ -241,3 +245,78 @@ async def test_stopped_turn_marks_its_open_tools_stopped_not_failed(interface):
 
     final = sent[-1].text
     assert "🟢" in final and "⏹" in final and "🔴" not in final
+
+
+# ---------------------------------------------------------------------------
+# Nested subagent events and approvals
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_subagent_tool_calls_nest_under_the_subagent_line(interface):
+    context, _msg, _bot, sent = _make_context()
+
+    await interface.send_stream(
+        _stream(
+            ToolStarted(id="r1", name="run_subagent", args={"prompt": "look"}),
+            ToolStarted(id="s1", name="brave_search", args={"query": "q"}, parent_id="r1"),
+            ToolProgress(text="Step 2 · example.com", parent_id="r1"),
+            ToolEnded(id="s1", name="brave_search", output="hits", parent_id="r1"),
+            ToolEnded(id="r1", name="run_subagent", output="found"),
+            TextDelta(text="Here it is."),
+        ),
+        context,
+    )
+
+    [block] = [m.text for m in sent if "Here it is" not in m.text]
+    assert "Step 2 · example.com" in block
+    assert block.count("🟢") == 1  # the subagent line; its children have no status of their own
+
+
+def _approval_events(decision):
+    request = ApprovalRequest(tool_name="run_ssh", resource="box", operation="rm x")
+    return [
+        ToolStarted(id="r1", name="run_ssh", args={"target": "box", "command": "rm x"}),
+        ApprovalRequested(id="a1", request=request, parent_id="r1"),
+        ApprovalResolved(id="a1", decision=decision, parent_id="r1"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_approval_prompt_carries_request_id_buttons_and_shows_the_answer(interface):
+    context, _msg, _bot, sent = _make_context()
+
+    await interface.send_stream(
+        _stream(
+            *_approval_events(ApprovalDecision.DENIED),
+            ToolEnded(id="r1", name="run_ssh", output="denied", error=True),
+            TextDelta(text="Not run."),
+        ),
+        context,
+    )
+
+    prompt = next(m for m in sent if "Approval required" in m.text)
+    rows = prompt.call_kwargs["reply_markup"].inline_keyboard
+    assert [row[0].callback_data for row in rows] == ["ap:a1:o", "ap:a1:a", "ap:a1:d"]
+    prompt.edit_text.assert_awaited_with("❌ Command denied.")
+    blocks = [m.text for m in sent if "run_ssh" in m.text.lower() or "🔴" in m.text]
+    status = [t for t in blocks if "Approval required" not in t]
+    assert len(status) == 1 and "🔴" in status[0]  # one status block; the denied tool is red
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_prompt_loses_its_buttons_when_the_turn_stops(interface):
+    context, _msg, _bot, sent = _make_context()
+    request = ApprovalRequest(tool_name="run_ssh", resource="box", operation="ls")
+
+    await interface.send_stream(
+        _stream(
+            ToolStarted(id="r1", name="run_ssh", args={}),
+            ApprovalRequested(id="a1", request=request, parent_id="r1"),
+            TurnEnded(cancelled=True),
+        ),
+        context,
+    )
+
+    prompt = next(m for m in sent if "Approval required" in m.text)
+    prompt.edit_text.assert_awaited_with("⏹ Not run — stopped.")

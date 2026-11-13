@@ -15,7 +15,7 @@ import io
 import logging
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from contextlib import aclosing
 from dataclasses import replace
 from pathlib import Path
@@ -27,29 +27,30 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from aug.config import get_settings
-from aug.core.events import ChatModelStreamEvent
 from aug.core.harness import (
     Address,
+    ApprovalDecision,
     FilePart,
     Harness,
     HarnessError,
     HarnessEvent,
     Message,
     Sender,
+    TextDelta,
     TextPart,
     TurnContext,
     TurnEnded,
     error_text,
+    pending_approvals,
 )
-from aug.core.harness.langgraph import LangGraphHarness
 from aug.core.prompts import (
+    APPROVAL_PENDING_COMPACT_MESSAGE,
     HARNESS_STOPPED_MESSAGE,
     LOCATION_SHARE_TEMPLATE,
     LOCATION_SHARE_UNKNOWN_SENDER,
 )
 from aug.core.registry import get_harness, harnesses
 from aug.core.run import run_registry
-from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
 from aug.utils.file_settings import ConversationSettings, load_settings, save_settings
 from aug.utils.logging import set_context_id, set_correlation_id
 from aug.utils.state import ConversationLocationState, LiveLocationState, load_state, save_state
@@ -168,16 +169,6 @@ class BaseInterface[ContextT](ABC):
         """
 
     @abstractmethod
-    async def request_approval(self, request: ApprovalRequest, context: ContextT) -> None:
-        """Send an approval prompt to the user (fire-and-forget).
-
-        Must deliver the prompt and return immediately — do NOT await the user's
-        response here.  The run will exit after this call; resumption happens via
-        a separate entry point (e.g. Telegram callback handler, REST endpoint)
-        that calls _execute_resume with the user's ApprovalDecision.
-        """
-
-    @abstractmethod
     async def resolve_context(
         self,
         context_id: str,
@@ -240,6 +231,9 @@ class BaseInterface[ContextT](ABC):
 
     async def send_stream(self, stream: AsyncIterator[HarnessEvent], context: ContextT) -> None:
         """Consume the agent event stream and deliver the response.
+
+        An ApprovalRequested in the stream is a tool waiting: show the user the request
+        and answer it with ``pending_approvals.resolve()`` when they decide.
 
         Default: collect the full response then call send_message.
         Override for platforms that support live streaming (e.g. Telegram).
@@ -395,6 +389,10 @@ class BaseInterface[ContextT](ABC):
 
         fire_inline = False
         async with run_registry.routing_lock(incoming.context_id):
+            # A message typed while a tool waits for approval answers it: no.  The
+            # message itself then joins the turn.  A live-location update is not a reply.
+            if not all(isinstance(p, LocationContent) for p in incoming.parts):
+                pending_approvals.deny_all(incoming.context_id, ApprovalDecision.REPLIED)
             harness = _harness_for(incoming.agent_version)
             if harness is not None and await harness.inject(message, incoming.context_id):
                 return
@@ -443,53 +441,35 @@ class BaseInterface[ContextT](ABC):
             )
             return
 
-        turn = self._turn_context(incoming.interface, incoming.context_id, incoming.sender_id)
-        async with run_registry.run_lock(incoming.context_id):
-            await self._deliver_with_follow_ups(
-                harness,
-                lambda: harness.run(message, incoming.context_id, turn),
-                incoming.context_id,
-                turn,
-                context,
-            )
-
-    async def _deliver_with_follow_ups(
-        self,
-        harness: Harness,
-        start: Callable[[], AsyncGenerator[HarnessEvent]],
-        context_id: str,
-        turn: TurnContext,
-        context: ContextT,
-    ) -> None:
-        """Deliver a turn, then one follow-up turn per batch of messages it left
-        unconsumed.  The caller holds the run lock."""
-        ended = await self._deliver(start, context_id, context)
-        follow_up = replace(turn, follow_up=True)
-        while ended and ended.unconsumed and not ended.error and not ended.approval:
-            # Arrived during the final streaming phase, with no tool-round pause left
-            # to take it: it gets a turn of its own, straight away.
-            logger.info("leftover_injection context=%s", context_id)
-            leftover = _merge_messages(ended.unconsumed)
-            ended = await self._deliver(
-                lambda message=leftover: harness.run(message, context_id, follow_up),
-                context_id,
-                context,
-            )
+        context_id = incoming.context_id
+        turn = self._turn_context(incoming.interface, context_id, incoming.sender_id)
+        async with run_registry.run_lock(context_id):
+            ended = await self._deliver(harness, message, context_id, turn, context)
+            follow_up = replace(turn, follow_up=True)
+            while ended and ended.unconsumed and not ended.error:
+                # Arrived during the final streaming phase, with no tool-round pause
+                # left to take it: it gets a turn of its own, straight away.
+                logger.info("leftover_injection context=%s", context_id)
+                leftover = _merge_messages(ended.unconsumed)
+                ended = await self._deliver(harness, leftover, context_id, follow_up, context)
 
     async def _deliver(
         self,
-        start: Callable[[], AsyncGenerator[HarnessEvent]],
+        harness: Harness,
+        message: Message,
         context_id: str,
+        turn: TurnContext,
         context: ContextT,
     ) -> TurnEnded | None:
-        """Stream one turn to the user, then report its error or ask its approval.
+        """Stream one turn to the user, then report its error.
 
         The turn is started under the routing lock and held there until TurnStarted,
         so a message arriving in between is injected rather than queued behind it.
         Returns the TurnEnded, or None when delivering the stream itself failed.
+        The caller holds the run lock.
         """
         async with run_registry.routing_lock(context_id):
-            stream = start()
+            stream = harness.run(message, context_id, turn)
             first = await anext(stream)
         ended: TurnEnded | None = None
 
@@ -504,8 +484,6 @@ class BaseInterface[ContextT](ABC):
         async with aclosing(stream):
             try:
                 await self.send_stream(events(), context)
-                if ended is not None and ended.error is None and ended.approval is not None:
-                    await self.request_approval(ended.approval, context)
             except Exception as e:
                 logger.exception("turn delivery failed: %s: %s", type(e).__name__, e)
                 await self._send_quietly(error_text(HarnessError(kind="internal")), context)
@@ -549,54 +527,18 @@ class BaseInterface[ContextT](ABC):
                 return True
         return False
 
-    async def get_pending_approval(
-        self, context_id: str, agent_version: str
-    ) -> ApprovalRequest | None:
-        """Return the pending ApprovalRequest for *context_id*, or None if not paused."""
-        harness = _harness_for(agent_version)
-        if not isinstance(harness, LangGraphHarness):
-            return None
-        return await harness.pending_approval(context_id)
-
     async def _execute_compact(self, context_id: str, agent_version: str) -> bool:
         """Compact the message history for *context_id*, waiting for any turn in flight.
 
         Returns True if compaction ran, False if there was nothing to compact.
-        Raises ValueError if the agent has no compaction_model configured.
+        Raises ValueError if the agent has no compaction_model configured, or if a
+        tool is waiting for approval (the turn holds the run lock until it is answered).
         """
+        if pending_approvals.for_context(context_id):
+            raise ValueError(APPROVAL_PENDING_COMPACT_MESSAGE)
         harness = get_harness(agent_version)
         async with run_registry.run_lock(context_id):
             return await harness.compact(context_id)
-
-    async def _execute_resume(
-        self,
-        context_id: str,
-        agent_version: str,
-        sender_id: str,
-        interface: Literal["telegram", "rest_api"],
-        decision: ApprovalDecision,
-        context: ContextT,
-    ) -> None:
-        """Resume a turn paused on an approval with the user's *decision*.
-
-        Called by each interface's approval-response handler (Telegram button
-        callback, REST /chat/approve endpoint) after the user has responded.
-        """
-        harness = _harness_for(agent_version)
-        if not isinstance(harness, LangGraphHarness):
-            logger.warning("approval_resume: %r has no resumable approvals", agent_version)
-            return
-        set_context_id(context_id)
-        turn = self._turn_context(interface, context_id, sender_id)
-        async with run_registry.run_lock(context_id):
-            logger.info("approval_resume context=%s decision=%s", context_id, decision.value)
-            await self._deliver_with_follow_ups(
-                harness,
-                lambda: harness.resume(decision, context_id, turn),
-                context_id,
-                turn,
-                context,
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -624,7 +566,7 @@ async def _collect(stream: AsyncIterator[HarnessEvent]) -> str:
     text = ""
     async for event in stream:
         match event:
-            case ChatModelStreamEvent(delta=delta) if delta:
+            case TextDelta(text=delta, parent_id=None) if delta:
                 text += delta
     return text
 

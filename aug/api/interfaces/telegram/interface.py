@@ -14,7 +14,7 @@ import io
 import logging
 import re
 import subprocess
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
 from html.parser import HTMLParser
@@ -64,25 +64,26 @@ from aug.api.interfaces.telegram.utils import (
     restricted,
 )
 from aug.config import get_settings
-from aug.core.events import (
-    ChatModelStreamEvent,
-    StatusEvent,
-    ToolEndEvent,
-    ToolProgressEvent,
-    ToolStartEvent,
+from aug.core.harness import (
+    ApprovalDecision,
+    ApprovalRequest,
+    ApprovalRequested,
+    ApprovalResolved,
+    HarnessEvent,
+    StatusUpdate,
+    TextDelta,
+    ToolEnded,
+    ToolProgress,
+    ToolStarted,
+    TurnEnded,
+    pending_approvals,
 )
-from aug.core.harness import HarnessEvent, TurnEnded
 from aug.core.memory import run_deep_consolidation, run_light_consolidation
 from aug.core.prompts import build_system_prompt
 from aug.core.registry import list_agents
 from aug.core.run import run_registry
 from aug.core.state import AgentState
-from aug.core.tools.approval import (
-    ApprovalDecision,
-    ApprovalRequest,
-    list_approvals,
-    revoke_approval,
-)
+from aug.core.tools.approval import list_approvals, revoke_approval
 from aug.core.tools.display import format_tool
 from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
 from aug.utils.data import UPLOADS_DIR
@@ -101,6 +102,24 @@ _MAX_SUBLINES = 5  # max nested sub-tool lines shown per subagent block
 # slower than the answer text since they may compete for the chat's edit budget.
 _TOOL_EDIT_THROTTLE = 3.0
 _ANSWER_EDIT_THROTTLE = 2.0
+
+# Approval buttons carry ap:{request id}:{code}; the request itself stays server-side.
+_APPROVAL_CODES = {
+    "o": ApprovalDecision.APPROVED_ONCE,
+    "a": ApprovalDecision.APPROVED_ALWAYS,
+    "d": ApprovalDecision.DENIED,
+}
+# What an approval prompt becomes once it is answered, by decision.
+_APPROVAL_OUTCOMES = {
+    ApprovalDecision.APPROVED_ONCE: "✅ Approved for this run.",
+    ApprovalDecision.APPROVED_ALWAYS: "✅ Approved — rule saved.",
+    ApprovalDecision.DENIED: "❌ Command denied.",
+    ApprovalDecision.REPLIED: "❌ Not run — you replied instead.",
+    ApprovalDecision.TIMED_OUT: "⌛ Not run — the approval timed out.",
+    ApprovalDecision.NO_USER: "❌ Not run — nobody was there to approve it.",
+}
+_APPROVAL_STOPPED = "⏹ Not run — stopped."
+_APPROVAL_GONE = "⚠️ This approval has already been resolved."
 
 
 @dataclass
@@ -240,7 +259,10 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         bot = msg.get_bot()  # type: ignore[union-attr]
 
         stop_typing = asyncio.Event()
-        typing_task = asyncio.create_task(_typing_loop(context, stop_typing))
+        approval_prompts: dict[str, Message] = {}  # request id → its prompt, until answered
+        typing_task = asyncio.create_task(
+            _typing_loop(context, stop_typing, paused=lambda: bool(approval_prompts))
+        )
 
         # Rolling tool-status draft state
         tool_entries: list[_ToolEntry] = []
@@ -342,7 +364,9 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                 await asyncio.sleep(1.0 if use_draft else _TOOL_EDIT_THROTTLE)
                 if spinner_stop.is_set():
                     break
-                if any(not e.done for e in tool_entries):
+                # Waiting on the user can take minutes: no animation (and no edits
+                # against the chat's rate limit) until they answer.
+                if any(not e.done for e in tool_entries) and not approval_prompts:
                     await _push_tool_draft()
 
         spinner_task = asyncio.create_task(_spinner_loop())
@@ -350,7 +374,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         try:
             async for event in stream:
                 match event:
-                    case ChatModelStreamEvent(delta=delta) if delta:
+                    case TextDelta(text=delta, parent_id=None) if delta:
                         if tool_entries:
                             await _finalize_tool_draft()
 
@@ -416,7 +440,18 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                                 except Exception:
                                     logger.debug("stream edit failed", exc_info=True)
 
-                    case ToolStartEvent(run_id=run_id, tool_name=tool_name, args=args):
+                    case ToolStarted(name=sub_tool, args=sub_args, parent_id=parent_id) if (
+                        parent_id is not None
+                    ):
+                        # A subagent's tool call: a line nested under the subagent's entry.
+                        parent_entry = run_id_to_entry.get(parent_id)
+                        if parent_entry:
+                            sub_label, sub_preview = format_tool(sub_tool, sub_args)
+                            inner = f"({sub_preview})" if sub_preview else "()"
+                            parent_entry.sub_lines.append(f"{sub_label}{inner}")
+                            await _push_tool_draft()
+
+                    case ToolStarted(id=run_id, name=tool_name, args=args):
                         if accumulated_text:
                             if stream_msg is not None:
                                 try:
@@ -454,27 +489,19 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                         run_id_to_entry[run_id] = entry
                         await _push_tool_draft()
 
-                    case ToolProgressEvent(
-                        run_id=sub_run_id, tool_name=sub_tool, step=step, args=sub_args
-                    ):
-                        # A progress event's run_id equals the dispatching tool's own
-                        # run_id, so it maps directly to that tool's entry — nesting both
-                        # subagent sub-tool calls (tool_name) and browser-style step text
-                        # under the right parent line.
-                        parent_entry = run_id_to_entry.get(sub_run_id) if sub_run_id else None
-                        if parent_entry and sub_tool:
-                            sub_label, sub_preview = format_tool(sub_tool, sub_args or {})
-                            inner = f"({sub_preview})" if sub_preview else "()"
-                            parent_entry.sub_lines.append(f"{sub_label}{inner}")
-                            await _push_tool_draft()
-                        elif parent_entry and step:
+                    case ToolProgress(text=step, parent_id=parent_id) if step:
+                        parent_entry = run_id_to_entry.get(parent_id) if parent_id else None
+                        if parent_entry:
                             line = step.split("\n", 1)[0].strip()
                             if len(line) > 60:
                                 line = line[:60] + "…"
                             parent_entry.sub_lines.append(line)
                             await _push_tool_draft()
 
-                    case ToolEndEvent(run_id=run_id, output=output, error=error):
+                    case ToolEnded(parent_id=parent_id) if parent_id is not None:
+                        pass  # a subagent's tool: its line stays as it is
+
+                    case ToolEnded(id=run_id, output=output, error=error):
                         entry = run_id_to_entry.get(run_id)
                         if entry:
                             entry.done = True
@@ -484,7 +511,17 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                             for attachment in output.attachments:
                                 await _send_attachment(msg, attachment)  # type: ignore[arg-type]
 
-                    case StatusEvent(text=text) if text:
+                    case ApprovalRequested(id=approval_id, request=request):
+                        prompt = await self._send_approval_prompt(msg, approval_id, request)  # type: ignore[arg-type]
+                        if prompt is not None:
+                            approval_prompts[approval_id] = prompt
+
+                    case ApprovalResolved(id=approval_id, decision=decision):
+                        prompt = approval_prompts.pop(approval_id, None)
+                        if prompt is not None:
+                            await _close_approval_prompt(prompt, _APPROVAL_OUTCOMES[decision])
+
+                    case StatusUpdate(text=text) if text:
                         try:
                             await msg.reply_text(  # type: ignore[union-attr]
                                 text,
@@ -575,6 +612,9 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             typing_task.cancel()
             spinner_stop.set()
             spinner_task.cancel()
+            # Requests the turn never answered (/stop, an error): no buttons left to tap.
+            for prompt in approval_prompts.values():
+                await _close_approval_prompt(prompt, _APPROVAL_STOPPED)
             if not stream_completed_normally and tool_entries:
                 for entry in tool_entries:
                     if not entry.done:
@@ -695,7 +735,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
 
         async for event in stream:
             match event:
-                case ChatModelStreamEvent(delta=delta) if delta:
+                case TextDelta(text=delta, parent_id=None) if delta:
                     accumulated_text += delta
                     now = asyncio.get_running_loop().time()
                     if use_draft:
@@ -748,7 +788,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                                 last_stream_edit = now + e.retry_after
                             except Exception:
                                 logger.debug("proactive stream edit failed", exc_info=True)
-                case ToolEndEvent(output=output) if (
+                case ToolEnded(output=output, parent_id=None) if (
                     isinstance(output, ToolOutput) and output.attachments
                 ):
                     attachments.extend(output.attachments)
@@ -812,32 +852,17 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                     message_thread_id=topic_id,
                 )
 
-    async def request_approval(self, request: ApprovalRequest, context: Update) -> None:
-        """Send an approval prompt with inline buttons to the user."""
-        msg = context.effective_message  # type: ignore[union-attr]
-        chat_id = context.effective_chat.id  # type: ignore[union-attr]
-        context_id = get_context_id(chat_id, topic_id=msg.message_thread_id)  # type: ignore[union-attr]
-        agent_version = self.get_agent_version(context_id)
-        buttons = [
+    async def _send_approval_prompt(
+        self, msg: Message, approval_id: str, request: ApprovalRequest
+    ) -> Message | None:
+        """Ask the user to approve *request*, with buttons that answer *approval_id*."""
+        buttons = InlineKeyboardMarkup(
             [
-                InlineKeyboardButton(
-                    "✅ Run Once",
-                    callback_data=f"approval:{context_id}:{ApprovalDecision.APPROVED_ONCE.value}:{agent_version}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "✅✅ Allow Always",
-                    callback_data=f"approval:{context_id}:{ApprovalDecision.APPROVED_ALWAYS.value}:{agent_version}",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "❌ Deny",
-                    callback_data=f"approval:{context_id}:{ApprovalDecision.DENIED.value}:{agent_version}",
-                )
-            ],
-        ]
+                [InlineKeyboardButton("✅ Run Once", callback_data=f"ap:{approval_id}:o")],
+                [InlineKeyboardButton("✅✅ Allow Always", callback_data=f"ap:{approval_id}:a")],
+                [InlineKeyboardButton("❌ Deny", callback_data=f"ap:{approval_id}:d")],
+            ]
+        )
         resource_line = (
             f"<b>Target:</b> <code>{escape(request.resource)}</code>\n" if request.resource else ""
         )
@@ -848,20 +873,25 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             f"<b>Operation:</b>\n<pre>{escape(request.operation)}</pre>"
         )
         try:
-            await msg.reply_text(  # type: ignore[union-attr]
+            return await msg.reply_text(
                 text,
                 parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(buttons),
+                reply_markup=buttons,
                 link_preview_options=_NO_PREVIEW,
                 do_quote=False,
             )
         except Exception:
             logger.warning("approval_prompt_html_failed, retrying plain", exc_info=True)
-            await msg.reply_text(  # type: ignore[union-attr]
+        try:
+            return await msg.reply_text(
                 f"⚠️ Approval required\n{request.description}",
-                reply_markup=InlineKeyboardMarkup(buttons),
+                reply_markup=buttons,
                 do_quote=False,
             )
+        except Exception:
+            # Nobody can answer it now; the tool gets TIMED_OUT in the end.
+            logger.exception("approval_prompt_failed id=%s", approval_id)
+            return None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -904,7 +934,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         )
         bot_app.add_handler(CallbackQueryHandler(self._handle_skills_callback, pattern=r"^skill:"))
         bot_app.add_handler(
-            CallbackQueryHandler(self._handle_approval_callback, pattern=r"^approval:")
+            CallbackQueryHandler(self._handle_approval_callback, pattern=r"^(ap|approval):")
         )
         bot_app.add_handler(
             CallbackQueryHandler(
@@ -1233,47 +1263,29 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     async def _handle_approval_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Handle user tapping Run Once / Allow Always / Deny on an approval prompt."""
+        """Handle user tapping Run Once / Allow Always / Deny on an approval prompt.
+
+        The turn's own stream rewrites the prompt once the waiting tool has the answer.
+        """
         query = update.callback_query
         if query is None:
             return
         await query.answer()
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
 
-        # callback_data: "approval:{context_id}:{decision}:{agent_version}"
-        parts = (query.data or "").split(":", 3)
-        if len(parts) != 4:
+        # callback_data: "ap:{approval id}:{o|a|d}"
+        parts = (query.data or "").split(":")
+        decision = _APPROVAL_CODES.get(parts[2]) if len(parts) == 3 else None
+        pending = pending_approvals.get(parts[1]) if decision is not None else None
+        if pending is None:
+            # Already answered, timed out, stopped, or asked before a restart.
+            await query.edit_message_text(_APPROVAL_GONE)
             return
-        _, context_id, decision_str, agent_version = parts
-
-        if not context_id.startswith(f"tg-{chat_id}-"):
+        if not pending.context_id.startswith(f"tg-{chat_id}-"):
             await query.edit_message_text("❌ Unauthorized.")
             return
-
-        try:
-            decision = ApprovalDecision(decision_str)
-        except ValueError:
-            return
-
-        if await self.get_pending_approval(context_id, agent_version) is None:
-            await query.edit_message_text("⚠️ This approval has already been resolved.")
-            return
-
-        if decision == ApprovalDecision.DENIED:
-            await query.edit_message_text("❌ Command denied.")
-        elif decision == ApprovalDecision.APPROVED_ALWAYS:
-            await query.edit_message_text("✅ Approved — rule saved.")
-        else:
-            await query.edit_message_text("✅ Approved for this run.")
-
-        await self._execute_resume(
-            context_id=context_id,
-            agent_version=agent_version,
-            sender_id=str(chat_id),
-            interface="telegram",
-            decision=decision,
-            context=update,
-        )
+        if not pending_approvals.resolve(pending.id, decision):  # type: ignore[arg-type]
+            await query.edit_message_text(_APPROVAL_GONE)
 
     @restricted
     async def _handle_approvals(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1439,6 +1451,14 @@ async def _reply_text_with_retry(msg: Message, text: str, **kwargs) -> Message:
     return await msg.reply_text(text, do_quote=False, **kwargs)
 
 
+async def _close_approval_prompt(prompt: Message, text: str) -> None:
+    """Replace an approval prompt (and its buttons) with how it ended."""
+    try:
+        await prompt.edit_text(text)
+    except Exception:
+        logger.debug("approval prompt edit failed", exc_info=True)
+
+
 @retry(
     retry=retry_if_exception_type((RetryAfter, TimedOut, NetworkError)),
     stop=stop_after_attempt(3),
@@ -1457,13 +1477,16 @@ async def _send_attachment(msg, attachment: Attachment) -> None:
         )
 
 
-async def _typing_loop(update: Update, stop_event: asyncio.Event) -> None:
+async def _typing_loop(
+    update: Update, stop_event: asyncio.Event, paused: Callable[[], bool] = lambda: False
+) -> None:
     chat_id = update.effective_chat.id  # type: ignore[union-attr]
     topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
     while not stop_event.is_set():
-        await update.get_bot().send_chat_action(
-            chat_id=chat_id, action=ChatAction.TYPING, message_thread_id=topic_id
-        )
+        if not paused():
+            await update.get_bot().send_chat_action(
+                chat_id=chat_id, action=ChatAction.TYPING, message_thread_id=topic_id
+            )
         try:
             await asyncio.wait_for(asyncio.shield(stop_event.wait()), timeout=4.0)
         except TimeoutError:

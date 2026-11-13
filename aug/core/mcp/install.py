@@ -3,12 +3,12 @@ persisted plan an approval decision can bind to, and back into a saved config.
 
 The moment an index first resolves to a real result, it's frozen (server identity,
 pinned version, exactly which secret backs each credential) and persisted to
-state.json, keyed by thread — before the approval interrupt ever pauses the graph.
-Replaying the tool call on resume looks the plan up again rather than re-deriving
-it, so it survives both a concurrent search elsewhere and a process restart while
-approval is pending. Every lookup still revalidates each credential's ``bound``
-status against hushed's current secret list, so a plan built while a secret was
-missing doesn't say so forever once the user adds it.
+state.json, keyed by thread — before the user is asked to approve it. A later
+call for the same index looks the plan up again rather than re-deriving it, so a
+concurrent search elsewhere never changes what the user approved. Every lookup
+still revalidates each credential's ``bound`` status against hushed's current
+secret list, so a plan built while a secret was missing doesn't say so forever
+once the user adds it.
 """
 
 import re

@@ -394,8 +394,13 @@ async def test_install_mcp_server_denial_clears_the_plan():
         patch("aug.utils.state.load_state", return_value=state),
         patch("aug.utils.state.save_state"),
         patch("aug.core.mcp.install.list_secret_names", return_value=set()),
-        patch(_P_APPROVAL, return_value=AppSettings()),  # no saved rule -> triggers interrupt
-        patch("aug.core.tools.approval.interrupt", return_value=ApprovalDecision.DENIED),
+        patch(_P_APPROVAL, return_value=AppSettings()),  # no saved rule -> asks the user
+        patch(
+            "aug.core.tools.approval.current_tool_context",
+            return_value=MagicMock(
+                request_approval=AsyncMock(return_value=ApprovalDecision.DENIED)
+            ),
+        ),
     ):
         output = await mcp_tools.install_mcp_server.ainvoke({"index": 1})
 

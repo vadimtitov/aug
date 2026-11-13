@@ -31,6 +31,7 @@ FAKES = "http://localhost:8091"
 API_KEY = "scenarios"
 USER_ID = 111  # also the DM chat id; matches TELEGRAM_ALLOWED_CHAT_IDS in the compose file
 QUIET_SECONDS = 2.5
+_ANIMATION = ("sendMessageDraft", "sendChatAction")  # repeats while a tool runs
 
 SCRIPTS: dict[str, list[dict[str, Any]]] = {
     "s1": [{"text": "Hello from the scripted agent."}],
@@ -39,6 +40,15 @@ SCRIPTS: dict[str, list[dict[str, Any]]] = {
     "s3a": [{"tool": "dev_guarded", "args": {"command": "ls -la"}}, {"text": "Approved path."}],
     "s3b": [{"tool": "dev_guarded", "args": {"command": "rm x"}}, {"text": "Denied path."}],
     "s3c": [{"tool": "dev_guarded", "args": {"command": "push cmd"}}, {"text": "Push path."}],
+    "s3d": [
+        {
+            "tools": [
+                {"name": "dev_guarded", "args": {"command": "par-alpha"}},
+                {"name": "dev_guarded", "args": {"command": "par-beta"}},
+            ]
+        },
+        {"text": "Parallel path."},
+    ],
     "s3r": [{"tool": "dev_guarded", "args": {"command": "rest cmd"}}, {"text": "REST approved."}],
     "s4": [{"tool": "dev_wait", "args": {"seconds": 2}}, {"text": "Saw the extra message."}],
     "s4b": [
@@ -82,8 +92,13 @@ async def s3_approvals(d: "Driver") -> None:
     await d.quiet()
     await d.push("agent", "unattended guarded #s3c")
     await d.quiet()
-    await d.rest_stream("guarded over rest #s3r", context="rest-s3")
-    await d.rest_approve("rest-s3", "approved_once")
+    await d.tg_text("two guarded at once #s3d")
+    await d.quiet()
+    await d.tg_press("Deny", on="par-alpha")
+    await d.quiet()
+    await d.tg_press("Run Once", on="par-beta")
+    await d.quiet()
+    await d.rest_stream("guarded over rest #s3r", context="rest-s3", approve="approved_once")
 
 
 async def s4_inject(d: "Driver") -> None:
@@ -174,10 +189,13 @@ class Driver:
             ]
         await self._fake("POST", "/control/telegram/update", json={"message": message})
 
-    async def tg_press(self, label: str) -> None:
-        """Press the most recent inline button whose label contains *label*."""
-        self.lines.append(f"> tg press: {label}")
+    async def tg_press(self, label: str, on: str = "") -> None:
+        """Press the most recent inline button whose label contains *label*, on a message
+        whose text contains *on*."""
+        self.lines.append(f"> tg press: {label}" + (f" on {on}" if on else ""))
         for call in reversed(await self._calls()):
+            if on not in call["params"].get("text", ""):
+                continue
             markup = call["params"].get("reply_markup") or {}
             for row in markup.get("inline_keyboard", []):
                 for button in row:
@@ -211,7 +229,8 @@ class Driver:
         )
         self.lines.append(f"< push status {response.status_code}")
 
-    async def rest_stream(self, message: str, context: str) -> None:
+    async def rest_stream(self, message: str, context: str, approve: str = "") -> None:
+        """Stream a REST turn, answering each approval_requested frame with *approve*."""
         self.lines.append(f"> rest: {message}")
         body = {"message": message, self._id_field: context, "agent": "scripted"}
         async with self._client.stream(
@@ -225,19 +244,21 @@ class Driver:
                 if line.startswith("event: "):
                     event = line[len("event: ") :]
                 elif line.startswith("data: "):
-                    self.lines.append(f"< sse {event}: {_normalise(line[len('data: ') :])}")
+                    data = line[len("data: ") :]
+                    self.lines.append(f"< sse {event}: {_normalise(data)}")
+                    if event == "approval_requested" and approve:
+                        await self._rest_approve(context, json.loads(data)["id"], approve)
         await self._llm_lines()
 
-    async def rest_approve(self, context: str, decision: str) -> None:
+    async def _rest_approve(self, context: str, approval_id: str, decision: str) -> None:
         self.lines.append(f"> rest approve: {decision}")
         response = await self._client.post(
             f"{AUG}/chat/{context}/approve",
             headers={"X-API-Key": API_KEY},
-            json={"decision": decision, "agent": "scripted"},
+            json={"id": approval_id, "decision": decision},
             timeout=60,
         )
-        self.lines.append(f"< approve {response.status_code}: {_normalise(response.text)}")
-        await self._llm_lines()
+        self.lines.append(f"< approve {response.status_code}")
 
     async def wait_llm(self, predicate: Callable[[dict], bool], limit: float = 30) -> None:
         deadline = time.monotonic() + limit
@@ -248,12 +269,16 @@ class Driver:
         self.lines.append("! timed out waiting for a model request")
 
     async def quiet(self, limit: float = 90) -> None:
-        """Wait until neither fake has seen a new call for QUIET_SECONDS, then record."""
+        """Wait until neither fake has seen a new call for QUIET_SECONDS, then record.
+
+        Drafts and typing don't count: a tool waiting for approval keeps its spinner
+        going until the user answers."""
         deadline = time.monotonic() + limit
         last = (-1, -1)
         last_change = time.monotonic()
         while time.monotonic() < deadline:
-            now = (len(await self._calls()), len(await self._llm()))
+            calls = [c for c in await self._calls() if c["method"] not in _ANIMATION]
+            now = (len(calls), len(await self._llm()))
             if now != last:
                 last, last_change = now, time.monotonic()
             elif time.monotonic() - last_change >= QUIET_SECONDS:
@@ -337,6 +362,8 @@ def _normalise(text: str) -> str:
     text = re.sub(r"call_\d+", "call_<n>", text)
     text = re.sub("[🌑🌘🌗🌖🌕🌔🌓🌒]", "<spin>", text)  # spinner frame depends on timing
     text = re.sub(r"\b[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}\b", "<uuid>", text)
+    text = re.sub(r"\bap:[0-9a-f]{12}:", "ap:<id>:", text)
+    text = re.sub(r'"id": "[0-9a-f]{12}"', '"id": "<id>"', text)
     return text.replace("\n", "\\n")
 
 

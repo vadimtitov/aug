@@ -1,10 +1,8 @@
 """Generic tool-approval mechanism.
 
 Provides:
-  - ApprovalRequest / ApprovalDecision  — shared types
-  - @requires_approval decorator        — pauses via LangGraph interrupt() when
-                                          no saved rule matches; resumes with the
-                                          user's decision
+  - @requires_approval decorator        — when no saved rule matches, asks the user via
+                                          ToolContext.request_approval() and waits
   - is_approved / save_approval         — rule engine backed by settings.json
   - list_approvals / revoke_approval    — rule management for /approvals command
 
@@ -21,56 +19,15 @@ Anchor with ^ / $ for stricter matching.
 ``target`` and ``tool`` support ``"*"`` as a wildcard that matches anything.
 """
 
+import asyncio
 import inspect
 import re
-from dataclasses import dataclass
-from enum import Enum
 from functools import wraps
 
-from langgraph.config import get_config
-from langgraph.types import interrupt
-
+from aug.core.harness.types import ApprovalDecision, ApprovalRequest
+from aug.core.prompts import APPROVAL_NOT_GRANTED_RESULTS
+from aug.core.tools.context import current_tool_context
 from aug.utils.file_settings import ApprovalRule, load_settings, save_settings
-
-# Returned (instead of pausing via interrupt) when a tool needs approval but the
-# current run has no way to prompt the user — i.e. inside a subagent, which has no
-# checkpointer and therefore cannot pause and resume on a human decision.
-_SUBAGENT_APPROVAL_UNAVAILABLE = (
-    "Operation requires user approval, which isn't available inside a subagent. "
-    "NOT executed — ask the main agent to run it directly."
-)
-
-# ---------------------------------------------------------------------------
-# Public types
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ApprovalRequest:
-    """Payload passed to interrupt() when an operation needs user approval.
-
-    Attributes:
-        tool_name: Name of the tool being called (e.g. ``"run_ssh"``).
-        resource:  What is being acted on (e.g. an SSH target, a file path).
-                   Empty string if the tool has no single resource concept.
-        operation: What is being done (e.g. a shell command, a file transfer).
-    """
-
-    tool_name: str
-    resource: str
-    operation: str
-
-    @property
-    def description(self) -> str:
-        """Human-readable string used in denial messages and fallback display."""
-        return f"{self.resource}: {self.operation}" if self.resource else self.operation
-
-
-class ApprovalDecision(Enum):
-    APPROVED_ONCE = "approved_once"
-    APPROVED_ALWAYS = "approved_always"
-    DENIED = "denied"
-
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -78,7 +35,7 @@ class ApprovalDecision(Enum):
 
 
 def requires_approval(fn=None, *, describe=None, on_denied=None):
-    """Decorator: pause via LangGraph interrupt() if no saved rule approves the operation.
+    """Decorator: ask the user first unless a saved rule approves the operation.
 
     Apply BEFORE @tool so LangGraph wraps the already-decorated function:
 
@@ -101,16 +58,17 @@ def requires_approval(fn=None, *, describe=None, on_denied=None):
             ...
 
     ``on_denied``, when given, is called (sync or async) with the tool's
-    kwargs when the user denies the operation — before the denial string is
+    kwargs when the operation is not approved — before the result string is
     returned and ``fn`` is skipped. Use it to clean up state the ``describe``
     call may have durably persisted (e.g. an install plan) that would
     otherwise linger as if still pending.
 
-    On resume the decorator acts on the user's ApprovalDecision:
-      - APPROVED_ONCE   → execute immediately, no rule saved
+    The tool waits for the user's ApprovalDecision:
+      - APPROVED_ONCE   → execute, no rule saved
       - APPROVED_ALWAYS → save exact-match rule, then execute
-      - DENIED          → run on_denied (if any), return a clear denial
-                          string, do NOT execute
+      - anything else   → run on_denied (if any), return a string saying why the
+                          operation was NOT executed
+    Outside a turn (no ToolContext) nobody can be asked: the operation is not run.
     """
 
     def decorator(fn):
@@ -133,17 +91,20 @@ def requires_approval(fn=None, *, describe=None, on_denied=None):
             request = ApprovalRequest(tool_name=tool_name, resource=resource, operation=operation)
 
             if not is_approved(tool_name, resource, operation):
-                if not _approval_available():
-                    return _SUBAGENT_APPROVAL_UNAVAILABLE
-                decision: ApprovalDecision = interrupt(request)
-                if decision == ApprovalDecision.DENIED:
-                    if on_denied is not None:
-                        outcome = on_denied(**kwargs)
-                        if inspect.isawaitable(outcome):
-                            await outcome
-                    return (
-                        f"Operation denied by user. "
-                        f"[{tool_name}] '{request.description}' was NOT executed."
+                ctx = current_tool_context()
+                try:
+                    decision = (
+                        await ctx.request_approval(request)
+                        if ctx is not None
+                        else ApprovalDecision.NO_USER
+                    )
+                except asyncio.CancelledError:  # /stop while waiting: not approved either
+                    await _call(on_denied, kwargs)
+                    raise
+                if not decision.approved:
+                    await _call(on_denied, kwargs)
+                    return APPROVAL_NOT_GRANTED_RESULTS[decision.value].format(
+                        tool=tool_name, operation=request.description
                     )
                 if decision == ApprovalDecision.APPROVED_ALWAYS:
                     save_approval(tool_name, resource, operation)
@@ -209,16 +170,10 @@ def revoke_approval(index: int) -> None:
     save_settings(s)
 
 
-def _approval_available() -> bool:
-    """Return True if the current run can prompt the user for approval.
-
-    Subagent runs set ``can_approve=False`` in their config because they run on a
-    graph without a checkpointer and so cannot pause on ``interrupt()`` and resume
-    on a human decision.  When there is no runnable context at all (e.g. a tool
-    invoked directly in a unit test) we preserve the default interrupt path.
-    """
-    try:
-        configurable = get_config().get("configurable") or {}
-    except RuntimeError:
-        return True
-    return configurable.get("can_approve", True)
+async def _call(fn, kwargs: dict) -> None:
+    """Call the optional, sync or async *fn* with the tool's kwargs."""
+    if fn is None:
+        return
+    outcome = fn(**kwargs)
+    if inspect.isawaitable(outcome):
+        await outcome

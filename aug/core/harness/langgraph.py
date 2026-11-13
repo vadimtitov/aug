@@ -1,10 +1,9 @@
 """LangGraphHarness: today's agent graph behind the Harness interface.
 
 Owns everything LangGraph-specific about a turn: the stream loop across
-``interrupt_after=["call_tools"]`` pauses, mid-run injection, the stop flag, approval
-interrupts and their resume, reflexes, compaction, and mapping model/graph exceptions
-onto HarnessError kinds.  Interfaces never see a LangGraph type from here except the
-parsed graph events, which PR 2 replaces with harness events.
+``interrupt_after=["call_tools"]`` pauses, mid-run injection, the stop flag, the tools'
+ToolContext, reflexes, compaction, and mapping model/graph exceptions onto HarnessError
+kinds.  Interfaces only ever see harness events from here.
 """
 
 import asyncio
@@ -23,15 +22,16 @@ from langgraph.types import Command
 
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.compaction import compact_thread
-from aug.core.events import StatusEvent
 from aug.core.harness.base import Harness
+from aug.core.harness.langgraph_events import dispatch
+from aug.core.harness.tool_context import TOOL_CONTEXT_CONFIG_KEY, ToolContext
 from aug.core.harness.types import (
     FilePart,
     HarnessError,
     HarnessEvent,
     Message,
     ModelTier,
-    Sender,
+    StatusUpdate,
     TextPart,
     TurnContext,
     TurnEnded,
@@ -45,7 +45,6 @@ from aug.core.prompts import (
 from aug.core.reflexes import Reflex, run_reflexes
 from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, MessageContent, run_registry
 from aug.core.state import AgentState
-from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
 
 logger = logging.getLogger(__name__)
 
@@ -75,26 +74,6 @@ class LangGraphHarness(Harness):
         # Reflexes answer what the user just said; a follow-up turn's messages were
         # injections (their own reflexes already ran), so it fires none.
         return self._stream(graph_input, message, context_id, turn, reflexes=not turn.follow_up)
-
-    async def resume(
-        self, decision: ApprovalDecision, context_id: str, turn: TurnContext
-    ) -> AsyncIterator[HarnessEvent]:
-        """Resume a turn paused on an approval, with the user's *decision*.  Same
-        contract as run(): never raises, ends with TurnEnded."""
-        inner = self._stream(Command(resume=decision), None, context_id, turn, reflexes=False)
-        async for event in self._turn(None, context_id, turn, inner):
-            yield event
-
-    async def pending_approval(self, context_id: str) -> ApprovalRequest | None:
-        """The approval *context_id* is paused on, if any."""
-        try:
-            state = await self.agent.aget_state(_config(context_id), self._checkpointer)
-            for interrupt_obj in state.interrupts:
-                if isinstance(interrupt_obj.value, ApprovalRequest):
-                    return interrupt_obj.value
-        except Exception:
-            logger.warning("approval_state_check_failed context=%s", context_id, exc_info=True)
-        return None
 
     async def add_context(self, text: str, context_id: str) -> None:
         """Append *text* to an idle session's history without running a turn."""
@@ -144,7 +123,7 @@ class LangGraphHarness(Harness):
     async def _stream(
         self,
         graph_input: AgentState | Command | None,
-        message: Message | None,
+        message: Message,
         context_id: str,
         turn: TurnContext,
         *,
@@ -159,6 +138,12 @@ class LangGraphHarness(Harness):
                 "interface": turn.reply_to.interface,
                 "sender_id": turn.reply_to.chat_id,
                 AGENT_RUN_CONFIG_KEY: run,
+                TOOL_CONTEXT_CONFIG_KEY: ToolContext(
+                    context_id=context_id,
+                    turn=turn,
+                    stopped=run.user_requested_stop,
+                    _emit=dispatch,
+                ),
             }
         }
 
@@ -166,7 +151,7 @@ class LangGraphHarness(Harness):
         tool_rounds = 0
         displays: list[str] = []  # reflex results to show the user, as they land
         reflex_task: asyncio.Task[None] | None = None
-        if reflexes and message is not None and self.agent.reflexes:
+        if reflexes and self.agent.reflexes:
             reflex_task = asyncio.create_task(
                 self._run_reflexes(self.agent.reflexes, message.text, context_id, run, displays)
             )
@@ -177,16 +162,11 @@ class LangGraphHarness(Harness):
                     async for event in events:
                         yield event
                         while displays:
-                            yield StatusEvent(text=displays.pop(0))
+                            yield StatusUpdate(text=displays.pop(0))
                 if run.user_requested_stop.is_set():
                     finished = True
                     break
                 state = await self.agent.aget_state(config, self._checkpointer)
-                # Checked before `next`: answering one of several parallel approvals
-                # leaves `next` empty while the others are still pending.
-                if state.interrupts:
-                    yield TurnEnded(approval=_approval_in(state.interrupts))
-                    return
                 if not state.next:
                     finished = True
                     break
@@ -214,7 +194,7 @@ class LangGraphHarness(Harness):
             logger.info("error after stop context=%s: %s: %s", context_id, type(e).__name__, e)
             finished = True
         finally:
-            # A turn that didn't finish (error, approval pause, consumer gone) drops its
+            # A turn that didn't finish (error, step limit, consumer gone) drops its
             # reflexes; one that did waits for them below so their inject is counted.
             if reflex_task is not None and not reflex_task.done() and not finished:
                 reflex_task.cancel()
@@ -224,18 +204,17 @@ class LangGraphHarness(Harness):
         if reflex_task is not None:
             await asyncio.gather(reflex_task, return_exceptions=True)
         for text in displays:
-            yield StatusEvent(text=text)
+            yield StatusUpdate(text=text)
         # Stop taking injections before collecting what's queued: from here on a new
         # message gets a turn of its own instead of landing in a queue nobody reads.
         run.active = False
-        sender = message.sender if message is not None else Sender(turn.reply_to.interface, "")
         unconsumed = []
         while True:
             try:
                 leftover = run.pending_agent_injection.get_nowait()
             except asyncio.QueueEmpty:
                 break
-            unconsumed.append(Message(parts=_parts(leftover), sender=sender))
+            unconsumed.append(Message(parts=_parts(leftover), sender=message.sender))
         yield TurnEnded(unconsumed=unconsumed, cancelled=run.user_requested_stop.is_set())
 
     async def _run_reflexes(
@@ -352,13 +331,6 @@ def _stop_note(messages: list[AnyMessage]) -> list[AnyMessage]:
     if not messages or (isinstance(messages[-1], AIMessage) and not messages[-1].tool_calls):
         return []
     return [HumanMessage(content=HARNESS_TURN_STOPPED_NOTE)]
-
-
-def _approval_in(interrupts) -> ApprovalRequest | None:
-    for interrupt_obj in interrupts:
-        if isinstance(interrupt_obj.value, ApprovalRequest):
-            return interrupt_obj.value
-    return None
 
 
 async def _until_stopped(

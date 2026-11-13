@@ -10,14 +10,19 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from contextlib import aclosing, asynccontextmanager
+from dataclasses import replace
 
-from aug.core.events import ChatModelStreamEvent, ToolEndEvent, ToolStartEvent
 from aug.core.harness.types import (
+    ApprovalRequested,
+    ApprovalResolved,
     FilePart,
     HarnessError,
     HarnessEvent,
     Message,
     ModelTier,
+    TextDelta,
+    ToolEnded,
+    ToolStarted,
     TurnContext,
     TurnEnded,
     TurnStarted,
@@ -43,7 +48,8 @@ class Harness(ABC):
 
         The first event is TurnStarted, yielded once the turn can take inject(); the
         last is always TurnEnded, carrying any error.  The turn is logged and written
-        to AUG's transcript here, so every harness records it the same way.
+        to AUG's transcript here, so every harness records it the same way.  A tool
+        whose approval was not granted ends with ``ToolEnded(error=True)``.
         """
         async for event in self._turn(
             message, context_id, turn, self._run(message, context_id, turn)
@@ -90,19 +96,16 @@ class Harness(ABC):
 
     async def _turn(
         self,
-        message: Message | None,
+        message: Message,
         context_id: str,
         turn: TurnContext,
         inner: AsyncIterator[HarnessEvent],
     ) -> AsyncIterator[HarnessEvent]:
-        """Wrap a harness's own event stream in the run() contract.
-
-        Shared by run() and by harness-specific entry points that also stream a turn
-        (LangGraph's approval resume), so all of them log and end the same way.
-        """
+        """Wrap a harness's own event stream in the run() contract."""
         transcript = Transcript(turn.reply_to.conversation_id)
         started = time.monotonic()
         tool_started: dict[str, float] = {}
+        not_granted: set[str] = set()  # tool ids whose approval was not granted
         text = ""
         ended: TurnEnded | None = None
         self._open_turn(context_id, turn)
@@ -119,11 +122,9 @@ class Harness(ABC):
                 context_id,
                 interface=turn.reply_to.interface,
                 attended=turn.attended,
-                user_id=message.sender.user_id if message else "",
-                text=message.text if message else "",
-                files=[str(p.path) for p in message.parts if isinstance(p, FilePart)]
-                if message
-                else [],
+                user_id=message.sender.user_id,
+                text=message.text,
+                files=[str(p.path) for p in message.parts if isinstance(p, FilePart)],
             )
             try:
                 async with aclosing(inner) as events:
@@ -132,16 +133,32 @@ class Harness(ABC):
                             case TurnEnded():
                                 ended = event
                                 break
-                            case ChatModelStreamEvent(delta=delta):
+                            case TextDelta(text=delta, parent_id=None):
                                 text += delta
-                            case ToolStartEvent(run_id=run_id, tool_name=name, args=args):
-                                tool_started[run_id] = time.monotonic()
+                            case ToolStarted(id=tool_id, name=name, args=args):
+                                tool_started[tool_id] = time.monotonic()
                                 logger.info("tool_start tool=%s args=%.120r", name, args)
                                 await transcript.append(
                                     "tool_started", context_id, tool=name, args=args
                                 )
-                            case ToolEndEvent(run_id=run_id, tool_name=name, error=error):
-                                _log_tool_end(name, error, tool_started.pop(run_id, None))
+                            case ApprovalRequested(request=request):
+                                await transcript.append(
+                                    "approval_requested",
+                                    context_id,
+                                    tool=request.tool_name,
+                                    operation=request.description,
+                                )
+                            case ApprovalResolved(decision=decision, parent_id=parent_id):
+                                if not decision.approved and parent_id is not None:
+                                    not_granted.add(parent_id)
+                                await transcript.append(
+                                    "approval_resolved", context_id, decision=decision.value
+                                )
+                            case ToolEnded(id=tool_id, name=name) if tool_id in not_granted:
+                                event = replace(event, error=True)
+                                _log_tool_end(name, True, tool_started.pop(tool_id, None))
+                            case ToolEnded(id=tool_id, name=name, error=error):
+                                _log_tool_end(name, error, tool_started.pop(tool_id, None))
                         yield event
             except asyncio.CancelledError:
                 raise
@@ -156,7 +173,6 @@ class Harness(ABC):
                 text=text,
                 error=ended.error.kind if ended.error else None,
                 cancelled=ended.cancelled,
-                awaiting_approval=ended.approval is not None,
                 unconsumed=len(ended.unconsumed),
             )
             logger.info(
