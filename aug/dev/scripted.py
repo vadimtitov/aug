@@ -4,7 +4,8 @@ Registered only when ``SCRIPTED_AGENT`` is set, which only the scenario stack
 (docker-compose.scenarios.yml) does.  That stack also points ``LLM_BASE_URL`` at the
 fake, so every model call — the agent's, compaction's, consolidation's — is scripted
 and free.  The tools below exist so scenarios can exercise progress, approvals and
-/stop without touching anything real.
+/stop without touching anything real; with ``SCRIPTED_AGENT`` set, the real profiles
+get them too, so the same scenarios run on those.
 """
 
 import asyncio
@@ -53,10 +54,13 @@ async def dev_wait(seconds: float) -> str:
     return f"Waited {seconds} seconds."
 
 
+SCRIPTED_TOOLS = [dev_progress, dev_guarded, dev_wait]
+
+
 def build_scripted_agent() -> AugAgent:
     return AugAgent(
         model=SCRIPTED_MODEL,
-        tools=[dev_progress, dev_guarded, dev_wait, respond_with_file, note, save_skill],
+        tools=[*SCRIPTED_TOOLS, respond_with_file, note, save_skill],
         temperature=0.0,
         recursion_limit=100,
         compaction_model=SCRIPTED_MODEL,

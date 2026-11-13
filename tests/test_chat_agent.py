@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
 from aug.core.agents.chat_agent import (
@@ -16,6 +16,7 @@ from aug.core.agents.chat_agent import (
     _expand_images,
 )
 from aug.core.compaction import count_tokens
+from aug.core.prompts import TOOL_IMAGE_OMITTED
 from aug.core.state import AgentState
 from aug.utils.media import IMAGE_TOKENS
 
@@ -282,3 +283,30 @@ def test_with_extra_tools_copies_every_constructor_setting():
         agent = AugAgent(model="gpt-4o")
     params = set(inspect.signature(AugAgent.__init__).parameters) - {"self", "tools"}
     assert set(agent._settings) == params
+
+
+def _screenshot_result() -> ToolMessage:
+    return ToolMessage(
+        content=[
+            {"type": "text", "text": "Saved /tmp/shot.png"},
+            {"type": "image", "base64": "aGk=", "mime_type": "image/png"},
+        ],
+        tool_call_id="call-1",
+    )
+
+
+async def test_a_tool_image_never_reaches_a_model_without_vision():
+    (out,) = await _expand_images([_screenshot_result()], vision=False)
+
+    assert out.content == [
+        {"type": "text", "text": "Saved /tmp/shot.png"},
+        {"type": "text", "text": TOOL_IMAGE_OMITTED},
+    ]
+    assert out.tool_call_id == "call-1"
+
+
+async def test_a_tool_image_reaches_a_model_with_vision():
+    message = _screenshot_result()
+    (out,) = await _expand_images([message], vision=True)
+
+    assert out.content == message.content

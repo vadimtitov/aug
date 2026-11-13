@@ -10,23 +10,21 @@ Files, in workspace/memory/ (the dream writes nothing outside it):
   reflections.md — Deep consolidation diary.
   notes.md       — Ring buffer of raw notes. Cleared after each consolidation.
 
-Consolidation schedule (background asyncio loop, checks hourly):
-  Light (nightly, 03:00 UTC)  — folds notes into context.md, user.md, self.md.
-  Deep  (weekly,  04:00 UTC)  — reflects across all files; updates self.md,
-                                 user.md, context.md, appends to reflections.md.
+Consolidation, run as jobs (aug/core/jobs.py) through a harness's oneshot():
+  Light (nightly)  — folds notes into context.md, user.md, self.md.
+  Deep  (weekly)   — reflects across all files; updates self.md, user.md, context.md,
+                     appends to reflections.md.
 Both may rewrite MEMORY.md.
 """
 
-import asyncio
 import logging
 import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
 
-from langchain_core.messages import HumanMessage, SystemMessage
-
-from aug.core.llm import build_chat_model
+from aug.core.harness.base import Harness
+from aug.core.harness.types import ModelTier
 from aug.core.prompts import (
     CONSOLIDATION_DEEP_REFLECT_PROMPT,
     CONSOLIDATION_DEEP_SYSTEM,
@@ -35,8 +33,6 @@ from aug.core.prompts import (
     CONSOLIDATION_LIGHT_SYSTEM,
 )
 from aug.utils.data import MEMORY_DIR, MEMORY_INDEX
-from aug.utils.file_settings import load_settings
-from aug.utils.state import load_state, save_state
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +73,7 @@ def append_note(content: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def run_light_consolidation() -> bool:
+async def run_light_consolidation(harness: Harness) -> bool:
     """Nightly pass: fold notes into context.md, user.md, and optionally self.md.
 
     Passes all memory files as context so the LLM can make cross-file deduplication
@@ -86,28 +82,21 @@ async def run_light_consolidation() -> bool:
     notes = _read("notes.md")
     if not notes.strip():
         logger.info("Light consolidation: no notes, skipping.")
-        _record_light()
         return False
 
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-    llm = build_chat_model(load_settings().consolidation.model, temperature=0.3)
-    response = await llm.ainvoke(
-        [
-            SystemMessage(content=CONSOLIDATION_LIGHT_SYSTEM),
-            HumanMessage(
-                content=CONSOLIDATION_LIGHT_PROMPT.format(
-                    notes=notes,
-                    self_md=_read("self.md"),
-                    context=_read("context.md"),
-                    user=_read("user.md"),
-                    memory_index=_read(MEMORY_INDEX.name),
-                    now=now,
-                )
-            ),
-        ]
+    text = await harness.oneshot(
+        CONSOLIDATION_LIGHT_PROMPT.format(
+            notes=notes,
+            self_md=_read("self.md"),
+            context=_read("context.md"),
+            user=_read("user.md"),
+            memory_index=_read(MEMORY_INDEX.name),
+            now=now,
+        ),
+        ModelTier.FAST,
+        system=CONSOLIDATION_LIGHT_SYSTEM,
     )
-
-    text = response.content
     if updated := _extract("context", text):
         _write("context.md", updated)
     if updated := _extract("user", text):
@@ -117,53 +106,43 @@ async def run_light_consolidation() -> bool:
     if updated := _extract("memory_index", text):
         _write(MEMORY_INDEX.name, cap_memory_index(updated))
 
-    _write("notes.md", "")
-    _record_light()
+    _drop_notes(notes)
     logger.info("Light consolidation complete.")
     return True
 
 
-async def run_deep_consolidation() -> None:
+async def run_deep_consolidation(harness: Harness) -> None:
     """Weekly pass: reflect across all files, update what has genuinely shifted."""
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-    llm = build_chat_model(load_settings().consolidation.model, temperature=0.7)
+    notes = _read("notes.md")
 
     # Stage 1 — reflect freely, no updates yet.
-    reflect_response = await llm.ainvoke(
-        [
-            SystemMessage(content=CONSOLIDATION_DEEP_SYSTEM),
-            HumanMessage(
-                content=CONSOLIDATION_DEEP_REFLECT_PROMPT.format(
-                    self_md=_read("self.md"),
-                    user=_read("user.md"),
-                    context=_read("context.md"),
-                    reflections=_read("reflections.md"),
-                    notes=_read("notes.md"),
-                    now=now,
-                )
-            ),
-        ]
+    reflection = await harness.oneshot(
+        CONSOLIDATION_DEEP_REFLECT_PROMPT.format(
+            self_md=_read("self.md"),
+            user=_read("user.md"),
+            context=_read("context.md"),
+            reflections=_read("reflections.md"),
+            notes=notes,
+            now=now,
+        ),
+        ModelTier.FAST,
+        system=CONSOLIDATION_DEEP_SYSTEM,
     )
-    reflection = reflect_response.content
 
     # Stage 2 — given the reflection, decide what to update.
-    update_response = await llm.ainvoke(
-        [
-            SystemMessage(content=CONSOLIDATION_DEEP_SYSTEM),
-            HumanMessage(
-                content=CONSOLIDATION_DEEP_UPDATE_PROMPT.format(
-                    reflection=reflection,
-                    self_md=_read("self.md"),
-                    user=_read("user.md"),
-                    context=_read("context.md"),
-                    memory_index=_read(MEMORY_INDEX.name),
-                    now=now,
-                )
-            ),
-        ]
+    text = await harness.oneshot(
+        CONSOLIDATION_DEEP_UPDATE_PROMPT.format(
+            reflection=reflection,
+            self_md=_read("self.md"),
+            user=_read("user.md"),
+            context=_read("context.md"),
+            memory_index=_read(MEMORY_INDEX.name),
+            now=now,
+        ),
+        ModelTier.FAST,
+        system=CONSOLIDATION_DEEP_SYSTEM,
     )
-
-    text = update_response.content
     if updated := _extract("user", text):
         _write("user.md", updated)
     if updated := _extract("self", text):
@@ -176,8 +155,7 @@ async def run_deep_consolidation() -> None:
         existing = _read("reflections.md")
         _write("reflections.md", (existing + "\n\n" + new_reflection).strip())
 
-    _write("notes.md", "")
-    _record_deep()
+    _drop_notes(notes)
     logger.info("Deep consolidation complete.")
 
 
@@ -188,12 +166,6 @@ def cap_memory_index(text: str) -> str:
         return text
     cut = text[:MEMORY_INDEX_MAX_CHARS]
     return cut[: cut.rfind("\n")] if "\n" in cut else cut
-
-
-async def start_consolidation_scheduler() -> asyncio.Task:
-    """Catch up on missed runs, then start the background scheduling loop."""
-    await _catch_up()
-    return asyncio.create_task(_scheduler_loop())
 
 
 # ---------------------------------------------------------------------------
@@ -220,66 +192,6 @@ _CONTEXT_MD = """\
 # ---------------------------------------------------------------------------
 
 
-async def _catch_up() -> None:
-    today = datetime.now(UTC).date()
-
-    if _iso_date(load_state().consolidation.last_light_run) != today:
-        logger.info("Running missed light consolidation on startup.")
-        try:
-            await run_light_consolidation()
-        except Exception:
-            logger.warning("Startup light consolidation failed — retry next cycle", exc_info=True)
-
-    this_week = today.isocalendar()[1]
-    if _iso_week(load_state().consolidation.last_deep_run) != this_week:
-        logger.info("Running missed deep consolidation on startup.")
-        try:
-            await run_deep_consolidation()
-        except Exception:
-            logger.warning("Startup deep consolidation failed — retrying next cycle", exc_info=True)
-
-
-async def _scheduler_loop() -> None:
-    try:
-        while True:
-            await asyncio.sleep(3600)
-            try:
-                now = datetime.now(UTC)
-                today = now.date()
-
-                if now.hour >= 3 and _iso_date(load_state().consolidation.last_light_run) != today:
-                    await run_light_consolidation()
-
-                this_week = today.isocalendar()[1]
-                deep_run = load_state().consolidation.last_deep_run
-                if now.weekday() == 6 and now.hour >= 4 and _iso_week(deep_run) != this_week:
-                    await run_deep_consolidation()
-            except Exception:
-                logger.exception("Consolidation error — will retry next cycle")
-    except asyncio.CancelledError:
-        logger.info("Consolidation scheduler shut down cleanly.")
-
-
-def _iso_date(iso: str | None) -> object:
-    return datetime.fromisoformat(iso).date() if iso else None
-
-
-def _iso_week(iso: str | None) -> object:
-    return datetime.fromisoformat(iso).date().isocalendar()[1] if iso else None
-
-
-def _record_light() -> None:
-    st = load_state()
-    st.consolidation.last_light_run = datetime.now(UTC).isoformat()
-    save_state(st)
-
-
-def _record_deep() -> None:
-    st = load_state()
-    st.consolidation.last_deep_run = datetime.now(UTC).isoformat()
-    save_state(st)
-
-
 def _read(name: str) -> str:
     path: Path = MEMORY_DIR / name
     return path.read_text().strip() if path.exists() else ""
@@ -290,6 +202,13 @@ def _write(name: str, content: str) -> None:
     partial = MEMORY_DIR / f".{name}.partial"
     partial.write_text(content.strip() + "\n")
     os.replace(partial, MEMORY_DIR / name)
+
+
+def _drop_notes(consumed: str) -> None:
+    """Remove the notes a run read, keeping any written while it waited on the model."""
+    done = set(consumed.splitlines())
+    kept = [line for line in _read("notes.md").splitlines() if line not in done]
+    _write("notes.md", "\n".join(kept))
 
 
 def _extract(tag: str, text: str) -> str | None:

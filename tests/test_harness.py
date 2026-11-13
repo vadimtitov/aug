@@ -13,7 +13,7 @@ import openai
 import psycopg
 import pytest
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables.config import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
@@ -22,6 +22,7 @@ from langgraph.errors import GraphRecursionError
 from aug.api.interfaces.base import IncomingMessage, TextContent
 from aug.api.interfaces.rest import RestApiInterface
 from aug.core.agents.base_agent import BaseAgent
+from aug.core.agents.chat_agent import AugAgent
 from aug.core.harness import (
     Address,
     ApprovalDecision,
@@ -31,6 +32,7 @@ from aug.core.harness import (
     FilePart,
     HarnessError,
     Message,
+    ModelTier,
     Sender,
     StatusUpdate,
     TextDelta,
@@ -637,6 +639,22 @@ async def test_oneshot_calls_the_agent_model() -> None:
         assert await harness.oneshot("question") == "answer"
 
     build.assert_called_once_with("some-model", temperature=0.0)
+    assert model.ainvoke.call_args.args[0] == [HumanMessage(content="question")]
+
+
+async def test_oneshot_calls_the_model_of_the_tier_asked_for() -> None:
+    agent = AugAgent(model="strong-model")
+    harness = LangGraphHarness(agent, MemorySaver(), models={ModelTier.FAST: "fast-model"})
+    model = MagicMock()
+    model.ainvoke = AsyncMock(return_value=AIMessage(content="answer"))
+
+    with patch("aug.core.harness.langgraph.build_chat_model", return_value=model) as build:
+        await harness.oneshot("question", ModelTier.FAST, system="be brief")
+        await harness.oneshot("question")  # STRONG, not mapped: the agent's own model
+
+    assert [c.args[0] for c in build.call_args_list] == ["fast-model", "strong-model"]
+    first = model.ainvoke.call_args_list[0].args[0]
+    assert first == [SystemMessage(content="be brief"), HumanMessage(content="question")]
 
 
 # ---------------------------------------------------------------------------

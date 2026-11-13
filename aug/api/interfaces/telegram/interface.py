@@ -88,7 +88,7 @@ from aug.core.harness import (
     TurnEnded,
     pending_approvals,
 )
-from aug.core.memory import run_deep_consolidation, run_light_consolidation
+from aug.core.jobs import job_runner
 from aug.core.prompts import USER_FILE_FAILED, USER_FILE_TOO_LARGE
 from aug.core.registry import list_agents
 from aug.core.run import run_registry
@@ -1280,7 +1280,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     async def _handle_consolidate(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Running memory consolidation...")  # type: ignore[union-attr]
         try:
-            ran = await run_light_consolidation()
+            ran = await job_runner.run("dream_light")
             msg = "Done." if ran else "Nothing to consolidate — no notes."
             await update.message.reply_text(msg)  # type: ignore[union-attr]
         except Exception:
@@ -1293,7 +1293,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     ) -> None:
         await update.message.reply_text("Running deep consolidation...")  # type: ignore[union-attr]
         try:
-            await run_deep_consolidation()
+            await job_runner.run("dream_deep")
             await update.message.reply_text("Done.")  # type: ignore[union-attr]
         except Exception:
             logger.exception("Manual deep consolidation failed")

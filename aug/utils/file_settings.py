@@ -46,12 +46,6 @@ class ConversationSettings(BaseModel):
     agent: str = "default"
 
 
-class ConsolidationSettings(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    model: str = "gpt-5.1"
-
-
 class SshTarget(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -183,7 +177,6 @@ class AppSettings(BaseModel):
     model_config = ConfigDict(extra="ignore", hide_input_in_errors=True)
 
     conversations: dict[str, ConversationSettings] = {}
-    consolidation: ConsolidationSettings = ConsolidationSettings()
     tools: ToolSettings = ToolSettings()
     reflexes: ReflexSettings = ReflexSettings()
     mcp_servers: list[McpServerConfig] = []

@@ -112,7 +112,7 @@ def client(conn, upstream, providers, monkeypatch):
         patch("aug.app.create_pool", new=AsyncMock(return_value=pool)),
         patch("aug.app._checkpointer_context", return_value=_async_ctx(MagicMock())),
         patch("aug.app.init_workspace"),
-        patch("aug.app.start_consolidation_scheduler", new=AsyncMock(return_value=MagicMock())),
+        patch("aug.app.job_runner", new=MagicMock(start=AsyncMock(), stop=AsyncMock())),
         patch("aug.app.start_scheduler", new=AsyncMock(return_value=MagicMock())),
         patch("aug.app.stop_scheduler", new=AsyncMock()),
         patch("aug.app.set_app"),

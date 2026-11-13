@@ -536,6 +536,8 @@ VOICE_TRANSCRIPT_TEMPLATE = "[Voice message, already transcribed]\n{transcript}"
 # Rendered with every file the user sends, so the agent can hand its path to tools.
 # An image the model can see gets the hint next to the image itself.
 USER_IMAGE_HINT = "[Image from user: {path}]"
+# Stands in for an image a tool returned, for a model that cannot take images.
+TOOL_IMAGE_OMITTED = "[The tool returned an image here; this model cannot view images.]"
 USER_FILE_HINT = "[File from user: {filename} ({media_type}) at {path}]"
 # A file that failed to download (the rest of the message still arrives).
 USER_FILE_FAILED = "[The user sent {filename}, but it could not be received.]"

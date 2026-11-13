@@ -83,8 +83,12 @@ class Harness(ABC):
         has not started yet."""
 
     @abstractmethod
-    async def oneshot(self, prompt: str, tier: ModelTier = ModelTier.STRONG) -> str:
-        """A plain model call: no tools, no history.  Returns the text.  Used by jobs."""
+    async def oneshot(
+        self, prompt: str, tier: ModelTier = ModelTier.STRONG, *, system: str = ""
+    ) -> str:
+        """A plain model call: no tools, no history.  Returns the text.  Used by jobs.
+
+        *tier* picks the harness's model for the call; callers never name a model."""
 
     @asynccontextmanager
     async def running(self, on_unsolicited: UnsolicitedSink) -> AsyncIterator[None]:

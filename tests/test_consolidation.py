@@ -1,15 +1,13 @@
 """Unit tests for consolidation utilities."""
 
-from datetime import date
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
+from aug.core.harness.types import ModelTier
 from aug.core.memory import (
     _extract,
-    _iso_date,
-    _iso_week,
     _read,
     _write,
     run_deep_consolidation,
@@ -37,28 +35,6 @@ def test_extract_missing_tag() -> None:
 
 def test_extract_trims_whitespace() -> None:
     assert _extract("self", "<self>  trimmed  </self>") == "trimmed"
-
-
-# ---------------------------------------------------------------------------
-# _iso_date / _iso_week
-# ---------------------------------------------------------------------------
-
-
-def test_iso_date_parses() -> None:
-    assert _iso_date("2024-03-15T03:00:00+00:00") == date(2024, 3, 15)
-
-
-def test_iso_date_none() -> None:
-    assert _iso_date(None) is None
-
-
-def test_iso_week_parses() -> None:
-    # 2024-03-15 is week 11
-    assert _iso_week("2024-03-15T00:00:00+00:00") == 11
-
-
-def test_iso_week_none() -> None:
-    assert _iso_week(None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -95,23 +71,25 @@ def test_write_overwrites(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _mock_llm(response_text: str) -> MagicMock:
-    llm = MagicMock()
-    llm.ainvoke = AsyncMock(return_value=MagicMock(content=response_text))
-    return llm
+class _Harness:
+    """Records every oneshot() call and answers from *replies* in turn."""
+
+    def __init__(self, *replies: str) -> None:
+        self.replies = list(replies)
+        self.calls: list[tuple[str, ModelTier, str]] = []
+
+    async def oneshot(self, prompt: str, tier: ModelTier = ModelTier.STRONG, *, system=""):
+        self.calls.append((prompt, tier, system))
+        return self.replies.pop(0) if self.replies else ""
 
 
 @pytest.mark.asyncio
 async def test_light_consolidation_skips_when_no_notes(tmp_path: Path) -> None:
     (tmp_path / "notes.md").write_text("")
-    with (
-        patch("aug.core.memory.MEMORY_DIR", tmp_path),
-        patch("aug.core.memory.build_chat_model") as mock_build,
-        patch("aug.core.memory.load_settings"),
-        patch("aug.core.memory.save_state"),
-    ):
-        await run_light_consolidation()
-        mock_build.assert_not_called()
+    harness = _Harness()
+    with patch("aug.core.memory.MEMORY_DIR", tmp_path):
+        assert await run_light_consolidation(harness) is False
+    assert harness.calls == []
 
 
 @pytest.mark.asyncio
@@ -122,13 +100,8 @@ async def test_light_consolidation_writes_context_and_user(tmp_path: Path) -> No
 
     response = "<context>## Present\nfocused on cats\n## Recent\n</context><user>Likes cats.</user>"
 
-    with (
-        patch("aug.core.memory.MEMORY_DIR", tmp_path),
-        patch("aug.core.memory.build_chat_model", return_value=_mock_llm(response)),
-        patch("aug.core.memory.load_settings"),
-        patch("aug.core.memory.save_state"),
-    ):
-        await run_light_consolidation()
+    with patch("aug.core.memory.MEMORY_DIR", tmp_path):
+        await run_light_consolidation(_Harness(response))
 
     assert "focused on cats" in (tmp_path / "context.md").read_text()
     assert "Likes cats." in (tmp_path / "user.md").read_text()
@@ -144,13 +117,8 @@ async def test_light_consolidation_writes_env_facts_to_user(tmp_path: Path) -> N
 
     response = "<user>Home Assistant: HA_URL + HASS_TOKEN. Query entity IDs before use.</user>"
 
-    with (
-        patch("aug.core.memory.MEMORY_DIR", tmp_path),
-        patch("aug.core.memory.build_chat_model", return_value=_mock_llm(response)),
-        patch("aug.core.memory.load_settings"),
-        patch("aug.core.memory.save_state"),
-    ):
-        await run_light_consolidation()
+    with patch("aug.core.memory.MEMORY_DIR", tmp_path):
+        await run_light_consolidation(_Harness(response))
 
     assert "Home Assistant" in (tmp_path / "user.md").read_text()
 
@@ -164,13 +132,8 @@ async def test_light_consolidation_skips_missing_tags(tmp_path: Path) -> None:
 
     response = "<context>updated context</context>"  # user omitted
 
-    with (
-        patch("aug.core.memory.MEMORY_DIR", tmp_path),
-        patch("aug.core.memory.build_chat_model", return_value=_mock_llm(response)),
-        patch("aug.core.memory.load_settings"),
-        patch("aug.core.memory.save_state"),
-    ):
-        await run_light_consolidation()
+    with patch("aug.core.memory.MEMORY_DIR", tmp_path):
+        await run_light_consolidation(_Harness(response))
 
     assert "updated context" in (tmp_path / "context.md").read_text()
     assert (tmp_path / "user.md").read_text() == "original user"
@@ -190,13 +153,8 @@ async def test_light_consolidation_writes_self_md_when_tag_present(tmp_path: Pat
 
     response = "<self>I am AUG. More concise now.</self>"
 
-    with (
-        patch("aug.core.memory.MEMORY_DIR", tmp_path),
-        patch("aug.core.memory.build_chat_model", return_value=_mock_llm(response)),
-        patch("aug.core.memory.load_settings"),
-        patch("aug.core.memory.save_state"),
-    ):
-        await run_light_consolidation()
+    with patch("aug.core.memory.MEMORY_DIR", tmp_path):
+        await run_light_consolidation(_Harness(response))
 
     assert "More concise now." in (tmp_path / "self.md").read_text()
 
@@ -210,13 +168,8 @@ async def test_light_consolidation_does_not_write_self_md_when_tag_absent(tmp_pa
 
     response = "<user>Likes cats.</user>"  # no <self> tag
 
-    with (
-        patch("aug.core.memory.MEMORY_DIR", tmp_path),
-        patch("aug.core.memory.build_chat_model", return_value=_mock_llm(response)),
-        patch("aug.core.memory.load_settings"),
-        patch("aug.core.memory.save_state"),
-    ):
-        await run_light_consolidation()
+    with patch("aug.core.memory.MEMORY_DIR", tmp_path):
+        await run_light_consolidation(_Harness(response))
 
     assert (tmp_path / "self.md").read_text().strip() == "original self"
 
@@ -229,30 +182,14 @@ async def test_light_consolidation_passes_self_md_to_prompt(tmp_path: Path) -> N
     (tmp_path / "context.md").write_text("## Present\n")
     (tmp_path / "user.md").write_text("Nothing known.")
 
-    captured_prompt: list[str] = []
+    harness = _Harness("")
+    with patch("aug.core.memory.MEMORY_DIR", tmp_path):
+        await run_light_consolidation(harness)
 
-    def capture_llm(response_text: str) -> MagicMock:
-        llm = MagicMock()
-
-        async def ainvoke(messages: list) -> MagicMock:
-            for m in messages:
-                if hasattr(m, "content"):
-                    captured_prompt.append(m.content)
-            return MagicMock(content=response_text)
-
-        llm.ainvoke = ainvoke
-        return llm
-
-    with (
-        patch("aug.core.memory.MEMORY_DIR", tmp_path),
-        patch("aug.core.memory.build_chat_model", return_value=capture_llm("")),
-        patch("aug.core.memory.load_settings"),
-        patch("aug.core.memory.save_state"),
-    ):
-        await run_light_consolidation()
-
-    full_prompt = "\n".join(captured_prompt)
-    assert "Dry wit." in full_prompt
+    ((prompt, tier, system),) = harness.calls
+    assert tier is ModelTier.FAST
+    assert system
+    assert "Dry wit." in prompt
 
 
 def test_light_consolidation_prompt_contains_dedup_instruction() -> None:
@@ -336,25 +273,31 @@ async def test_deep_consolidation_writes_self_md_when_tag_present(tmp_path: Path
     reflect_response = "Some reflection."
     update_response = "<self>Updated identity.</self><new_reflection>ref</new_reflection>"
 
-    llm = MagicMock()
-    llm.ainvoke = AsyncMock(
-        side_effect=[
-            MagicMock(content=reflect_response),
-            MagicMock(content=update_response),
-        ]
-    )
-
-    with (
-        patch("aug.core.memory.MEMORY_DIR", tmp_path),
-        patch("aug.core.memory.build_chat_model", return_value=llm),
-        patch("aug.core.memory.load_settings"),
-        patch("aug.core.memory.save_state"),
-    ):
-        await run_deep_consolidation()
+    harness = _Harness(reflect_response, update_response)
+    with patch("aug.core.memory.MEMORY_DIR", tmp_path):
+        await run_deep_consolidation(harness)
 
     assert "Updated identity." in (tmp_path / "self.md").read_text()
+    assert "Some reflection." in harness.calls[1][0]  # the update sees the reflection
+    assert [tier for _, tier, _ in harness.calls] == [ModelTier.FAST, ModelTier.FAST]
 
 
 # ---------------------------------------------------------------------------
 # run_deep_consolidation
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_note_written_while_the_dream_runs_is_kept(tmp_path: Path) -> None:
+    (tmp_path / "notes.md").write_text("[2026-01-01] old note\n")
+
+    class _NoteMidRun(_Harness):
+        async def oneshot(self, prompt, tier=ModelTier.STRONG, *, system=""):
+            with (tmp_path / "notes.md").open("a") as f:
+                f.write("[2026-01-02] new note\n")
+            return "<user>u</user>"
+
+    with patch("aug.core.memory.MEMORY_DIR", tmp_path):
+        await run_light_consolidation(_NoteMidRun())
+
+    assert (tmp_path / "notes.md").read_text() == "[2026-01-02] new note\n"

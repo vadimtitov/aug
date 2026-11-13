@@ -12,7 +12,7 @@ class Harness(ABC):
     async def inject(self, message: Message, context_id: str) -> bool   # False when idle
     async def cancel(self, context_id: str) -> bool                     # ends with TurnEnded(cancelled=True)
     async def compact(self, context_id: str) -> bool                    # caller holds the run lock
-    async def oneshot(self, prompt: str, tier: ModelTier = ModelTier.STRONG) -> str
+    async def oneshot(self, prompt: str, tier: ModelTier = ModelTier.STRONG, *, system: str = "") -> str
     def running(self, on_unsolicited) -> AsyncContextManager             # entered once by the lifespan
 ```
 
@@ -31,6 +31,9 @@ class Harness(ABC):
 - `Message` is `TextPart`s and `FilePart`s (files are saved by the interface and passed
   by path, never as bytes; see Files below) plus the `Sender`. `TurnContext.reply_to` says where replies
   go; `attended=False` marks pushes and jobs, where nobody can answer an approval.
+- `oneshot()` is a bare model call (no tools, no history) for jobs. The caller asks for
+  a tier; each harness maps tiers to its own models (`LangGraphHarness(models=...)`, from
+  `_TIER_MODELS` in the registry).
 - The base `run()` logs every turn and tool call and appends it to AUG's own
   transcript, `data/transcripts/<conversation_id>.jsonl`, the same way on every
   harness. Files appear in it as path, media type, filename, size and sha256, never
@@ -102,3 +105,22 @@ sent to the user, and `index/<id>.json` with its metadata.
 `context_id` is a chat's current session (Telegram's `/clear` starts a new one);
 `conversation_id` is the stable chat it belongs to. LangGraph's checkpoint key and
 the Postgres columns keep the old name `thread_id`.
+
+## Jobs (`aug/core/jobs.py`)
+
+A job is an async function that receives a harness. `JOBS` is the one list of what runs
+when (UTC crontab) and on which profile, so each job runs once whichever agent versions
+are live:
+
+```python
+JOBS = [
+    JobSpec(job="dream_light", cron="0 3 * * *", profile="v13_kimi"),
+    JobSpec(job="dream_deep", cron="0 4 * * sun", profile="v13_kimi"),
+]
+```
+
+`job_runner` schedules them at startup and, in the background, runs any job whose
+scheduled time passed since its last run (`state.json` `jobs`). `/consolidate` and
+`/consolidate_deep` call `job_runner.run()`; one run of a job at a time. Scheduled tasks
+and reminders are not jobs: they belong to a chat and run on its profile through
+`fire_push`.

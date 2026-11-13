@@ -1,7 +1,11 @@
-"""Agent registry.
+"""Agent registry: one entry per profile (agent version).
 
-To add a new agent, instantiate a BaseAgent subclass and add it to _REGISTRY.
+``v13_kimi`` (kimi-k3) and ``v13_glm`` (glm-5.3) are built by ``_build_profiles()``, since
+their tool lists include whichever MCP servers connected at startup.  The ``browser``
+tool's code stays but no profile exposes it.
 """
+
+import logging
 
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -12,9 +16,8 @@ from aug.core.agents.chat_agent import AugAgent
 from aug.core.agents.fake_agent import FakeAgent
 from aug.core.harness.base import Harness
 from aug.core.harness.langgraph import LangGraphHarness
-from aug.core.reflexes.homeassistant import homeassistant_reflex
+from aug.core.harness.types import ModelTier
 from aug.core.tools.brave_search import brave_search
-from aug.core.tools.browser import browser
 from aug.core.tools.fetch_page import fetch_page
 from aug.core.tools.gmail import gmail_draft, gmail_read_thread, gmail_search, gmail_send
 from aug.core.tools.image_gen import edit_image, generate_image
@@ -39,78 +42,24 @@ from aug.core.tools.run_ssh import download_ssh_file, list_ssh_targets, run_ssh,
 from aug.core.tools.skills import delete_skill, get_skill, save_skill, write_skill_file
 from aug.core.tools.subagent import make_run_subagent_tool
 from aug.core.tools.tasks import create_task, delete_task, list_tasks, update_task
-from aug.dev.scripted import build_scripted_agent
+from aug.dev.scripted import SCRIPTED_TOOLS, build_scripted_agent
+from aug.utils.file_settings import load_settings, save_settings
 
-_V7_TOOLS = [
-    brave_search,
-    fetch_page,
-    run_bash,
-    note,
-    browser,
-    gmail_search,
-    gmail_read_thread,
-    gmail_send,
-    gmail_draft,
-    respond_with_file,
-    generate_image,
-    edit_image,
-    portainer_list_containers,
-    portainer_container_logs,
-    portainer_container_action,
-    portainer_list_stacks,
-    portainer_deploy_stack,
-    portainer_stack_action,
-    get_skill,
-    save_skill,
-    write_skill_file,
-    delete_skill,
-    create_task,
-    list_tasks,
-    update_task,
-    delete_task,
-    # set_reminder disabled — use create_task with push_type="forward"/"inject" instead
-]
+logger = logging.getLogger(__name__)
 
-_V9_TOOLS = [
-    brave_search,
-    fetch_page,
-    run_bash,
-    note,
-    browser,
-    gmail_search,
-    gmail_read_thread,
-    gmail_send,
-    gmail_draft,
-    respond_with_file,
-    generate_image,
-    edit_image,
-    portainer_list_containers,
-    portainer_container_logs,
-    portainer_container_action,
-    portainer_list_stacks,
-    portainer_deploy_stack,
-    portainer_stack_action,
-    get_skill,
-    save_skill,
-    write_skill_file,
-    delete_skill,
-    create_task,
-    list_tasks,
-    update_task,
-    delete_task,
-    run_ssh,
-    list_ssh_targets,
-    download_ssh_file,
-    upload_ssh_file,
-]
+_KIMI = "accounts/fireworks/models/kimi-k3"
+_GLM = "accounts/fireworks/models/glm-5p3"
+# oneshot()'s FAST tier on both profiles: what jobs (the dream) run on.
+_FAST = "accounts/fireworks/models/glm-5p3-flash"
+# Describes images for v13_glm, whose model has no vision (describe_image).
+_VISION_DESCRIPTION_MODEL = _KIMI
 
-_V8_REFLEXES = [homeassistant_reflex("gemini-2.5-flash-lite")]
+# Profiles a chat on a deleted agent version is moved to: glm versions to v13_glm,
+# every other one to v13_kimi.
+DEFAULT_PROFILE = "v13_kimi"
+_GLM_PROFILE = "v13_glm"
 
-# Subagent tools: same capabilities as the main agent but without run_subagent (no nesting).
-# Describes images for agents whose model has no vision (describe_image).
-_VISION_DESCRIPTION_MODEL = "accounts/fireworks/models/kimi-k3"
-
-_SUBAGENT_TOOLS = [
+_TOOLS = [
     brave_search,
     fetch_page,
     run_bash,
@@ -141,566 +90,89 @@ _SUBAGENT_TOOLS = [
     download_ssh_file,
     upload_ssh_file,
 ]
-
-# Per-model subagents — each V11 agent gets a subagent using the same model.
-_subagent_claude = AugAgent(
-    model="claude-sonnet-4-6",
-    tools=_SUBAGENT_TOOLS,
-    temperature=0.0,
-    recursion_limit=50,
-    compaction_model="claude-haiku-4-5",
-    compaction_threshold=0.7,
-    context_window=500_000,
-    max_summary_tokens=2000,
-)
-_subagent_gpt41 = AugAgent(
-    model="gpt-4.1",
-    tools=_SUBAGENT_TOOLS,
-    temperature=0.0,
-    recursion_limit=50,
-    compaction_model="gpt-4.1",
-    compaction_threshold=0.7,
-    context_window=1_000_000,
-    max_summary_tokens=2000,
-)
-_subagent_gemini_pro = AugAgent(
-    model="gemini-2.5-pro",
-    tools=_SUBAGENT_TOOLS,
-    temperature=0.0,
-    recursion_limit=50,
-    compaction_model="gemini-2.5-pro",
-    compaction_threshold=0.7,
-    context_window=1_000_000,
-    max_summary_tokens=2000,
-)
-_subagent_glm5 = AugAgent(
-    model="accounts/fireworks/models/glm-5p3",
-    tools=_SUBAGENT_TOOLS,
-    temperature=0.0,
-    recursion_limit=50,
-    vision_description_model=_VISION_DESCRIPTION_MODEL,
-    compaction_model="accounts/fireworks/models/glm-5p3",
-    compaction_threshold=0.8,
-    context_window=200_000,
-    max_summary_tokens=2000,
-)
-_subagent_kimi = AugAgent(
-    model="accounts/fireworks/models/kimi-k3",
-    tools=_SUBAGENT_TOOLS,
-    temperature=0.0,
-    recursion_limit=50,
-    compaction_model="accounts/fireworks/models/kimi-k3",
-    compaction_threshold=0.8,
-    context_window=200_000,
-    max_summary_tokens=2000,
-)
-
-# Fireworks models added for speed/cost. kimi-k3-fast and glm-5p3-fast reject
-# image input, so they get images described; the two Flash models read them.
-_subagent_deepseek = AugAgent(
-    model="accounts/fireworks/models/deepseek-v4p1-flash",
-    tools=_SUBAGENT_TOOLS,
-    temperature=0.0,
-    recursion_limit=50,
-    compaction_model="accounts/fireworks/models/deepseek-v4p1-flash",
-    compaction_threshold=0.8,
-    context_window=200_000,
-    max_summary_tokens=2000,
-)
-_subagent_glm5_flash = AugAgent(
-    model="accounts/fireworks/models/glm-5p3-flash",
-    tools=_SUBAGENT_TOOLS,
-    temperature=0.0,
-    recursion_limit=50,
-    compaction_model="accounts/fireworks/models/glm-5p3-flash",
-    compaction_threshold=0.8,
-    context_window=200_000,
-    max_summary_tokens=2000,
-)
-_subagent_glm5_fast = AugAgent(
-    model="accounts/fireworks/routers/glm-5p3-fast",
-    tools=_SUBAGENT_TOOLS,
-    temperature=0.0,
-    recursion_limit=50,
-    vision_description_model=_VISION_DESCRIPTION_MODEL,
-    compaction_model="accounts/fireworks/routers/glm-5p3-fast",
-    compaction_threshold=0.8,
-    context_window=200_000,
-    max_summary_tokens=2000,
-)
-_subagent_kimi_fast = AugAgent(
-    model="accounts/fireworks/routers/kimi-k3-fast",
-    tools=_SUBAGENT_TOOLS,
-    temperature=0.0,
-    recursion_limit=50,
-    vision_description_model=_VISION_DESCRIPTION_MODEL,
-    compaction_model="accounts/fireworks/routers/kimi-k3-fast",
-    compaction_threshold=0.8,
-    context_window=200_000,
-    max_summary_tokens=2000,
-)
-
-_V11_CLAUDE_TOOLS = [
-    brave_search,
-    fetch_page,
-    run_bash,
-    note,
-    browser,
-    gmail_search,
-    gmail_read_thread,
-    gmail_send,
-    gmail_draft,
-    respond_with_file,
-    generate_image,
-    edit_image,
-    portainer_list_containers,
-    portainer_container_logs,
-    portainer_container_action,
-    portainer_list_stacks,
-    portainer_deploy_stack,
-    portainer_stack_action,
-    get_skill,
-    save_skill,
-    write_skill_file,
-    delete_skill,
-    create_task,
-    list_tasks,
-    update_task,
-    delete_task,
-    run_ssh,
-    list_ssh_targets,
-    download_ssh_file,
-    upload_ssh_file,
-    make_run_subagent_tool(_subagent_claude),
-]
-
-_V11_GPT41_TOOLS = [
-    brave_search,
-    fetch_page,
-    run_bash,
-    note,
-    browser,
-    gmail_search,
-    gmail_read_thread,
-    gmail_send,
-    gmail_draft,
-    respond_with_file,
-    generate_image,
-    edit_image,
-    portainer_list_containers,
-    portainer_container_logs,
-    portainer_container_action,
-    portainer_list_stacks,
-    portainer_deploy_stack,
-    portainer_stack_action,
-    get_skill,
-    save_skill,
-    write_skill_file,
-    delete_skill,
-    create_task,
-    list_tasks,
-    update_task,
-    delete_task,
-    run_ssh,
-    list_ssh_targets,
-    download_ssh_file,
-    upload_ssh_file,
-    make_run_subagent_tool(_subagent_gpt41),
-]
-
-_V11_GEMINI_PRO_TOOLS = [
-    brave_search,
-    fetch_page,
-    run_bash,
-    note,
-    browser,
-    gmail_search,
-    gmail_read_thread,
-    gmail_send,
-    gmail_draft,
-    respond_with_file,
-    generate_image,
-    edit_image,
-    portainer_list_containers,
-    portainer_container_logs,
-    portainer_container_action,
-    portainer_list_stacks,
-    portainer_deploy_stack,
-    portainer_stack_action,
-    get_skill,
-    save_skill,
-    write_skill_file,
-    delete_skill,
-    create_task,
-    list_tasks,
-    update_task,
-    delete_task,
-    run_ssh,
-    list_ssh_targets,
-    download_ssh_file,
-    upload_ssh_file,
-    make_run_subagent_tool(_subagent_gemini_pro),
-]
-
-_V11_GLM5_TOOLS = [
-    brave_search,
-    fetch_page,
-    run_bash,
-    note,
-    browser,
-    gmail_search,
-    gmail_read_thread,
-    gmail_send,
-    gmail_draft,
-    respond_with_file,
-    generate_image,
-    edit_image,
-    portainer_list_containers,
-    portainer_container_logs,
-    portainer_container_action,
-    portainer_list_stacks,
-    portainer_deploy_stack,
-    portainer_stack_action,
-    get_skill,
-    save_skill,
-    write_skill_file,
-    delete_skill,
-    create_task,
-    list_tasks,
-    update_task,
-    delete_task,
-    run_ssh,
-    list_ssh_targets,
-    download_ssh_file,
-    upload_ssh_file,
-    make_run_subagent_tool(_subagent_glm5),
-]
-
-_V11_KIMI_TOOLS = [
-    brave_search,
-    fetch_page,
-    run_bash,
-    note,
-    browser,
-    gmail_search,
-    gmail_read_thread,
-    gmail_send,
-    gmail_draft,
-    respond_with_file,
-    generate_image,
-    edit_image,
-    portainer_list_containers,
-    portainer_container_logs,
-    portainer_container_action,
-    portainer_list_stacks,
-    portainer_deploy_stack,
-    portainer_stack_action,
-    get_skill,
-    save_skill,
-    write_skill_file,
-    delete_skill,
-    create_task,
-    list_tasks,
-    update_task,
-    delete_task,
-    run_ssh,
-    list_ssh_targets,
-    download_ssh_file,
-    upload_ssh_file,
-    make_run_subagent_tool(_subagent_kimi),
-]
-
-# Same tool set as v11_glm5 / v11_kimi, delegating to a subagent on the agent's own model.
-_V11_DEEPSEEK_TOOLS = [
-    *(t for t in _V11_GLM5_TOOLS if t.name != "run_subagent"),
-    make_run_subagent_tool(_subagent_deepseek),
-]
-_V11_GLM5_FLASH_TOOLS = [
-    *(t for t in _V11_GLM5_TOOLS if t.name != "run_subagent"),
-    make_run_subagent_tool(_subagent_glm5_flash),
-]
-_V11_GLM5_FAST_TOOLS = [
-    *(t for t in _V11_GLM5_TOOLS if t.name != "run_subagent"),
-    make_run_subagent_tool(_subagent_glm5_fast),
-]
-_V11_KIMI_FAST_TOOLS = [
-    *(t for t in _V11_KIMI_TOOLS if t.name != "run_subagent"),
-    make_run_subagent_tool(_subagent_kimi_fast),
-]
-
-# v12 = the matching v11 tool set minus browser + MCP management tools + whatever
-# MCP servers are actually reachable at startup. Browsing comes from an MCP
-# server (e.g. @playwright/mcp) instead. V11 agents are immutable and untouched —
-# these are new versions, not modifications of the _V11_* lists. v11's
-# run_subagent is dropped too: _build_v12_agents() adds one whose subagent also
-# gets the MCP tools.
 _MCP_MANAGEMENT_TOOLS = [
     search_mcp_servers,
     install_mcp_server,
     list_mcp_servers,
     remove_mcp_server,
 ]
-_V12_CLAUDE_TOOLS = [
-    *(t for t in _V11_CLAUDE_TOOLS if t is not browser and t.name != "run_subagent"),
-    *_MCP_MANAGEMENT_TOOLS,
-]
-_V12_GLM5_TOOLS = [
-    *(t for t in _V11_GLM5_TOOLS if t is not browser and t.name != "run_subagent"),
-    *_MCP_MANAGEMENT_TOOLS,
-]
-_V12_KIMI_TOOLS = [
-    *(t for t in _V11_KIMI_TOOLS if t is not browser and t.name != "run_subagent"),
-    *_MCP_MANAGEMENT_TOOLS,
-]
-_V12_DEEPSEEK_TOOLS = [
-    *(t for t in _V11_DEEPSEEK_TOOLS if t is not browser and t.name != "run_subagent"),
-    *_MCP_MANAGEMENT_TOOLS,
-]
-_V12_GLM5_FLASH_TOOLS = [
-    *(t for t in _V11_GLM5_FLASH_TOOLS if t is not browser and t.name != "run_subagent"),
-    *_MCP_MANAGEMENT_TOOLS,
-]
-_V12_GLM5_FAST_TOOLS = [
-    *(t for t in _V11_GLM5_FAST_TOOLS if t is not browser and t.name != "run_subagent"),
-    *_MCP_MANAGEMENT_TOOLS,
-]
-_V12_KIMI_FAST_TOOLS = [
-    *(t for t in _V11_KIMI_FAST_TOOLS if t is not browser and t.name != "run_subagent"),
-    *_MCP_MANAGEMENT_TOOLS,
-]
+
+# A profile's subagent: the same model and tools (plus the MCP servers'), without
+# run_subagent, so it cannot nest.
+_subagent_kimi = AugAgent(
+    model=_KIMI,
+    tools=_TOOLS,
+    temperature=0.0,
+    recursion_limit=50,
+    compaction_model=_KIMI,
+    compaction_threshold=0.8,
+    context_window=200_000,
+    max_summary_tokens=2000,
+)
+_subagent_glm = AugAgent(
+    model=_GLM,
+    tools=_TOOLS,
+    temperature=0.0,
+    recursion_limit=50,
+    vision_description_model=_VISION_DESCRIPTION_MODEL,
+    compaction_model=_GLM,
+    compaction_threshold=0.8,
+    context_window=200_000,
+    max_summary_tokens=2000,
+)
+
+# oneshot()'s model per tier, per profile.  A profile not listed calls its own model.
+_TIER_MODELS: dict[str, dict[ModelTier, str]] = {
+    "v13_kimi": {ModelTier.STRONG: _KIMI, ModelTier.FAST: _FAST},
+    "v13_glm": {ModelTier.STRONG: _GLM, ModelTier.FAST: _FAST},
+}
 
 
-def v12_base_tool_names() -> set[str]:
-    """Names of the v12 agents' non-MCP tools — seeds MCPManager's collision
-    check so a server can never shadow a native AUG tool."""
-    return {
-        t.name
-        for t in [
-            *_V12_CLAUDE_TOOLS,
-            *_V12_GLM5_TOOLS,
-            *_V12_KIMI_TOOLS,
-            *_V12_DEEPSEEK_TOOLS,
-            *_V12_GLM5_FLASH_TOOLS,
-            *_V12_GLM5_FAST_TOOLS,
-            *_V12_KIMI_FAST_TOOLS,
-        ]
-    } | {"run_subagent"}
+def base_tool_names() -> set[str]:
+    """Names of the profiles' non-MCP tools: seeds MCPManager's collision check so a
+    server can never shadow a native AUG tool."""
+    return {t.name for t in [*_TOOLS, *_MCP_MANAGEMENT_TOOLS, *SCRIPTED_TOOLS]} | {
+        "run_subagent",
+        "describe_image",
+    }
 
 
 def configure_mcp_tools(tools: list[BaseTool]) -> None:
-    """Rebuild the v12 agents with the MCP tools MCPManager actually connected.
+    """Rebuild the profiles with the MCP tools MCPManager actually connected.
 
-    Called once from aug/app.py's lifespan(), after MCPManager.load_all()
-    resolves which configured servers are reachable. Before this runs (e.g. in
-    tests, or if a server config exists but the app hasn't booted through
-    lifespan) the v12 agents simply have no MCP-sourced tools yet — same
-    graceful degradation as "every MCP server failed to connect".
+    Called once from aug/app.py's lifespan(), after MCPManager.load_all() resolves which
+    configured servers are reachable.  Until then (in tests, say) the profiles have no
+    MCP tools, the same as every server failing to connect.
     """
-    _REGISTRY.update(_build_v12_agents(tools))
+    _REGISTRY.update(_build_profiles(tools))
     if get_settings().SCRIPTED_AGENT:
         _REGISTRY["scripted"] = build_scripted_agent()
+    else:
+        _REGISTRY.pop("scripted", None)
+
+
+def migrate_conversations() -> list[str]:
+    """Move every conversation set to an agent version that no longer exists onto a
+    current profile (glm versions to v13_glm, the rest to v13_kimi).  Returns the moved
+    conversation ids.  Called once at startup, before any message is taken."""
+    settings = load_settings()
+    moved = []
+    for conversation_id, conversation in settings.conversations.items():
+        if conversation.agent in _REGISTRY or conversation.agent == "default":
+            continue
+        target = _GLM_PROFILE if "glm" in conversation.agent else DEFAULT_PROFILE
+        logger.info(
+            "agent version %s is gone: %s moves to %s", conversation.agent, conversation_id, target
+        )
+        conversation.agent = target
+        moved.append(conversation_id)
+    if moved:
+        save_settings(settings)
+    return moved
 
 
 _REGISTRY: dict[str, BaseAgent] = {
     "fake": FakeAgent(),
-    "subagent": _subagent_claude,
-    "v9_claude": AugAgent(
-        model="claude-sonnet-4-6",
-        tools=_V9_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-    ),
-    "v9_gpt4o": AugAgent(
-        model="gpt-4o",
-        tools=_V9_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-    ),
-    "v9_gpt41": AugAgent(
-        model="gpt-4.1",
-        tools=_V9_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-    ),
-    "v9_gpt51": AugAgent(
-        model="gpt-5.1",
-        tools=_V9_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-    ),
-    "v9_gemini_flash": AugAgent(
-        model="gemini-2.5-flash",
-        tools=_V9_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-    ),
-    "v9_gemini_pro": AugAgent(
-        model="gemini-2.5-pro",
-        tools=_V9_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-    ),
-    "v9_glm5": AugAgent(
-        model="accounts/fireworks/models/glm-5p3",
-        tools=_V9_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-        vision_description_model=_VISION_DESCRIPTION_MODEL,
-    ),
-    "v10_claude": AugAgent(
-        model="claude-sonnet-4-6",
-        tools=_V9_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-        compaction_model="claude-haiku-4-5",
-        compaction_threshold=0.7,
-        context_window=500_000,
-        max_summary_tokens=2000,
-    ),
-    "v10_gpt41": AugAgent(
-        model="gpt-4.1",
-        tools=_V9_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-        compaction_model="gpt-4.1",
-        compaction_threshold=0.7,
-        context_window=1_000_000,
-        max_summary_tokens=2000,
-    ),
-    "v10_gpt51": AugAgent(
-        model="gpt-5.1",
-        tools=_V9_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-        compaction_model="gpt-5.1",
-        compaction_threshold=0.7,
-        context_window=200_000,
-        max_summary_tokens=2000,
-    ),
-    "v10_gemini_pro": AugAgent(
-        model="gemini-2.5-pro",
-        tools=_V9_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-        compaction_model="gemini-2.5-pro",
-        compaction_threshold=0.7,
-        context_window=1_000_000,
-        max_summary_tokens=2000,
-    ),
-    "v10_glm5": AugAgent(
-        model="accounts/fireworks/models/glm-5p3",
-        tools=_V9_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-        vision_description_model=_VISION_DESCRIPTION_MODEL,
-        compaction_model="accounts/fireworks/models/glm-5p3",
-        compaction_threshold=0.8,
-        context_window=200_000,
-        max_summary_tokens=2000,
-    ),
-    "v10_kimi": AugAgent(
-        model="accounts/fireworks/models/kimi-k3",
-        tools=_V9_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-        compaction_model="accounts/fireworks/models/kimi-k3",
-        compaction_threshold=0.8,
-        context_window=200_000,
-        max_summary_tokens=2000,
-    ),
-    "v11_claude": AugAgent(
-        model="claude-sonnet-4-6",
-        tools=_V11_CLAUDE_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-        compaction_model="claude-haiku-4-5",
-        compaction_threshold=0.7,
-        context_window=500_000,
-        max_summary_tokens=2000,
-    ),
-    "v11_gpt41": AugAgent(
-        model="gpt-4.1",
-        tools=_V11_GPT41_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-        compaction_model="gpt-4.1",
-        compaction_threshold=0.7,
-        context_window=1_000_000,
-        max_summary_tokens=2000,
-    ),
-    "v11_gemini_pro": AugAgent(
-        model="gemini-2.5-pro",
-        tools=_V11_GEMINI_PRO_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-        compaction_model="gemini-2.5-pro",
-        compaction_threshold=0.7,
-        context_window=1_000_000,
-        max_summary_tokens=2000,
-    ),
-    "v11_glm5": AugAgent(
-        model="accounts/fireworks/models/glm-5p3",
-        tools=_V11_GLM5_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-        vision_description_model=_VISION_DESCRIPTION_MODEL,
-        compaction_model="accounts/fireworks/models/glm-5p3",
-        compaction_threshold=0.8,
-        context_window=200_000,
-        max_summary_tokens=2000,
-    ),
-    "v11_kimi": AugAgent(
-        model="accounts/fireworks/models/kimi-k3",
-        tools=_V11_KIMI_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-        compaction_model="accounts/fireworks/models/kimi-k3",
-        compaction_threshold=0.8,
-        context_window=200_000,
-        max_summary_tokens=2000,
-    ),
-    "v11_deepseek": AugAgent(
-        model="accounts/fireworks/models/deepseek-v4p1-flash",
-        tools=_V11_DEEPSEEK_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-        compaction_model="accounts/fireworks/models/deepseek-v4p1-flash",
-        compaction_threshold=0.8,
-        context_window=200_000,
-        max_summary_tokens=2000,
-    ),
-    "v11_glm5_flash": AugAgent(
-        model="accounts/fireworks/models/glm-5p3-flash",
-        tools=_V11_GLM5_FLASH_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-        compaction_model="accounts/fireworks/models/glm-5p3-flash",
-        compaction_threshold=0.8,
-        context_window=200_000,
-        max_summary_tokens=2000,
-    ),
-    "v11_glm5_fast": AugAgent(
-        model="accounts/fireworks/routers/glm-5p3-fast",
-        tools=_V11_GLM5_FAST_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-        vision_description_model=_VISION_DESCRIPTION_MODEL,
-        compaction_model="accounts/fireworks/routers/glm-5p3-fast",
-        compaction_threshold=0.8,
-        context_window=200_000,
-        max_summary_tokens=2000,
-    ),
-    "v11_kimi_fast": AugAgent(
-        model="accounts/fireworks/routers/kimi-k3-fast",
-        tools=_V11_KIMI_FAST_TOOLS,
-        temperature=0.0,
-        recursion_limit=100,
-        vision_description_model=_VISION_DESCRIPTION_MODEL,
-        compaction_model="accounts/fireworks/routers/kimi-k3-fast",
-        compaction_threshold=0.8,
-        context_window=200_000,
-        max_summary_tokens=2000,
-    ),
 }
 
 
@@ -744,7 +216,7 @@ def harnesses() -> list[Harness]:
 class _Harnesses:
     """One harness per agent version, built on first use.
 
-    Keyed by the agent object too: configure_mcp_tools() rebuilds the v12 agents, and a
+    Keyed by the agent object too: configure_mcp_tools() rebuilds the profiles, and a
     harness must never keep running the version it replaced.
     """
 
@@ -763,7 +235,7 @@ class _Harnesses:
             return built[1]
         if self._checkpointer is None:
             raise RuntimeError("configure_harnesses() has not run yet")
-        harness = LangGraphHarness(agent, self._checkpointer)
+        harness = LangGraphHarness(agent, self._checkpointer, models=_TIER_MODELS.get(name))
         self._built[name] = (agent, harness)
         return harness
 
@@ -771,105 +243,39 @@ class _Harnesses:
 _harnesses = _Harnesses()
 
 
-def _build_v12_agents(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:
+def _build_profiles(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:
+    # Dev only: the scenario stack runs its scripts on the real profiles too.
+    dev_tools = SCRIPTED_TOOLS if get_settings().SCRIPTED_AGENT else []
     return {
-        "v12_claude": AugAgent(
-            model="claude-sonnet-4-6",
+        "v13_kimi": AugAgent(
+            model=_KIMI,
             tools=[
-                *_V12_CLAUDE_TOOLS,
-                make_run_subagent_tool(_subagent_claude.with_extra_tools(mcp_tools)),
-                *mcp_tools,
-            ],
-            temperature=0.0,
-            recursion_limit=100,
-            compaction_model="claude-haiku-4-5",
-            compaction_threshold=0.7,
-            context_window=500_000,
-            max_summary_tokens=2000,
-        ),
-        "v12_glm5": AugAgent(
-            model="accounts/fireworks/models/glm-5p3",
-            tools=[
-                *_V12_GLM5_TOOLS,
-                make_run_subagent_tool(_subagent_glm5.with_extra_tools(mcp_tools)),
-                *mcp_tools,
-            ],
-            temperature=0.0,
-            recursion_limit=100,
-            vision_description_model=_VISION_DESCRIPTION_MODEL,
-            compaction_model="accounts/fireworks/models/glm-5p3",
-            compaction_threshold=0.8,
-            context_window=200_000,
-            max_summary_tokens=2000,
-        ),
-        "v12_kimi": AugAgent(
-            model="accounts/fireworks/models/kimi-k3",
-            tools=[
-                *_V12_KIMI_TOOLS,
+                *_TOOLS,
+                *_MCP_MANAGEMENT_TOOLS,
                 make_run_subagent_tool(_subagent_kimi.with_extra_tools(mcp_tools)),
                 *mcp_tools,
+                *dev_tools,
             ],
             temperature=0.0,
             recursion_limit=100,
-            compaction_model="accounts/fireworks/models/kimi-k3",
+            compaction_model=_KIMI,
             compaction_threshold=0.8,
             context_window=200_000,
             max_summary_tokens=2000,
         ),
-        "v12_deepseek": AugAgent(
-            model="accounts/fireworks/models/deepseek-v4p1-flash",
+        "v13_glm": AugAgent(
+            model=_GLM,
             tools=[
-                *_V12_DEEPSEEK_TOOLS,
-                make_run_subagent_tool(_subagent_deepseek.with_extra_tools(mcp_tools)),
+                *_TOOLS,
+                *_MCP_MANAGEMENT_TOOLS,
+                make_run_subagent_tool(_subagent_glm.with_extra_tools(mcp_tools)),
                 *mcp_tools,
-            ],
-            temperature=0.0,
-            recursion_limit=100,
-            compaction_model="accounts/fireworks/models/deepseek-v4p1-flash",
-            compaction_threshold=0.8,
-            context_window=200_000,
-            max_summary_tokens=2000,
-        ),
-        "v12_glm5_flash": AugAgent(
-            model="accounts/fireworks/models/glm-5p3-flash",
-            tools=[
-                *_V12_GLM5_FLASH_TOOLS,
-                make_run_subagent_tool(_subagent_glm5_flash.with_extra_tools(mcp_tools)),
-                *mcp_tools,
-            ],
-            temperature=0.0,
-            recursion_limit=100,
-            compaction_model="accounts/fireworks/models/glm-5p3-flash",
-            compaction_threshold=0.8,
-            context_window=200_000,
-            max_summary_tokens=2000,
-        ),
-        "v12_glm5_fast": AugAgent(
-            model="accounts/fireworks/routers/glm-5p3-fast",
-            tools=[
-                *_V12_GLM5_FAST_TOOLS,
-                make_run_subagent_tool(_subagent_glm5_fast.with_extra_tools(mcp_tools)),
-                *mcp_tools,
+                *dev_tools,
             ],
             temperature=0.0,
             recursion_limit=100,
             vision_description_model=_VISION_DESCRIPTION_MODEL,
-            compaction_model="accounts/fireworks/routers/glm-5p3-fast",
-            compaction_threshold=0.8,
-            context_window=200_000,
-            max_summary_tokens=2000,
-        ),
-        "v12_kimi_fast": AugAgent(
-            model="accounts/fireworks/routers/kimi-k3-fast",
-            tools=[
-                *_V12_KIMI_FAST_TOOLS,
-                make_run_subagent_tool(_subagent_kimi_fast.with_extra_tools(mcp_tools)),
-                *mcp_tools,
-            ],
-            temperature=0.0,
-            recursion_limit=100,
-            vision_description_model=_VISION_DESCRIPTION_MODEL,
-            compaction_model="accounts/fireworks/routers/kimi-k3-fast",
+            compaction_model=_GLM,
             compaction_threshold=0.8,
             context_window=200_000,
             max_summary_tokens=2000,
@@ -877,6 +283,6 @@ def _build_v12_agents(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:
     }
 
 
-# Seeds the v12 agents with no MCP tools until aug/app.py's lifespan() calls
+# Seeds the profiles with no MCP tools until aug/app.py's lifespan() calls
 # configure_mcp_tools() again with whatever MCPManager actually connected.
 configure_mcp_tools([])

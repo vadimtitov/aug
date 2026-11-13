@@ -37,7 +37,7 @@ def client():
         patch("aug.app.create_pool", new=AsyncMock(return_value=mock_pool)),
         patch("aug.app._checkpointer_context", return_value=_async_ctx(mock_checkpointer)),
         patch("aug.app.init_workspace"),
-        patch("aug.app.start_consolidation_scheduler", new=AsyncMock(return_value=MagicMock())),
+        patch("aug.app.job_runner", new=MagicMock(start=AsyncMock(), stop=AsyncMock())),
         patch("aug.app.start_scheduler", new=AsyncMock(return_value=MagicMock())),
         patch("aug.app.set_app"),
         patch("aug.app.set_pool"),

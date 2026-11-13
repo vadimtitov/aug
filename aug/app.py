@@ -41,15 +41,16 @@ from aug.api.routers import (
 from aug.config import get_settings
 from aug.core.browser_view import BrowserViewHub
 from aug.core.dispatch import broadcast, deliver_unsolicited, fire_push
+from aug.core.jobs import job_runner
 from aug.core.mcp.manager import MCPManager, McpOperationOutcome
 from aug.core.mcp.manager import set_manager as set_mcp_manager
-from aug.core.memory import start_consolidation_scheduler
 from aug.core.oauth.providers import PROVIDERS_FILE, ProviderRegistry
 from aug.core.registry import (
+    base_tool_names,
     configure_harnesses,
     configure_mcp_tools,
     harnesses,
-    v12_base_tool_names,
+    migrate_conversations,
 )
 from aug.core.skill_deps import warm_all_skills
 from aug.core.workspace import init_workspace
@@ -163,6 +164,9 @@ async def lifespan(app: FastAPI):
         # Live browser view — lazy; the screencast only runs while someone watches.
         app.state.browser_view_hub = BrowserViewHub(get_settings().BROWSER_CDP_URL)
 
+        # Before Telegram starts polling, so no message reaches a deleted agent version.
+        migrate_conversations()
+
         # Before Telegram starts polling, so the first message already finds a harness.
         # Agents rebuilt by configure_mcp_tools() below get fresh harnesses on first use.
         configure_harnesses(checkpointer)
@@ -170,12 +174,12 @@ async def lifespan(app: FastAPI):
         telegram = TelegramInterface()
         await telegram.start_polling(app)
 
-        # MCP servers — connects before the v12 agents' tool lists are finalized, so
+        # MCP servers — connects before the profiles' tool lists are finalized, so
         # the agent that gets built (or resumed from a checkpoint) sees whichever
         # servers were actually reachable this boot. Bounded by its own overall
         # deadline; a server that never comes up just isn't in the tool list.
         mcp_manager = MCPManager()
-        await mcp_manager.load_all(base_tool_names=v12_base_tool_names())
+        await mcp_manager.load_all(base_tool_names=base_tool_names())
         configure_mcp_tools(mcp_manager.tools)
         harness_stack = AsyncExitStack()
         for harness in harnesses():
@@ -187,7 +191,7 @@ async def lifespan(app: FastAPI):
         mcp_outcomes = await mcp_manager.reconcile_operations()
 
         set_app(app)
-        consolidation_task = await start_consolidation_scheduler()
+        await job_runner.start()
         scheduler_task = await start_scheduler(app)
 
         # Pre-resolve installed skills' PEP 723 dependencies so the first agent run after
@@ -221,7 +225,7 @@ async def lifespan(app: FastAPI):
 
         gateway_task.cancel()
         announce_task.cancel()
-        consolidation_task.cancel()
+        await job_runner.stop()
         scheduler_task.cancel()
         warmup_task.cancel()
         await stop_scheduler(app)

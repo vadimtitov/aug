@@ -22,7 +22,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from aug.utils.data import read_data_file, write_data_file
 
@@ -84,13 +84,6 @@ class TelegramState(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     chats: dict[str, TelegramChatState] = {}
-
-
-class ConsolidationState(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    last_light_run: str | None = None
-    last_deep_run: str | None = None
 
 
 class McpOperation(BaseModel):
@@ -164,11 +157,25 @@ class AppState(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     telegram: TelegramState = TelegramState()
-    consolidation: ConsolidationState = ConsolidationState()
+    # When each background job (aug/core/jobs.py) last finished, as an ISO timestamp.
+    jobs: dict[str, str] = {}
     # Keyed by BaseInterface.conversation_id — interface-namespaced, so this is shared
     # by every frontend rather than living under any one of them.
     locations: dict[str, ConversationLocationState] = {}
     mcp: McpState = McpState()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _jobs_from_consolidation(cls, data: object) -> object:
+        """Last run times written before jobs had their own key, so an upgrade does not
+        rerun both dreams at its first boot."""
+        if isinstance(data, dict) and "jobs" not in data:
+            old = data.get("consolidation") or {}
+            names = {"last_light_run": "dream_light", "last_deep_run": "dream_deep"}
+            jobs = {names[k]: v for k, v in old.items() if k in names and v}
+            if jobs:
+                data = {**data, "jobs": jobs}
+        return data
 
 
 def load_state() -> AppState:

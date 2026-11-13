@@ -41,9 +41,10 @@ shell:
 # Writes .scenarios/transcript-<commit>.txt; diff it against another commit's file.
 SCENARIOS_COMPOSE = docker compose -f docker-compose.scenarios.yml -p aug-scenarios
 ID_FIELD ?= context_id
+AGENT ?= scripted
 scenarios:
 	$(SCENARIOS_COMPOSE) down -v --remove-orphans
-	.venv/bin/python scripts/scenarios.py seed .scenarios/data
+	.venv/bin/python scripts/scenarios.py seed .scenarios/data --agent $(AGENT)
 	$(SCENARIOS_COMPOSE) up -d --build
-	.venv/bin/python scripts/scenarios.py run --id-field $(ID_FIELD) --out .scenarios/transcript-$$(git rev-parse --short HEAD).txt $(if $(ONLY),--only $(ONLY)); \
+	.venv/bin/python scripts/scenarios.py run --id-field $(ID_FIELD) --agent $(AGENT) --out .scenarios/transcript-$$(git rev-parse --short HEAD)$(if $(filter-out scripted,$(AGENT)),-$(AGENT)).txt $(if $(ONLY),--only $(ONLY)); \
 	  status=$$?; $(SCENARIOS_COMPOSE) logs aug > .scenarios/aug.log 2>&1; $(SCENARIOS_COMPOSE) down -v; exit $$status
