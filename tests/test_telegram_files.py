@@ -14,7 +14,14 @@ from aug.api.interfaces.telegram.interface import (
     _send_file,
     _send_method,
 )
-from aug.core.harness import FileEmitted, FilePart, TextDelta, TurnEnded
+from aug.core.harness import (
+    FileEmitted,
+    FilePart,
+    TextDelta,
+    ToolEnded,
+    ToolStarted,
+    TurnEnded,
+)
 
 
 def _message(**media) -> MagicMock:
@@ -383,6 +390,41 @@ async def test_live_chat_sends_a_file_as_soon_as_it_is_made(interface, tmp_path)
         await interface.send_stream(events(), context)
 
     assert bot.send_photo.call_args.kwargs["chat_id"] == 7
+
+
+async def test_respond_with_file_shows_no_status_line(interface, tmp_path):
+    bot = MagicMock()
+    bot.send_message_draft = AsyncMock()
+    bot.send_photo = AsyncMock()
+    msg = MagicMock()
+    msg.get_bot.return_value = bot
+    msg.message_thread_id = None
+    msg.reply_text = AsyncMock()
+    context = MagicMock()
+    context.effective_message = msg
+    context.effective_chat.id = 7
+
+    async def events():
+        yield ToolStarted(id="call-1", name="respond_with_file", args={"path": "/x/out.png"})
+        yield FileEmitted(
+            file_id="0123456789abcdef",
+            path=_file(tmp_path).path,
+            media_type="image/png",
+            filename="out.png",
+            parent_id="call-1",
+        )
+        yield ToolEnded(id="call-1", name="respond_with_file", output="Sent out.png")
+        yield TextDelta(text="here it is")
+        yield TurnEnded()
+
+    with patch("aug.api.interfaces.telegram.interface._typing_loop", new=AsyncMock()):
+        await interface.send_stream(events(), context)
+
+    shown = [c.kwargs.get("text", "") for c in bot.send_message_draft.call_args_list]
+    shown += [str(c.args[0]) if c.args else "" for c in msg.reply_text.call_args_list]
+    assert bot.send_photo.await_count == 1
+    assert not any("Send file" in text for text in shown)
+    assert any("here it is" in text for text in shown)
 
 
 async def test_a_push_sends_its_files_after_the_text(interface, tmp_path):

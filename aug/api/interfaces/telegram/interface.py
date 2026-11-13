@@ -106,6 +106,8 @@ _SPINNER = ["🌑", "🌘", "🌗", "🌖", "🌕", "🌔", "🌓", "🌒"]
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 _MAX_TOOL_ENTRIES = 6  # max top-level tool entries shown before "…" truncation
 _MAX_SUBLINES = 5  # max nested sub-tool lines shown per subagent block
+# Tools with no status line: the file they send is the sign they ran.
+_SILENT_TOOLS = {"respond_with_file"}
 # In chats without draft support each update is a real editMessageText (rate-limited),
 # unlike the free sendMessageDraft previews used in DMs.  Tool status refreshes slightly
 # slower than the answer text since they may compete for the chat's edit budget.
@@ -463,13 +465,14 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                     ):
                         # A subagent's tool call: a line nested under the subagent's entry.
                         parent_entry = run_id_to_entry.get(parent_id)
-                        if parent_entry:
+                        if parent_entry and sub_tool not in _SILENT_TOOLS:
                             sub_label, sub_preview = format_tool(sub_tool, sub_args)
                             inner = f"({sub_preview})" if sub_preview else "()"
                             parent_entry.sub_lines.append(f"{sub_label}{inner}")
                             await _push_tool_draft()
 
                     case ToolStarted(id=run_id, name=tool_name, args=args):
+                        # Commit the text so far first: it must land before any file.
                         if accumulated_text:
                             if stream_msg is not None:
                                 try:
@@ -495,6 +498,8 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                                     logger.debug("pre-tool commit failed", exc_info=True)
                             accumulated_text = ""
                             stream_msg = None
+                        if tool_name in _SILENT_TOOLS:
+                            continue
 
                         label, args_preview = format_tool(tool_name, args)
                         entry = _ToolEntry(
