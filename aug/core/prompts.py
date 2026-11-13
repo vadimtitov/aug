@@ -437,6 +437,16 @@ HARNESS_RETRY_AT_SUFFIX = " The limit resets at {time} UTC."
 # Told after /stop ended a turn.  Whatever already ran is not undone.
 HARNESS_STOPPED_MESSAGE = "⏹ Stopped."
 
+# Written into the history when the user stops a turn with /stop, so the model knows on
+# the next turn that it was interrupted rather than guessing what happened.  The first is
+# the result of every tool call the stop cut off; the second is added when the stop came
+# while the model was still writing, with no tool running.
+HARNESS_TOOL_STOPPED_RESULT = (
+    "Stopped: the user pressed /stop while this tool was running, so it did not finish "
+    "and returned no result. Whatever it did before that may already have taken effect."
+)
+HARNESS_TURN_STOPPED_NOTE = "[The user pressed /stop and ended your turn before you replied.]"
+
 # Rendered into the conversation when someone shares a location.  The sharer is named
 # because a group can have several live locations running at once, and coordinates alone
 # leave the agent unable to say whose is whose.

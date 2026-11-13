@@ -15,7 +15,7 @@ from contextlib import aclosing, suppress
 import openai
 import psycopg
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import GraphRecursionError
@@ -37,7 +37,11 @@ from aug.core.harness.types import (
     TurnEnded,
 )
 from aug.core.llm import build_chat_model
-from aug.core.prompts import MID_RUN_INJECTION_PREFIX
+from aug.core.prompts import (
+    HARNESS_TOOL_STOPPED_RESULT,
+    HARNESS_TURN_STOPPED_NOTE,
+    MID_RUN_INJECTION_PREFIX,
+)
 from aug.core.reflexes import Reflex, run_reflexes
 from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, MessageContent, run_registry
 from aug.core.state import AgentState
@@ -215,6 +219,8 @@ class LangGraphHarness(Harness):
             if reflex_task is not None and not reflex_task.done() and not finished:
                 reflex_task.cancel()
 
+        if run.user_requested_stop.is_set():
+            await self._record_stop(context_id)
         if reflex_task is not None:
             await asyncio.gather(reflex_task, return_exceptions=True)
         for text in displays:
@@ -248,6 +254,20 @@ class LangGraphHarness(Harness):
             run.inject_message(result.inject)
             if result.display:
                 displays.append(result.display)
+
+    async def _record_stop(self, context_id: str) -> None:
+        """Tell the history the user stopped this turn, so the next turn knows.
+
+        Never raises: a stop must end the turn even if the checkpoint can't be written.
+        """
+        try:
+            config = _config(context_id)
+            snapshot = await self.agent.aget_state(config, self._checkpointer)
+            note = _stop_note((snapshot.values or {}).get("messages", []))
+            if note:
+                await self.agent.aupdate_state(config, {"messages": note}, self._checkpointer)
+        except Exception:
+            logger.warning("record_stop_failed context=%s", context_id, exc_info=True)
 
     async def _recent_history(self, context_id: str, n: int = 3) -> list[MessageContent]:
         """The last *n* user/assistant messages, as labelled strings, for reflexes."""
@@ -308,6 +328,32 @@ def _frame_injection(content: MessageContent) -> MessageContent:
     return [{"type": "text", "text": MID_RUN_INJECTION_PREFIX}, *content]
 
 
+def _stop_note(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """What to add to *messages* after a /stop: a result for each tool call the stop cut
+    off, or a note if the model was stopped mid-reply; nothing if the turn had finished.
+
+    Without the tool results the agent drops the unanswered calls before its next model
+    call, and the model forgets it ever ran them.
+    """
+    answered = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
+    last_ai = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+    if last_ai is not None and last_ai.tool_calls:
+        cut_off = [tc for tc in last_ai.tool_calls if tc["id"] not in answered]
+        if cut_off:
+            return [
+                ToolMessage(
+                    content=HARNESS_TOOL_STOPPED_RESULT,
+                    tool_call_id=tc["id"],
+                    name=tc["name"],
+                    status="error",
+                )
+                for tc in cut_off
+            ]
+    if not messages or (isinstance(messages[-1], AIMessage) and not messages[-1].tool_calls):
+        return []
+    return [HumanMessage(content=HARNESS_TURN_STOPPED_NOTE)]
+
+
 def _approval_in(interrupts) -> ApprovalRequest | None:
     for interrupt_obj in interrupts:
         if isinstance(interrupt_obj.value, ApprovalRequest):
@@ -321,8 +367,8 @@ async def _until_stopped(
     """Pass *events* through until *stop* is set, then cancel whatever the graph is
     awaiting (a model call, a running tool) instead of waiting for its next event.
 
-    A tool cancelled mid-call leaves its tool call unanswered in the checkpoint; the
-    agent drops such calls before its next model call.
+    A tool cancelled mid-call leaves its tool call unanswered in the checkpoint;
+    _record_stop answers it once the turn is over.
     """
     stopped = asyncio.ensure_future(stop.wait())
     try:

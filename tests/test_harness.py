@@ -11,7 +11,7 @@ import openai
 import psycopg
 import pytest
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables.config import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
@@ -38,6 +38,8 @@ from aug.core.harness.langgraph import (
 from aug.core.prompts import (
     HARNESS_ERROR_MESSAGES,
     HARNESS_STOPPED_MESSAGE,
+    HARNESS_TOOL_STOPPED_RESULT,
+    HARNESS_TURN_STOPPED_NOTE,
     MID_RUN_INJECTION_PREFIX,
 )
 from aug.core.reflexes import ReflexOutput
@@ -320,6 +322,59 @@ async def test_cancel_does_not_wait_for_a_tool_that_ignores_it(tool_name: str) -
     after = await _collect(harness.run(_msg("again"), "c1", TURN))
     assert after[-1] == TurnEnded()
     assert agent.seen[-1][-1].content == "again"
+
+
+async def test_the_next_turn_knows_the_user_stopped_the_tool() -> None:
+    harness, agent = _harness(_call("stubborn", {"seconds": 2}), AIMessage(content="next turn"))
+
+    async def cancel_soon() -> bool:
+        await asyncio.sleep(0.1)
+        return await harness.cancel("c1")
+
+    await asyncio.gather(_collect(harness.run(_msg("go"), "c1", TURN)), cancel_soon())
+    await _collect(harness.run(_msg("what happened?"), "c1", TURN))
+
+    *_, call, result, question = agent.seen[-1]
+    assert call.tool_calls[0]["name"] == "stubborn"
+    assert isinstance(result, ToolMessage)
+    assert result.tool_call_id == "c1"
+    assert result.content == HARNESS_TOOL_STOPPED_RESULT
+    assert question.content == "what happened?"
+
+
+async def test_the_next_turn_knows_the_user_stopped_the_reply() -> None:
+    class _SlowModel(_ScriptAgent):
+        async def respond(self, state: AgentState) -> AgentStateUpdate:
+            if len(self.seen) == 0:
+                self.seen.append(list(state.messages))
+                await asyncio.sleep(2)
+            return await super().respond(state)
+
+    agent = _SlowModel([AIMessage(content="answer")])
+    harness = LangGraphHarness(agent, MemorySaver())
+
+    async def cancel_soon() -> bool:
+        await asyncio.sleep(0.1)
+        return await harness.cancel("c1")
+
+    events, _ = await asyncio.gather(_collect(harness.run(_msg("go"), "c1", TURN)), cancel_soon())
+    await _collect(harness.run(_msg("again"), "c1", TURN))
+
+    assert events[-1] == TurnEnded(cancelled=True)
+    *_, first, note, second = agent.seen[-1]
+    assert (first.content, second.content) == ("go", "again")
+    assert isinstance(note, HumanMessage)
+    assert note.content == HARNESS_TURN_STOPPED_NOTE
+
+
+async def test_a_finished_turn_gets_no_stop_note() -> None:
+    harness, agent = _harness(AIMessage(content="done"), AIMessage(content="next"))
+    await _collect(harness.run(_msg("go"), "c1", TURN))
+
+    await harness._record_stop("c1")
+    await _collect(harness.run(_msg("again"), "c1", TURN))
+
+    assert [m.content for m in agent.seen[-1]] == ["go", "done", "again"]
 
 
 async def test_model_error_ends_the_turn_with_its_kind() -> None:
