@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from aug.core.tools.note import note
-from aug.core.tools.run_bash import _check_blacklist, run_bash
+from aug.core.tools.run_bash import _WRAPPER, _check_blacklist, run_bash
 from aug.utils.file_settings import AppSettings, BashToolSettings, ToolSettings
 
 
@@ -122,6 +122,24 @@ async def test_run_bash_returns_without_waiting_for_a_background_job(fake_hushed
 async def test_run_bash_keeps_the_exit_code_and_both_streams(fake_hushed: Path) -> None:
     result = await run_bash.ainvoke({"command": "echo out; echo err >&2; exec false"})
     assert result == "out\nerr"
+
+
+async def test_run_bash_leaves_no_output_on_disk_when_stopped(
+    fake_hushed: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The temp files hold output before hushed redacts it; a SIGKILL must not leave them."""
+    tmp = fake_hushed / "tmp"
+    tmp.mkdir()
+    monkeypatch.setenv("TMPDIR", str(tmp))
+    with patch("aug.core.tools.run_bash._WRAPPER", _WRAPPER.replace("/dev/shm", "/nonexistent")):
+        task = asyncio.create_task(run_bash.ainvoke({"command": "echo SECRET; sleep 30"}))
+        await asyncio.sleep(0.3)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert list(tmp.iterdir()) == []
+        assert await run_bash.ainvoke({"command": "echo out; echo err >&2"}) == "out\nerr"
+        assert list(tmp.iterdir()) == []
 
 
 async def test_run_bash_cancel_kills_the_command_and_its_children(fake_hushed: Path) -> None:

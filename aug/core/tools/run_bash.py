@@ -21,10 +21,19 @@ logger = logging.getLogger(__name__)
 # (and redacts) output only once every process holding it has let go, so a background
 # job started by the command would otherwise keep the call open until it exits.  With
 # the files, it inherits those instead, and the call returns when the command does.
-_WRAPPER = (
-    'o=$(mktemp) e=$(mktemp); bash -c "$1" >"$o" 2>"$e"; s=$?; '
-    'cat "$o"; cat "$e" >&2; rm -f "$o" "$e"; exit $s'
-)
+#
+# The files hold output before hushed redacts it, so they are deleted as soon as they
+# are open and read back through the open descriptors: a /stop (SIGKILL) leaves nothing
+# on disk.  They live in /dev/shm (RAM) where there is one, so a full disk can't swallow
+# the output of the very command that diagnoses it.  If no file can be made, the command
+# runs on the pipe directly, as before.
+_WRAPPER = """\
+d=/dev/shm; [ -d "$d" ] && [ -w "$d" ] || d=${TMPDIR:-/tmp}
+o=$(mktemp "$d/aug-bash.XXXXXX") && e=$(mktemp "$d/aug-bash.XXXXXX") || exec bash -c "$1"
+exec 3>"$o" 4<"$o" 5>"$e" 6<"$e"; rm -f "$o" "$e"
+bash -c "$1" >&3 2>&5 3>&- 4<&- 5>&- 6<&-; s=$?
+exec 3>&- 5>&-; cat <&4; cat <&6 >&2; exit $s
+"""
 
 
 @tool
@@ -74,6 +83,7 @@ async def run_bash(command: str) -> str:
         stdout, stderr = await proc.communicate()
     except asyncio.CancelledError:
         _kill_group(proc)
+        await proc.wait()  # reap it; SIGKILL makes this immediate
         raise
     out = stdout.decode("utf-8", errors="replace")
     err = stderr.decode("utf-8", errors="replace")

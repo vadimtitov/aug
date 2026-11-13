@@ -199,11 +199,14 @@ async def fire_push(
             yield event
 
     async with run_registry.run_lock(run_context_id):
+        timeout = asyncio.timeout(UNATTENDED_TIMEOUT_SECONDS)
         try:
-            async with asyncio.timeout(UNATTENDED_TIMEOUT_SECONDS):
+            async with timeout:
                 async with aclosing(harness.run(prompt, run_context_id, turn)) as stream:
                     await iface.send_proactive_stream(actual_context_id, events(stream))
         except TimeoutError:
+            if not timeout.expired():
+                raise  # a timeout inside delivery, not ours: fire_task retries it
             # Not retried: the same turn would most likely hang the same way.
             logger.warning("push turn timed out context=%s", run_context_id)
             minutes = UNATTENDED_TIMEOUT_SECONDS // 60
