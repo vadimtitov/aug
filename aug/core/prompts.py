@@ -43,6 +43,8 @@ This prompt is fixed for the session: edits to these files show from the next se
 (after /clear)."""
 
 SKILLS_INDEX_HEADER = "Available skills — call get_skill(name) to load full instructions:"
+# get_skill's first line: paths in a skill's instructions are relative to its folder.
+SKILL_FOLDER_HEADER = "Skill folder: {path}"
 
 # MEMORY.md's line for each file, until the dream writes its own index.
 MEMORY_INDEX_DESCRIPTIONS = {

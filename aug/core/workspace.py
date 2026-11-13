@@ -10,10 +10,13 @@
 ``init_workspace()`` runs at startup.  It creates whatever is missing and, once, copies
 the pre-workspace folders (``/app/data/memory``, ``/app/data/skills``) in.  It never
 overwrites anything, so running it again changes nothing; the old folders are left
-where they are.
+where they are.  Each item is written to a temporary name and renamed into place, so a
+copy cut short (a full disk) is retried on the next boot rather than kept half-done, and
+one item that fails is logged and skipped rather than stopping the boot.
 """
 
 import logging
+import os
 import shutil
 from pathlib import Path
 
@@ -40,12 +43,10 @@ def init_workspace() -> None:
     _migrate_memory()
     _migrate_skills()
     if not AGENTS_MD.exists():
-        AGENTS_MD.write_text(_initial_agents_md())
-        logger.info("workspace: wrote %s", AGENTS_MD)
+        _write_new(AGENTS_MD, _initial_agents_md())
     init_memory_files()
     if not MEMORY_INDEX.exists():
-        MEMORY_INDEX.write_text(initial_memory_index())
-        logger.info("workspace: wrote %s", MEMORY_INDEX)
+        _write_new(MEMORY_INDEX, initial_memory_index())
 
 
 def session_prompt(interface: str, *, describes_images: bool = False) -> str:
@@ -82,8 +83,7 @@ def _migrate_memory() -> None:
             continue
         target = MEMORY_DIR / source.name
         if not target.exists():
-            shutil.copy2(source, target)
-            logger.info("workspace: copied %s to %s", source, target)
+            _copy_into_place(source, target)
 
 
 def _migrate_skills() -> None:
@@ -92,8 +92,7 @@ def _migrate_skills() -> None:
     for source in sorted(_LEGACY_SKILLS_DIR.iterdir()):
         target = SKILLS_DIR / source.name
         if source.is_dir() and not target.exists():
-            shutil.copytree(source, target, symlinks=True)
-            logger.info("workspace: copied skill %s", source.name)
+            _copy_into_place(source, target)
 
 
 def _initial_agents_md() -> str:
@@ -106,6 +105,44 @@ def _initial_agents_md() -> str:
     title, _, rest = template.partition("\n\n")
     rules = rest[rest.index(_PERSONA_END) + 1 :]
     return f"{title}\n\n{persona}\n\n{rules}"
+
+
+def _copy_into_place(source: Path, target: Path) -> None:
+    """Copy *source* (a file or a skill folder) to *target* through a temporary name,
+    pointing any text file's old skills path at the new one."""
+    partial = target.with_name(f".{target.name}.partial")
+    try:
+        if partial.is_dir():
+            shutil.rmtree(partial)
+        if source.is_dir():
+            shutil.copytree(source, partial, symlinks=True)
+            for path in partial.rglob("*"):
+                if path.is_file() and not path.is_symlink():
+                    _repoint_skill_paths(path)
+        else:
+            shutil.copy2(source, partial)
+        os.replace(partial, target)
+        logger.info("workspace: copied %s to %s", source, target)
+    except OSError:
+        logger.exception("workspace: could not copy %s, will retry on the next start", source)
+
+
+def _repoint_skill_paths(path: Path) -> None:
+    """Skills written before the workspace name their own files by the old path."""
+    try:
+        text = path.read_text()
+    except (UnicodeDecodeError, OSError):
+        return  # not text
+    old, new = f"{_LEGACY_SKILLS_DIR}/", f"{SKILLS_DIR}/"
+    if old in text:
+        path.write_text(text.replace(old, new))
+
+
+def _write_new(path: Path, text: str) -> None:
+    partial = path.with_name(f".{path.name}.partial")
+    partial.write_text(text)
+    os.replace(partial, path)
+    logger.info("workspace: wrote %s", path)
 
 
 def _read(path: Path) -> str:

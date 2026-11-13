@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import hashlib
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -86,10 +87,11 @@ class ChatAgent(BaseAgent):
         parts = [self._system_prompt, interface_context]
         return "\n\n".join(p for p in parts if p)
 
+    def prompt_key(self) -> str:
+        return f"ChatAgent:{hashlib.sha256(self._system_prompt.encode()).hexdigest()[:12]}"
+
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
-        if state.session_prompt:
-            return AgentStateUpdate()
-        return AgentStateUpdate(session_prompt=self.new_session_prompt(state.interface))
+        return self.session_prompt_update(state)
 
     async def respond(self, state: AgentState) -> AgentStateUpdate:
         messages = _drop_orphaned_tool_calls(state.messages)
@@ -197,12 +199,11 @@ class AugAgent(BaseAgent):
     def new_session_prompt(self, interface: str) -> str:
         return session_prompt(interface, describes_images=bool(self._vision_description_model))
 
+    def prompt_key(self) -> str:
+        return f"AugAgent:describes_images={bool(self._vision_description_model)}"
+
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
-        update = (
-            AgentStateUpdate()
-            if state.session_prompt
-            else AgentStateUpdate(session_prompt=self.new_session_prompt(state.interface))
-        )
+        update = self.session_prompt_update(state)
         now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
         last = state.messages[-1] if state.messages else None
         if isinstance(last, HumanMessage):

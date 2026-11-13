@@ -7,6 +7,7 @@ from pathlib import Path
 
 from langchain_core.tools import tool
 
+from aug.core.prompts import SKILL_FOLDER_HEADER
 from aug.core.skill_deps import (
     find_pep723_scripts,
     has_pep723_block,
@@ -31,13 +32,12 @@ def get_skill(name: str) -> str:
     Args:
         name: Skill name as shown in the index (e.g. 'ha-automations').
     """
-    if validate_name(name):
-        return f"Skill '{name}' not found."
     skill_dir = SKILLS_DIR / name
     skill_md = skill_dir / "SKILL.md"
-    if not skill_md.exists():
+    inside = skill_dir.resolve().parent == SKILLS_DIR.resolve()
+    if not inside or not skill_md.exists():
         return f"Skill '{name}' not found."
-    header = f"Skill folder: {skill_dir.resolve()}\n\n"
+    header = SKILL_FOLDER_HEADER.format(path=skill_dir.resolve()) + "\n\n"
     return header + skill_md.read_text() + _bundled_scripts_note(skill_dir)
 
 

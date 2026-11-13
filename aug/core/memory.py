@@ -19,6 +19,7 @@ Both may rewrite MEMORY.md.
 
 import asyncio
 import logging
+import os
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -285,7 +286,10 @@ def _read(name: str) -> str:
 
 
 def _write(name: str, content: str) -> None:
-    (MEMORY_DIR / name).write_text(content.strip() + "\n")
+    """Write through a temporary file, so a session starting meanwhile never reads half."""
+    partial = MEMORY_DIR / f".{name}.partial"
+    partial.write_text(content.strip() + "\n")
+    os.replace(partial, MEMORY_DIR / name)
 
 
 def _extract(tag: str, text: str) -> str | None:

@@ -74,6 +74,8 @@ def write_skill_md(skill_dir: Path, name: str, description: str, body: str) -> N
             existing, _ = _parse_skill_md(skill_md.read_text())
         except yaml.YAMLError:
             logger.warning("write_skill_md %s: unreadable frontmatter replaced", skill_dir.name)
+        if not isinstance(existing, dict):
+            existing = {}
     frontmatter = {**existing, "name": name, "description": description}
     dumped = yaml.dump(frontmatter, default_flow_style=False, sort_keys=False, allow_unicode=True)
     content = f"---\n{dumped.strip()}\n---\n\n{body}\n"

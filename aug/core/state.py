@@ -18,6 +18,9 @@ class AgentState(BaseModel):
                    mid-chat.  None until then.  It must default to None: LangGraph
                    writes every non-None field a node returns, so an "" default would
                    wipe it on the next node.
+    session_prompt_key: Which agent setup built session_prompt (BaseAgent.prompt_key).
+                   A chat switched to an agent whose prompt differs (/version) gets
+                   it rebuilt once, on its next turn.
     interface:     The frontend surface ("telegram", "rest_api", "webhook", …).
                    Used to look up interface-specific prompts at runtime.
     """
@@ -25,6 +28,7 @@ class AgentState(BaseModel):
     messages: Annotated[list[AnyMessage], add_messages] = []
     thread_id: str = ""
     session_prompt: str | None = None
+    session_prompt_key: str | None = None
     interface: str = ""
 
     def model_dump(self, **kwargs):

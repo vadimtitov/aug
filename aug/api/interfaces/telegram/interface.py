@@ -1215,8 +1215,8 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         context_id = get_context_id(chat_id, update.effective_message.message_thread_id)  # type: ignore[union-attr]
         prompt_text = await self.session_prompt(context_id, "telegram")
-        if prompt_text is None:
-            await update.message.reply_text("This chat's agent version is not registered.")  # type: ignore[union-attr]
+        if not prompt_text:
+            await update.message.reply_text("This chat's agent has no system prompt.")  # type: ignore[union-attr]
             return
         file = io.BytesIO(prompt_text.encode())
         file.name = "system_prompt.txt"

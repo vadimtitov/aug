@@ -150,7 +150,7 @@ _REGISTRY: dict[str, BaseAgent] = {
 - `respond(state)` — **required**; calls the LLM.
 - `postprocess(state)` — runs after LLM; logging, filtering, etc.
 
-All return `AgentStateUpdate(messages=[...])` or `AgentStateUpdate(system_prompt="...")`.
+All return `AgentStateUpdate(messages=[...])` or `AgentStateUpdate(session_prompt="...")`. Fields of `AgentState` that a node may leave unset must default to `None`: LangGraph writes back every non-`None` field a node returns.
 
 ---
 

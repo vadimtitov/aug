@@ -1,5 +1,6 @@
 """The workspace: layout, the one-time migration, and the session prompt built from it."""
 
+import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -109,6 +110,39 @@ def test_running_it_again_overwrites_nothing(workspace: Path) -> None:
     assert (workspace / "skills" / "homelab" / "SKILL.md").read_text() == "edited skill"
 
 
+def test_copied_skills_name_their_files_by_the_new_path(workspace: Path, monkeypatch) -> None:
+    legacy_skills = _legacy(workspace) / "skills"
+    _skill(legacy_skills, "tracker")
+    (legacy_skills / "tracker" / "scripts").mkdir()
+    (legacy_skills / "tracker" / "scripts" / "run.py").write_text(
+        f'DATA = "{legacy_skills}/tracker/data.json"\n'
+    )
+    (legacy_skills / "tracker" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe")
+
+    init_workspace()
+
+    script = (workspace / "skills" / "tracker" / "scripts" / "run.py").read_text()
+    assert script == f'DATA = "{workspace / "skills"}/tracker/data.json"\n'
+    logo = (workspace / "skills" / "tracker" / "logo.png").read_bytes()
+    assert logo == b"\x89PNG\r\n\x1a\n\xff\xfe"
+
+
+def test_a_copy_cut_short_is_retried_on_the_next_start(workspace: Path, monkeypatch) -> None:
+    _skill(_legacy(workspace) / "skills", "homelab")
+    real_copytree = shutil.copytree
+
+    def disk_full(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("aug.core.workspace.shutil.copytree", disk_full)
+    init_workspace()  # logs and carries on
+    assert not (workspace / "skills" / "homelab").exists()
+
+    monkeypatch.setattr("aug.core.workspace.shutil.copytree", real_copytree)
+    init_workspace()
+    assert (workspace / "skills" / "homelab" / "SKILL.md").exists()
+
+
 # ---------------------------------------------------------------------------
 # session_prompt
 # ---------------------------------------------------------------------------
@@ -179,6 +213,20 @@ async def test_the_prompt_is_the_same_on_every_turn_of_a_session(workspace: Path
     assert "Edited mid-chat." in fresh
     assert "brand-new" in fresh
     assert await harness.session_prompt("ctx-1", "telegram") == first
+
+
+async def test_switching_to_an_agent_with_another_prompt_rebuilds_it(workspace: Path) -> None:
+    init_workspace()
+    checkpointer = MemorySaver()
+    describing = AugAgent(model="test-model", vision_description_model="vision-model")
+    seeing = AugAgent(model="test-model")
+    describing._llm, seeing._llm = _RecordingLLM(), _RecordingLLM()
+
+    await _turn(LangGraphHarness(describing, checkpointer), "first", "ctx")
+    await _turn(LangGraphHarness(seeing, checkpointer), "after /version", "ctx")
+
+    assert "describe_image" in _system(describing._llm.calls[0])
+    assert "describe_image" not in _system(seeing._llm.calls[0])
 
 
 async def test_session_prompt_previews_a_session_not_started_yet(workspace: Path) -> None:
@@ -261,6 +309,12 @@ def test_get_skill_gives_the_skill_folder(workspace: Path) -> None:
 
     assert result.startswith(f"Skill folder: {(workspace / 'skills' / 'tts').resolve()}\n")
     assert "Body of tts." in result
+
+
+def test_get_skill_loads_a_listed_skill_with_an_old_style_name(workspace: Path) -> None:
+    _skill(workspace / "skills", "home_assistant")
+
+    assert "Body of home_assistant." in get_skill.invoke({"name": "home_assistant"})
 
 
 def test_get_skill_refuses_a_path_for_a_name(workspace: Path) -> None:

@@ -105,8 +105,11 @@ class LangGraphHarness(Harness):
 
     async def session_prompt(self, context_id: str, interface: str) -> str:
         snapshot = await self.agent.aget_state(_config(context_id), self._checkpointer)
-        stored = (snapshot.values or {}).get("session_prompt")
-        return stored or await asyncio.to_thread(self.agent.new_session_prompt, interface)
+        values = snapshot.values or {}
+        stored = values.get("session_prompt")
+        if stored is not None and values.get("session_prompt_key") == self.agent.prompt_key():
+            return stored
+        return await asyncio.to_thread(self.agent.new_session_prompt, interface)
 
     async def oneshot(self, prompt: str, tier: ModelTier = ModelTier.STRONG) -> str:
         if not self.agent.model_name:
@@ -201,6 +204,10 @@ class LangGraphHarness(Harness):
                 graph_input = Command(
                     update={"messages": [HumanMessage(content=_frame_injection(injection))]}
                 )
+        except GraphRecursionError:
+            # One round ran past the graph's own limit: end it like the tool-round cap.
+            logger.warning("agent hit recursion limit context=%s", context_id)
+            step_limited = True
         except Exception as e:
             if not run.user_requested_stop.is_set():
                 yield TurnEnded(error=_harness_error(e))

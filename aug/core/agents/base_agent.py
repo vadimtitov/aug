@@ -105,6 +105,20 @@ class BaseAgent(ABC):
         """The system prompt a session on *interface* would start with now."""
         return ""
 
+    def prompt_key(self) -> str:
+        """What a stored session prompt must have been built by for this agent to keep
+        it.  Agents whose prompts differ must return different keys."""
+        return type(self).__name__
+
+    def session_prompt_update(self, state: AgentState) -> AgentStateUpdate:
+        """Nothing when the session already has this agent's prompt; else a new one."""
+        if state.session_prompt is not None and state.session_prompt_key == self.prompt_key():
+            return AgentStateUpdate()
+        return AgentStateUpdate(
+            session_prompt=self.new_session_prompt(state.interface),
+            session_prompt_key=self.prompt_key(),
+        )
+
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
         """Prepare state before the LLM is called."""
         return AgentStateUpdate()
