@@ -24,7 +24,7 @@ aug/
 │   │   ├── workspace_template/ ← AGENTS.md a fresh install starts with
 │   │   ├── memory.py           ← Memory file init, append_note(), light + deep consolidation (the dream)
 │   │   ├── jobs.py             ← Background jobs: JOBS (which job, when, on which profile) + job_runner
-│   │   ├── registry.py         ← Profiles (v13, v13_glm) + get_harness(); moves chats off deleted versions
+│   │   ├── registry.py         ← Profiles (v13_kimi, v13_glm) + get_harness(); moves chats off deleted versions
 │   │   ├── harness/            ← Harness ABC + types (Message, TurnContext, TurnEnded…) + LangGraphHarness
 │   │   ├── run.py              ← run_registry: per-context run lock, routing lock, LangGraph AgentRuns
 │   │   ├── dispatch.py         ← fire_task / fire_push / broadcast — pushes run through the harness
@@ -130,12 +130,12 @@ behaviour change". Scripts and step formats: top of `scripts/fakes.py`.
 1. Create `aug/core/agents/<name>_agent.py` subclassing `BaseAgent` or `ChatAgent`, or
    reuse `AugAgent`.
 2. Register it in `aug/core/registry.py`: a profile that takes MCP tools goes in
-   `_build_profiles()`, next to `v13` and `v13_glm`; its `oneshot()` models per tier go
+   `_build_profiles()`, next to `v13_kimi` and `v13_glm`; its `oneshot()` models per tier go
    in `_TIER_MODELS`.
 
 ```python
 # aug/core/registry.py, _build_profiles()
-"v13": AugAgent(
+"v13_kimi": AugAgent(
     model=_KIMI,
     tools=[*_TOOLS, *_MCP_MANAGEMENT_TOOLS, make_run_subagent_tool(...), *mcp_tools],
     temperature=0.0,
@@ -146,7 +146,7 @@ behaviour change". Scripts and step formats: top of `scripts/fakes.py`.
 ```
 
 A deleted version needs no cleanup: at startup `migrate_conversations()` moves every
-chat set to it onto `v13` (`v13_glm` for a glm version).
+chat set to it onto `v13_kimi` (`v13_glm` for a glm version).
 
 `ChatAgent` accepts: `model`, `system_prompt`, `tools`, `temperature`, `max_tokens`,
 `max_retries`, `timeout`, `seed`.
@@ -220,9 +220,9 @@ keyed by a conversation ID:
 ```json
 {
   "conversations": {
-    "tg-82810876":            { "agent": "v13" },
+    "tg-82810876":            { "agent": "v13_kimi" },
     "tg--1003820312204-topic-7": { "agent": "v13_glm" },
-    "rest-my-thread":         { "agent": "v13" }
+    "rest-my-thread":         { "agent": "v13_kimi" }
   }
 }
 ```

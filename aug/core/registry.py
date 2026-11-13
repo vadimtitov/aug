@@ -1,6 +1,6 @@
 """Agent registry: one entry per profile (agent version).
 
-``v13`` (kimi-k3) and ``v13_glm`` (glm-5.3) are built by ``_build_profiles()``, since
+``v13_kimi`` (kimi-k3) and ``v13_glm`` (glm-5.3) are built by ``_build_profiles()``, since
 their tool lists include whichever MCP servers connected at startup.  The ``browser``
 tool's code stays but no profile exposes it.
 """
@@ -55,8 +55,8 @@ _FAST = "accounts/fireworks/models/glm-5p3-flash"
 _VISION_DESCRIPTION_MODEL = _KIMI
 
 # Profiles a chat on a deleted agent version is moved to: glm versions to v13_glm,
-# every other one to v13.
-DEFAULT_PROFILE = "v13"
+# every other one to v13_kimi.
+DEFAULT_PROFILE = "v13_kimi"
 _GLM_PROFILE = "v13_glm"
 
 _TOOLS = [
@@ -123,7 +123,7 @@ _subagent_glm = AugAgent(
 
 # oneshot()'s model per tier, per profile.  A profile not listed calls its own model.
 _TIER_MODELS: dict[str, dict[ModelTier, str]] = {
-    "v13": {ModelTier.STRONG: _KIMI, ModelTier.FAST: _FAST},
+    "v13_kimi": {ModelTier.STRONG: _KIMI, ModelTier.FAST: _FAST},
     "v13_glm": {ModelTier.STRONG: _GLM, ModelTier.FAST: _FAST},
 }
 
@@ -153,7 +153,7 @@ def configure_mcp_tools(tools: list[BaseTool]) -> None:
 
 def migrate_conversations() -> list[str]:
     """Move every conversation set to an agent version that no longer exists onto a
-    current profile (glm versions to v13_glm, the rest to v13).  Returns the moved
+    current profile (glm versions to v13_glm, the rest to v13_kimi).  Returns the moved
     conversation ids.  Called once at startup, before any message is taken."""
     settings = load_settings()
     moved = []
@@ -247,7 +247,7 @@ def _build_profiles(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:
     # Dev only: the scenario stack runs its scripts on the real profiles too.
     dev_tools = SCRIPTED_TOOLS if get_settings().SCRIPTED_AGENT else []
     return {
-        "v13": AugAgent(
+        "v13_kimi": AugAgent(
             model=_KIMI,
             tools=[
                 *_TOOLS,

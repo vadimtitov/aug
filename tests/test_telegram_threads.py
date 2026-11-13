@@ -281,31 +281,31 @@ async def test_version_callback_refuses_inaccessible_message(telegram_interface)
 
 def test_topic_inherits_group_version(telegram_interface):
     """A topic with no selection of its own uses the group's."""
-    settings = AppSettings(conversations={"tg--100": ConversationSettings(agent="v13")})
+    settings = AppSettings(conversations={"tg--100": ConversationSettings(agent="v13_kimi")})
     with patch("aug.api.interfaces.base.load_settings", return_value=settings):
-        assert telegram_interface.get_agent_version("tg--100-topic-7") == "v13"
+        assert telegram_interface.get_agent_version("tg--100-topic-7") == "v13_kimi"
 
 
 def test_topic_own_version_wins_over_group(telegram_interface):
     settings = AppSettings(
         conversations={
-            "tg--100": ConversationSettings(agent="v13"),
+            "tg--100": ConversationSettings(agent="v13_kimi"),
             "tg--100-topic-7": ConversationSettings(agent="v13_glm"),
         }
     )
     with patch("aug.api.interfaces.base.load_settings", return_value=settings):
         assert telegram_interface.get_agent_version("tg--100-topic-7") == "v13_glm"
-        assert telegram_interface.get_agent_version("tg--100-topic-8") == "v13"
+        assert telegram_interface.get_agent_version("tg--100-topic-8") == "v13_kimi"
 
 
 def test_setting_a_topic_version_does_not_touch_the_group(telegram_interface):
-    settings = AppSettings(conversations={"tg--100": ConversationSettings(agent="v13")})
+    settings = AppSettings(conversations={"tg--100": ConversationSettings(agent="v13_kimi")})
     with (
         patch("aug.api.interfaces.base.load_settings", return_value=settings),
         patch("aug.api.interfaces.base.save_settings"),
     ):
         telegram_interface.set_agent_version("tg--100-topic-7", "v13_glm")
-    assert settings.conversations["tg--100"].agent == "v13"
+    assert settings.conversations["tg--100"].agent == "v13_kimi"
     assert settings.conversations["tg--100-topic-7"].agent == "v13_glm"
 
 

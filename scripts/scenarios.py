@@ -9,8 +9,8 @@ frames) plus a summary of each model request, with volatile values (ids, timesta
 removed.  Run it on main and on a branch and diff the two files: "no visible behaviour
 change" becomes a diff, not a belief.
 
-    python scripts/scenarios.py seed .scenarios/data [--agent v13]
-    python scripts/scenarios.py run --out .scenarios/transcript.txt [--only s1,s2] [--agent v13]
+    python scripts/scenarios.py seed .scenarios/data [--agent v13_kimi]
+    python scripts/scenarios.py run --out .scenarios/transcript.txt [--only s1] [--agent v13_kimi]
 
 ``--agent`` runs the suite on another agent version (the scenario stack gives the real
 profiles the scripted agent's dev tools); seed and run must name the same one.

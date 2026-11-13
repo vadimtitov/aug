@@ -271,7 +271,7 @@ async def test_fire_push_into_topic_inherits_group_version(tg_iface):
     from aug.core.dispatch import fire_push
     from aug.utils.file_settings import AppSettings, ConversationSettings
 
-    settings = AppSettings(conversations={"tg--100": ConversationSettings(agent="v13")})
+    settings = AppSettings(conversations={"tg--100": ConversationSettings(agent="v13_kimi")})
     tg_iface.send_proactive_stream = AsyncMock()
 
     app = MagicMock()
@@ -289,7 +289,7 @@ async def test_fire_push_into_topic_inherits_group_version(tg_iface):
             push_type="agent",
         )
 
-    mock_get_harness.assert_called_once_with("v13")
+    mock_get_harness.assert_called_once_with("v13_kimi")
     tg_iface.send_proactive_stream.assert_awaited_once()
 
 

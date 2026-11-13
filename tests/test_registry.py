@@ -1,4 +1,4 @@
-"""The registry: the v13 profiles, their tools, tiers, and the move off deleted versions."""
+"""The registry: the v13_kimi profiles, their tools, tiers, and the move off deleted versions."""
 
 import inspect
 from unittest.mock import patch
@@ -20,7 +20,7 @@ from aug.core.registry import (
 )
 from aug.utils.file_settings import AppSettings, ConversationSettings
 
-PROFILES = ["v13", "v13_glm"]
+PROFILES = ["v13_kimi", "v13_glm"]
 
 
 @tool
@@ -41,7 +41,7 @@ def test_only_the_current_profiles_are_registered():
 
 
 def test_profile_models():
-    assert get_agent("v13")._model_name == "accounts/fireworks/models/kimi-k3"
+    assert get_agent("v13_kimi")._model_name == "accounts/fireworks/models/kimi-k3"
     assert get_agent("v13_glm")._model_name == "accounts/fireworks/models/glm-5p3"
 
 
@@ -56,11 +56,11 @@ def test_profiles_browse_through_mcp_not_the_browser_tool(name):
 
 def test_describe_image_is_only_on_the_profile_without_vision():
     assert "describe_image" in _tool_names("v13_glm")
-    assert "describe_image" not in _tool_names("v13")
+    assert "describe_image" not in _tool_names("v13_kimi")
 
 
 def test_both_profiles_share_one_tool_list_apart_from_describe_image():
-    assert _tool_names("v13") == _tool_names("v13_glm") - {"describe_image"}
+    assert _tool_names("v13_kimi") == _tool_names("v13_glm") - {"describe_image"}
 
 
 @pytest.mark.parametrize("name", PROFILES)
@@ -97,10 +97,10 @@ def test_scenario_tools_are_added_only_on_the_scenario_stack():
     with patch("aug.core.registry.get_settings") as settings:
         settings.return_value.SCRIPTED_AGENT = True
         configure_mcp_tools([])
-        assert "dev_guarded" in _tool_names("v13")
+        assert "dev_guarded" in _tool_names("v13_kimi")
         assert "scripted" in list_agents()
     configure_mcp_tools([])
-    assert "dev_guarded" not in _tool_names("v13")
+    assert "dev_guarded" not in _tool_names("v13_kimi")
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +111,7 @@ def test_scenario_tools_are_added_only_on_the_scenario_stack():
 @pytest.mark.parametrize(
     ("name", "strong"),
     [
-        ("v13", "accounts/fireworks/models/kimi-k3"),
+        ("v13_kimi", "accounts/fireworks/models/kimi-k3"),
         ("v13_glm", "accounts/fireworks/models/glm-5p3"),
     ],
 )
@@ -148,16 +148,16 @@ def test_chats_on_deleted_versions_move_to_a_current_profile():
     assert moved == ["tg-1", "tg-2", "tg-3"]
     agents = {k: v.agent for k, v in saved[0].conversations.items()}
     assert agents == {
-        "tg-1": "v13",
+        "tg-1": "v13_kimi",
         "tg-2": "v13_glm",
-        "tg-3": "v13",
+        "tg-3": "v13_kimi",
         "tg-4": "v13_glm",
         "tg-5": "default",
     }
 
 
 def test_nothing_is_saved_when_no_chat_is_on_a_deleted_version():
-    settings = AppSettings(conversations={"tg-1": ConversationSettings(agent="v13")})
+    settings = AppSettings(conversations={"tg-1": ConversationSettings(agent="v13_kimi")})
     with (
         patch("aug.core.registry.load_settings", return_value=settings),
         patch("aug.core.registry.save_settings") as save,

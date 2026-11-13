@@ -37,8 +37,8 @@ class JobSpec:
 
 
 JOBS: list[JobSpec] = [
-    JobSpec(job="dream_light", cron="0 3 * * *", profile="v13"),
-    JobSpec(job="dream_deep", cron="0 4 * * sun", profile="v13"),
+    JobSpec(job="dream_light", cron="0 3 * * *", profile="v13_kimi"),
+    JobSpec(job="dream_deep", cron="0 4 * * sun", profile="v13_kimi"),
 ]
 
 _JOB_FUNCTIONS: dict[str, Job] = {

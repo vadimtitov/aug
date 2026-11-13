@@ -78,12 +78,12 @@ def test_load_migration_does_not_override_existing_conversation():
     raw = json.dumps(
         {
             "telegram": {"chats": {"123": {"agent": "v2_claude"}}},
-            "conversations": {"tg-123": {"agent": "v13"}},
+            "conversations": {"tg-123": {"agent": "v13_kimi"}},
         }
     )
     with patch("aug.utils.file_settings.read_data_file", return_value=raw):
         s = load_settings()
-    assert s.conversations["tg-123"].agent == "v13"
+    assert s.conversations["tg-123"].agent == "v13_kimi"
 
 
 def test_save_drops_legacy_telegram_section():
