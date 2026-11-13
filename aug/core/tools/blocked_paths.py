@@ -3,6 +3,9 @@
 ``run_bash`` refuses commands that name them; ``respond_with_file`` refuses to send
 anything under them.  The user's own blacklist patterns (settings.json →
 tools.bash.blacklist) apply to both as well.
+
+This catches mistakes, not a determined agent: a command can reach a file without
+spelling out its path (``cd /app/data && cp keys/x /tmp``).
 """
 
 import logging
@@ -14,9 +17,15 @@ from aug.utils.file_settings import load_settings
 
 logger = logging.getLogger(__name__)
 
-# SSH private keys, the hushed secret store (its age key sits next to it), and
-# settings.json, which holds the saved approval rules.
-BLOCKED_PATHS = (DATA_DIR / "keys", DATA_DIR / ".hushed", DATA_DIR / "settings.json")
+# SSH private keys, the hushed secret store (its age key sits next to it), OAuth client
+# secrets and Gmail tokens, and settings.json, which holds the saved approval rules.
+BLOCKED_PATHS = (
+    DATA_DIR / "keys",
+    DATA_DIR / ".hushed",
+    DATA_DIR / "oauth_providers.json",
+    DATA_DIR / "gmail_tokens",
+    DATA_DIR / "settings.json",
+)
 
 
 def command_block_reason(command: str) -> str | None:

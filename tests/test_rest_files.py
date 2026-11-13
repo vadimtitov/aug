@@ -67,6 +67,15 @@ def test_an_upload_without_a_type_is_typed_by_its_name(client):
     assert uploaded.json()["mime_type"] == "application/pdf"
 
 
+def test_an_upload_over_the_limit_is_refused(client):
+    with patch("aug.api.routers.files.MAX_UPLOAD_BYTES", 4):
+        response = client.post(
+            "/files/upload", files={"file": ("big.bin", b"12345", "text/plain")}, headers=_HEADERS
+        )
+
+    assert response.status_code == 413
+
+
 async def test_download_needs_the_api_key(client):
     stored = await file_store.save_outbound(b"secret", "a.txt", "text/plain")
 

@@ -89,7 +89,7 @@ from aug.core.harness import (
     pending_approvals,
 )
 from aug.core.memory import run_deep_consolidation, run_light_consolidation
-from aug.core.prompts import USER_FILE_TOO_LARGE, build_system_prompt
+from aug.core.prompts import USER_FILE_FAILED, USER_FILE_TOO_LARGE, build_system_prompt
 from aug.core.registry import list_agents
 from aug.core.run import run_registry
 from aug.core.state import AgentState
@@ -151,6 +151,8 @@ class _AlbumCollector:
     Telegram delivers an album as one update per item, sharing a media_group_id, with
     no marker on the last one.  Each new item restarts a short wait; once it passes
     with nothing new, the items go to *on_album* together, in the order they were sent.
+    ``settled(context_id)`` waits until no album in that chat is still being collected,
+    so a message sent with the album (a forward's text, "what's this?") can join it.
     """
 
     def __init__(
@@ -160,23 +162,39 @@ class _AlbumCollector:
         self._wait = wait
         self._items: dict[str, list[Update]] = {}
         self._timers: dict[str, asyncio.Task[None]] = {}
+        self._open: dict[str, tuple[str, asyncio.Event]] = {}  # group → (context, done)
+        self._running: set[asyncio.Task[None]] = set()
 
-    def add(self, update: Update) -> None:
+    def add(self, update: Update, context_id: str) -> None:
         group = str(update.message.media_group_id)  # type: ignore[union-attr]
         self._items.setdefault(group, []).append(update)
+        self._open.setdefault(group, (context_id, asyncio.Event()))
         if (timer := self._timers.get(group)) is not None:
             timer.cancel()
-        self._timers[group] = asyncio.create_task(self._fire(group))
+        task = asyncio.create_task(self._fire(group))
+        self._timers[group] = task
+        self._running.add(task)
+        task.add_done_callback(self._running.discard)
+
+    async def settled(self, context_id: str) -> None:
+        """Return once every album being collected in *context_id* has been handed on."""
+        for context, done in list(self._open.values()):
+            if context == context_id:
+                await done.wait()
 
     async def _fire(self, group: str) -> None:
         await asyncio.sleep(self._wait)
         # From here on this album is closed: a straggler starts a new one.
         self._timers.pop(group, None)
         items = sorted(self._items.pop(group, []), key=lambda u: u.message.message_id)  # type: ignore[union-attr]
+        _, done = self._open[group]
         try:
             await self._on_album(items)
         except Exception:
             logger.exception("album handling failed group=%s", group)
+        finally:
+            del self._open[group]
+            done.set()
 
 
 _TG_MAX_LEN = MessageLimit.MAX_TEXT_LENGTH
@@ -987,21 +1005,42 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         if not update.message:
             return
         if update.message.media_group_id:
-            self._albums.add(update)
+            context_id = get_context_id(
+                update.effective_chat.id,  # type: ignore[union-attr]
+                topic_id=update.message.message_thread_id,
+            )
+            self._albums.add(update, context_id)
             return
         await self.run(update)
 
     async def _handle_album(self, updates: list[Update]) -> None:
-        """An album's items, received together, become one message and one turn."""
-        received = await asyncio.gather(*(self.receive_message(u) for u in updates))
-        incoming = [m for m in received if m is not None]
+        """An album's items, received together, become one message and one turn.
+
+        An item that fails to download becomes a note; the rest still arrive.
+        """
+        received = await asyncio.gather(
+            *(self.receive_message(u) for u in updates), return_exceptions=True
+        )
+        incoming = [m for m in received if isinstance(m, IncomingMessage)]
         if not incoming:
+            for error in (r for r in received if isinstance(r, BaseException)):
+                logger.error("album item failed", exc_info=error)
             return
         parts: list[ContentPart] = []
-        for message in incoming:
-            # Each item repeats a forward's "[Forwarded from …]"; keep it once.
-            parts.extend(p for p in message.parts if p not in parts)
+        for update, result in zip(updates, received, strict=True):
+            if isinstance(result, BaseException):
+                logger.warning("album item failed", exc_info=result)
+                media = _media_of(update.message)  # type: ignore[arg-type]
+                name = media.filename if media else "a file"
+                parts.append(TextContent(text=USER_FILE_FAILED.format(filename=name)))
+            elif result is not None:
+                # Each item repeats a forward's "[Forwarded from …]"; keep it once.
+                parts.extend(p for p in result.parts if p not in parts)
         await self.handle(incoming[0].model_copy(update={"parts": parts}), updates[0])
+
+    async def _before_turn(self, context_id: str) -> None:
+        # A message sent with an album waits for it, so both make one turn.
+        await self._albums.settled(context_id)
 
     async def _handle_live_location(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -1739,5 +1778,5 @@ async def _download(media: _Media) -> ContentPart:
             raise
         logger.info("telegram file too big to download name=%s", media.filename)
         return TextContent(text=USER_FILE_TOO_LARGE.format(filename=media.filename))
-    data = bytes(await tg_file.download_as_bytearray())
+    data = await tg_file.download_as_bytearray()  # bytes-like; no second copy
     return await store_file(data, media.filename, media.mime_type, transcribe=media.transcribe)

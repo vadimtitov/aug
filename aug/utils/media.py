@@ -8,6 +8,7 @@ at about 1.8k tokens.
 
 import io
 import mimetypes
+import re
 from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -16,29 +17,43 @@ from pillow_heif import register_heif_opener
 register_heif_opener()
 
 MAX_IMAGE_EDGE = 1568
+# Under Anthropic's 5 MB per-image limit with room to spare; bigger is re-encoded.
+MAX_IMAGE_BYTES = 3_500_000
 JPEG_QUALITY = 85
 
-# Formats sent as they are when they are small enough.  Anything else Pillow can open
-# (HEIC, TIFF, BMP…) is re-encoded to JPEG, which every model accepts.
-_PASSTHROUGH_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+# Image types a model accepts inline.  Sent as they are when small enough; anything
+# else Pillow can open (HEIC, TIFF, BMP…) is re-encoded to JPEG.
+MODEL_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+
+# How an image sits in LangGraph history: expanded into the image on each model call.
+IMAGE_MARKER = re.compile(r"\[\[img:([^|\]]+)\|([^\]]+)\]\]")
+# What one normalised image costs in a request, roughly (1568 px long edge).
+IMAGE_TOKENS = 1600
 
 
-def normalise_image(data: bytes, media_type: str) -> tuple[bytes, str]:
+def normalise_image(data: bytes | bytearray, media_type: str) -> tuple[bytes | bytearray, str]:
     """Return *data* as an image a model accepts: JPEG at most MAX_IMAGE_EDGE px on its
     long edge, or the original bytes when they already are within bounds.
 
-    Data Pillow cannot read is returned unchanged.  Animated images are left alone too:
-    re-encoding would keep only their first frame.
+    The bytes decide, not *media_type*: a HEIC sent as "image/jpeg" is still converted,
+    and what passes through is labelled with its real type.  Data Pillow cannot read
+    (or will not, being too large to decode safely) is returned unchanged; so are
+    animated images, as re-encoding would keep only their first frame.
     """
     try:
         image = Image.open(io.BytesIO(data))
+        actual = Image.MIME.get(image.format or "", media_type)
+        if getattr(image, "is_animated", False):
+            return data, actual
         image.load()
-    except (UnidentifiedImageError, OSError, ValueError):
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError):
         return data, media_type
-    if getattr(image, "is_animated", False):
-        return data, media_type
-    if media_type in _PASSTHROUGH_TYPES and max(image.size) <= MAX_IMAGE_EDGE:
-        return data, media_type
+    if (
+        actual in MODEL_IMAGE_TYPES
+        and max(image.size) <= MAX_IMAGE_EDGE
+        and len(data) <= MAX_IMAGE_BYTES
+    ):
+        return data, actual
 
     image = ImageOps.exif_transpose(image)
     image.thumbnail((MAX_IMAGE_EDGE, MAX_IMAGE_EDGE), Image.Resampling.LANCZOS)
@@ -52,6 +67,10 @@ def normalise_image(data: bytes, media_type: str) -> tuple[bytes, str]:
     out = io.BytesIO()
     image.save(out, format="JPEG", quality=JPEG_QUALITY)
     return out.getvalue(), "image/jpeg"
+
+
+def image_marker(path: Path, media_type: str) -> str:
+    return f"[[img:{path}|{media_type}]]"
 
 
 def guess_media_type(filename: str, default: str = "application/octet-stream") -> str:

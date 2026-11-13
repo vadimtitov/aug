@@ -140,7 +140,7 @@ class IncomingMessage(BaseModel):
 
 
 async def store_file(
-    data: bytes, filename: str, mime_type: str, *, transcribe: bool = False
+    data: bytes | bytearray, filename: str, mime_type: str, *, transcribe: bool = False
 ) -> FileContent:
     """Save a file the user sent to the workspace inbox (images normalised on the way)."""
     stored = await file_store.save_inbound(data, filename, mime_type)
@@ -430,12 +430,18 @@ class BaseInterface[ContextT](ABC):
         """Wait out the debounce window, then start a single merged turn."""
         if self._debounce_window > 0:
             await asyncio.sleep(self._debounce_window)
+        await self._before_turn(context_id)
 
         entries = self._debounce_buf.pop(context_id, [])
         self._debounce_tasks.pop(context_id, None)
         if not entries:
             return
         await self._converse(entries[0][0], _merge_messages([m for _, m in entries]), context)
+
+    async def _before_turn(self, context_id: str) -> None:
+        """Wait for anything that should join the next turn in *context_id* before it
+        starts.  Messages that arrive meanwhile join the buffered ones.  Default: none."""
+        return
 
     async def _converse(
         self, incoming: IncomingMessage, message: Message, context: ContextT

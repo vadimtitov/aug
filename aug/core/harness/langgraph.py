@@ -46,6 +46,7 @@ from aug.core.prompts import (
 from aug.core.reflexes import Reflex, run_reflexes
 from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, MessageContent, run_registry
 from aug.core.state import AgentState
+from aug.utils.media import MODEL_IMAGE_TYPES, image_marker
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +55,6 @@ logger = logging.getLogger(__name__)
 # recursion_limit: the graph pauses after every tool round and each resume starts a
 # fresh step count, so a recursion_limit never binds across rounds.
 UNATTENDED_MAX_TOOL_ROUNDS = 10
-
-# Image types a model accepts inline; any other image (an SVG, say) is sent as a file.
-_MODEL_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
 
 class LangGraphHarness(Harness):
@@ -292,8 +290,9 @@ def _render(message: Message) -> str:
         match part:
             case TextPart(text=text):
                 blocks.append(text)
-            case FilePart(path=path, media_type=media_type) if media_type in _MODEL_IMAGE_TYPES:
-                blocks.append(f"[[img:{path}|{media_type}]]")
+            # Any other image (an SVG, say) is rendered as a file.
+            case FilePart(path=path, media_type=media_type) if media_type in MODEL_IMAGE_TYPES:
+                blocks.append(image_marker(path, media_type))
             case FilePart(path=path, media_type=media_type, filename=filename):
                 blocks.append(
                     USER_FILE_HINT.format(filename=filename, media_type=media_type, path=path)

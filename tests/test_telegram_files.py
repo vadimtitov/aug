@@ -14,7 +14,7 @@ from aug.api.interfaces.telegram.interface import (
     _send_file,
     _send_method,
 )
-from aug.core.harness import FileEmitted, TextDelta, TurnEnded
+from aug.core.harness import FileEmitted, FilePart, TextDelta, TurnEnded
 
 
 def _message(**media) -> MagicMock:
@@ -161,9 +161,9 @@ async def test_album_items_wait_for_the_album_to_finish():
         received.append(updates)
 
     albums = _AlbumCollector(on_album, wait=0.05)
-    albums.add(_album_item(2))
+    albums.add(_album_item(2), "tg-111-0")
     await asyncio.sleep(0.03)
-    albums.add(_album_item(1))  # restarts the wait
+    albums.add(_album_item(1), "tg-111-0")  # restarts the wait
     await asyncio.sleep(0.03)
     assert received == []  # 0.06s since the first item, but only 0.03s since the last
     await asyncio.sleep(0.05)
@@ -178,9 +178,9 @@ async def test_two_albums_are_kept_apart():
         received.append([u.message.message_id for u in updates])
 
     albums = _AlbumCollector(on_album, wait=0.02)
-    albums.add(_album_item(1, group="a"))
-    albums.add(_album_item(2, group="b"))
-    albums.add(_album_item(3, group="a"))
+    albums.add(_album_item(1, group="a"), "tg-111-0")
+    albums.add(_album_item(2, group="b"), "tg-111-0")
+    albums.add(_album_item(3, group="a"), "tg-111-0")
     await asyncio.sleep(0.06)
 
     assert sorted(received) == [[1, 3], [2]]
@@ -202,13 +202,55 @@ async def test_an_album_becomes_one_message(interface):
     assert texts == ["our trip"]
 
 
+async def test_one_failed_item_does_not_lose_the_album(interface):
+    broken = _album_item(2)
+    broken.message.photo[0].get_file = AsyncMock(side_effect=OSError("network down"))
+    handled = []
+    with patch.object(
+        TelegramInterface, "handle", new=AsyncMock(side_effect=lambda m, c: handled.append(m))
+    ):
+        await interface._handle_album([_album_item(1, caption="trip"), broken, _album_item(3)])
+
+    [incoming] = handled
+    files = [p for p in incoming.parts if isinstance(p, FileContent)]
+    notes = [p.text for p in incoming.parts if isinstance(p, TextContent)]
+    assert [Path(f.path).read_bytes() for f in files] == [b"jpg1", b"jpg3"]
+    assert any("could not be received" in n for n in notes)
+
+
+async def test_a_message_sent_with_an_album_joins_its_turn(interface):
+    """A forward's text (or "what's this?") arrives before the album is complete: it
+    waits for the album, and both make one turn."""
+    interface._albums = _AlbumCollector(interface._handle_album, wait=0.3)
+    turns = []
+
+    async def converse(self, incoming, message, context):
+        turns.append(message)
+
+    with (
+        patch.object(TelegramInterface, "_converse", new=converse),
+        patch("aug.api.interfaces.base._harness_for", return_value=None),
+        patch("aug.api.interfaces.telegram.interface.get_context_id", return_value="tg-111-0"),
+    ):
+        text = _update(_message(text="[Forwarded from Ann] look at these"))
+        text.message.message_id = 1
+        await interface._handle_input(_album_item(2), MagicMock())
+        await interface._handle_input(_album_item(3), MagicMock())
+        await interface.run(text)  # buffered, then waits on the album
+        await asyncio.sleep(0.6)
+
+    [message] = turns
+    assert sum(isinstance(p, FilePart) for p in message.parts) == 2
+    assert "look at these" in message.text
+
+
 async def test_an_album_item_routes_to_the_collector(interface):
     update = _album_item(1)
     with patch.object(TelegramInterface, "run", new=AsyncMock()) as run:
         interface._albums = MagicMock()
         await interface._handle_input(update, MagicMock())
 
-    interface._albums.add.assert_called_once_with(update)
+    interface._albums.add.assert_called_once_with(update, "tg-111-0")
     run.assert_not_called()
 
 

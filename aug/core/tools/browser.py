@@ -178,7 +178,9 @@ async def browser(
                 )
                 if ctx is not None:
                     await ctx.send_file(stored)
-            return history.final_result()
+            sent = len(new_files) + bool(screenshots)
+            note = f"\n\n({sent} file(s) already sent to the user.)" if sent else ""
+            return f"{history.final_result()}{note}"
 
         if run and run.user_requested_stop.is_set():
             return _stopped_summary(agent)

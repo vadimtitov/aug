@@ -30,7 +30,7 @@ async def respond_with_file(path: str, caption: str = "") -> str:
             user sent earlier.
         caption: Optional short text shown with the file.
     """
-    file = Path(path)
+    file = Path(path).resolve()  # what is checked is what gets copied, links resolved
     if reason := path_block_reason(file):
         return f"File NOT sent. {reason}"
     if not file.is_file():

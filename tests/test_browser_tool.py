@@ -74,7 +74,8 @@ async def test_browser_not_configured() -> None:
 
 async def test_browser_returns_final_result(mock_browser_deps, sent_files) -> None:
     result = await _invoke("check the weather")
-    assert result.content == "Order placed."
+    assert result.content.startswith("Order placed.")
+    assert "1 file(s) already sent" in result.content  # so the model doesn't send it again
     assert [f.media_type for f in sent_files] == ["image/png"]  # the final screenshot
 
 

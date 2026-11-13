@@ -5,7 +5,10 @@
     files/index/<id>.json              metadata, so a file can be found by its id
 
 Files are never deleted here and the folder survives /clear, so a path the agent saw
-in an earlier turn still opens.  Use the module-level ``file_store`` singleton.
+in an earlier turn still opens.  They are written read-only: an image in the history
+is re-read on every model call, and editing it in place would change a turn that has
+already happened (and the cached prompt with it).  Use the module-level ``file_store``
+singleton.
 """
 
 import asyncio
@@ -46,7 +49,9 @@ class FileStore:
     def __init__(self, root: Path = FILES_DIR) -> None:
         self.root = root
 
-    async def save_inbound(self, data: bytes, filename: str, media_type: str) -> StoredFile:
+    async def save_inbound(
+        self, data: bytes | bytearray, filename: str, media_type: str
+    ) -> StoredFile:
         """Store a file the user sent.  Images are normalised first (see aug.utils.media),
         and a re-encoded image gets a .jpg name to match."""
         if media_type.startswith("image/"):
@@ -82,16 +87,22 @@ class FileStore:
             box=raw["box"],
             created_at=datetime.fromisoformat(raw["created_at"]),
         )
-        return stored if stored.path.is_file() else None
+        # The index is a plain file the agent could write to: never follow it out of here.
+        inside = stored.path.resolve().is_relative_to(self.root.resolve())
+        return stored if inside and stored.path.is_file() else None
 
-    def _write(self, box: Box, data: bytes, filename: str, media_type: str) -> StoredFile:
+    def _write(
+        self, box: Box, data: bytes | bytearray, filename: str, media_type: str
+    ) -> StoredFile:
         file_id, path = self._new_path(box, filename)
         path.write_bytes(data)
+        path.chmod(0o444)
         return self._index(file_id, path, filename, media_type, box)
 
     def _copy(self, source: Path, filename: str, media_type: str) -> StoredFile:
         file_id, path = self._new_path("outbox", filename)
         shutil.copyfile(source, path)
+        path.chmod(0o444)
         return self._index(file_id, path, filename, media_type, "outbox")
 
     def _new_path(self, box: Box, filename: str) -> tuple[str, Path]:

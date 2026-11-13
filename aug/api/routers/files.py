@@ -24,14 +24,24 @@ router = APIRouter(
 )
 
 
+# Same as what the agent can send back; Telegram's bot upload limit.
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+
+
 @router.post("/upload", response_model=UploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_file(file: UploadFile) -> UploadResponse:
     """Upload a file; pass the returned file_id as a ChatRequest attachment."""
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Files are limited to {MAX_UPLOAD_BYTES // 1024 // 1024} MB.",
+        )
     filename = file.filename or "upload"
     media_type = file.content_type
     if not media_type or media_type == "application/octet-stream":
         media_type = guess_media_type(filename)
-    stored = await file_store.save_inbound(await file.read(), filename, media_type)
+    stored = await file_store.save_inbound(data, filename, media_type)
     logger.info("uploaded file_id=%s type=%s bytes=%d", stored.id, stored.media_type, stored.size)
     return UploadResponse(
         file_id=stored.id,

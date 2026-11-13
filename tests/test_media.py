@@ -145,3 +145,48 @@ async def test_index_record_never_holds_the_bytes():
 
     assert "secret bytes" not in json.dumps(record)
     assert record["sha256"] == stored.sha256
+
+
+def test_the_bytes_decide_not_the_claimed_type():
+    data, media_type = normalise_image(_image((800, 600), "HEIF"), "image/jpeg")
+
+    assert media_type == "image/jpeg"
+    assert Image.open(io.BytesIO(data)).format == "JPEG"
+
+
+def test_a_passthrough_image_gets_its_real_type():
+    original = _image((500, 500), "PNG")
+
+    assert normalise_image(original, "image/jpeg") == (original, "image/png")
+
+
+def test_an_image_over_the_byte_limit_is_reencoded(monkeypatch):
+    monkeypatch.setattr("aug.utils.media.MAX_IMAGE_BYTES", 100)
+
+    _, media_type = normalise_image(_image((500, 500), "PNG"), "image/png")
+
+    assert media_type == "image/jpeg"
+
+
+def test_a_decompression_bomb_is_left_unread(monkeypatch):
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1000)  # a 100x100 image is now a bomb
+    original = _image((100, 100), "PNG")
+
+    assert normalise_image(original, "image/png") == (original, "image/png")
+
+
+async def test_stored_files_are_read_only():
+    stored = await file_store.save_inbound(b"%PDF", "a.pdf", "application/pdf")
+
+    assert stored.path.stat().st_mode & 0o222 == 0
+
+
+async def test_get_never_follows_an_index_out_of_the_store(tmp_path):
+    secret = tmp_path / "id_ed25519"
+    secret.write_text("PRIVATE KEY")
+    stored = await file_store.save_outbound(b"x", "x.txt", "text/plain")
+    index = file_store.root / "index" / f"{stored.id}.json"
+    record = json.loads(index.read_text())
+    index.write_text(json.dumps({**record, "path": str(secret)}))
+
+    assert file_store.get(stored.id) is None

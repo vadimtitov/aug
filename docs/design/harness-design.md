@@ -65,7 +65,8 @@ sent to the user, and `index/<id>.json` with its metadata.
   anything over 1568 px on the long edge become a JPEG at most 1568 px. A voice note
   gets its Whisper transcript as a `TextPart` next to the audio `FilePart`; a location
   becomes a `TextPart`. Telegram groups an album (one update per item, sharing a
-  `media_group_id`) into one message, and takes video, video notes and animations;
+  `media_group_id`) into one message, together with any message sent alongside it,
+  and takes video, video notes and animations;
   REST resolves `ChatRequest.attachments` (ids from `POST /files/upload`).
 - **LangGraph.** Every `FilePart` is rendered with a hint carrying its path
   (`[Image from user: <path>]`, `[File from user: …]`), so the agent can hand it to
@@ -73,7 +74,10 @@ sent to the user, and `index/<id>.json` with its metadata.
   call expands all of them the same way, re-reading each from its path: the image
   itself plus the hint when the model has vision, the hint alone (and
   `describe_image`) when it hasn't. The prompt prefix stays byte-identical turn to
-  turn, so it stays cached.
+  turn, so it stays cached; stored files are read-only so an image can't change under
+  it. Only images in the file store, of a type models accept, are inlined (anything
+  else a marker names gets the hint), at most the newest 50 per request, and
+  compaction counts each image at about 1.6k tokens.
 - **Out.** A file reaches the user only as a `FileEmitted`. `respond_with_file(path,
   caption)` is the tool for any file on disk: it refuses the paths in
   `aug/core/tools/blocked_paths.py` (shared with `run_bash`), snapshots the file into

@@ -491,6 +491,8 @@ VOICE_TRANSCRIPT_TEMPLATE = "[Voice message, already transcribed]\n{transcript}"
 # An image the model can see gets the hint next to the image itself.
 USER_IMAGE_HINT = "[Image from user: {path}]"
 USER_FILE_HINT = "[File from user: {filename} ({media_type}) at {path}]"
+# A file that failed to download (the rest of the message still arrives).
+USER_FILE_FAILED = "[The user sent {filename}, but it could not be received.]"
 # A file Telegram would not let the bot download (its getFile limit is 20 MB).
 USER_FILE_TOO_LARGE = (
     "[The user sent {filename}, but it is over Telegram's 20 MB limit for bots, "
