@@ -453,6 +453,10 @@ HARNESS_TOOL_STOPPED_RESULT = (
     "and returned no result. Whatever it did before that may already have taken effect."
 )
 HARNESS_TURN_STOPPED_NOTE = "[The user pressed /stop and ended your turn before you replied.]"
+# Added to the history when a turn is stopped for taking too many tool rounds.
+HARNESS_STEP_LIMIT_NOTE = (
+    "[Your previous turn was stopped: it made too many tool calls without replying.]"
+)
 
 # Told when /compact is asked for while a tool waits for the user's approval.
 APPROVAL_PENDING_COMPACT_MESSAGE = (

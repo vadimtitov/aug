@@ -460,9 +460,10 @@ class BaseInterface[ContextT](ABC):
         async with run_registry.run_lock(context_id):
             ended = await self._deliver(harness, message, context_id, turn, context)
             follow_up = replace(turn, follow_up=True)
-            while ended and ended.unconsumed and not ended.error:
-                # Arrived during the final streaming phase, with no tool-round pause
-                # left to take it: it gets a turn of its own, straight away.
+            while ended and ended.unconsumed and _may_follow_up(ended):
+                # Arrived during the final streaming phase, or as the turn hit its
+                # tool-round cap, with no pause left to take it: it gets a turn of its
+                # own, straight away.
                 logger.info("leftover_injection context=%s", context_id)
                 leftover = _merge_messages(ended.unconsumed)
                 ended = await self._deliver(harness, leftover, context_id, follow_up, context)
@@ -656,3 +657,9 @@ async def _geocode(latitude: float, longitude: float, sender_name: str | None = 
         latitude=latitude,
         longitude=longitude,
     )
+
+
+def _may_follow_up(ended: TurnEnded) -> bool:
+    """Whether a message left over from *ended* gets a turn of its own.  A turn stopped
+    at the tool-round cap still did not fail: what the user sent meanwhile is kept."""
+    return ended.error is None or ended.error.kind == "step_limit"
