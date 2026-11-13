@@ -145,14 +145,24 @@ class _ToolEntry:
     stopped: bool = False  # cut short by /stop
 
 
+@dataclass(eq=False)
+class _Album:
+    context_id: str
+    items: list[Update] = field(default_factory=list)
+    done: asyncio.Event = field(default_factory=asyncio.Event)
+    timer: asyncio.Task[None] | None = None
+
+
 class _AlbumCollector:
     """Holds an album's items until the album is complete.
 
     Telegram delivers an album as one update per item, sharing a media_group_id, with
     no marker on the last one.  Each new item restarts a short wait; once it passes
     with nothing new, the items go to *on_album* together, in the order they were sent.
-    ``settled(context_id)`` waits until no album in that chat is still being collected,
-    so a message sent with the album (a forward's text, "what's this?") can join it.
+    An item that arrives after that starts a new batch of its own.
+    ``settled(context_id)`` waits until no album in that chat is still being collected
+    or handed on, so a message sent with the album (a forward's text, "what's this?")
+    can join it.
     """
 
     def __init__(
@@ -160,41 +170,44 @@ class _AlbumCollector:
     ) -> None:
         self._on_album = on_album
         self._wait = wait
-        self._items: dict[str, list[Update]] = {}
-        self._timers: dict[str, asyncio.Task[None]] = {}
-        self._open: dict[str, tuple[str, asyncio.Event]] = {}  # group → (context, done)
+        self._collecting: dict[str, _Album] = {}  # group → the batch still open
+        self._handing: set[_Album] = set()  # batches closed, being handed on
         self._running: set[asyncio.Task[None]] = set()
 
     def add(self, update: Update, context_id: str) -> None:
         group = str(update.message.media_group_id)  # type: ignore[union-attr]
-        self._items.setdefault(group, []).append(update)
-        self._open.setdefault(group, (context_id, asyncio.Event()))
-        if (timer := self._timers.get(group)) is not None:
-            timer.cancel()
-        task = asyncio.create_task(self._fire(group))
-        self._timers[group] = task
-        self._running.add(task)
-        task.add_done_callback(self._running.discard)
+        album = self._collecting.get(group)
+        if album is None:
+            album = self._collecting[group] = _Album(context_id)
+        album.items.append(update)
+        if album.timer is not None:
+            album.timer.cancel()
+        album.timer = asyncio.create_task(self._fire(group, album))
+        self._running.add(album.timer)
+        album.timer.add_done_callback(self._running.discard)
 
     async def settled(self, context_id: str) -> None:
-        """Return once every album being collected in *context_id* has been handed on."""
-        for context, done in list(self._open.values()):
-            if context == context_id:
-                await done.wait()
+        """Return once every album in *context_id* has been handed on."""
+        while pending := [
+            album
+            for album in (*self._collecting.values(), *self._handing)
+            if album.context_id == context_id
+        ]:
+            await pending[0].done.wait()
 
-    async def _fire(self, group: str) -> None:
+    async def _fire(self, group: str, album: _Album) -> None:
         await asyncio.sleep(self._wait)
-        # From here on this album is closed: a straggler starts a new one.
-        self._timers.pop(group, None)
-        items = sorted(self._items.pop(group, []), key=lambda u: u.message.message_id)  # type: ignore[union-attr]
-        _, done = self._open[group]
+        # From here on this batch is closed: a straggler starts a new one.
+        if self._collecting.get(group) is album:
+            del self._collecting[group]
+        self._handing.add(album)
         try:
-            await self._on_album(items)
+            await self._on_album(sorted(album.items, key=lambda u: u.message.message_id))  # type: ignore[union-attr]
         except Exception:
             logger.exception("album handling failed group=%s", group)
         finally:
-            del self._open[group]
-            done.set()
+            self._handing.discard(album)
+            album.done.set()
 
 
 _TG_MAX_LEN = MessageLimit.MAX_TEXT_LENGTH
@@ -1495,14 +1508,6 @@ async def _deliver_file(
             )
 
 
-@retry(
-    # BadRequest is a NetworkError too, but resending what Telegram refused never helps.
-    retry=retry_if_exception_type((RetryAfter, TimedOut, NetworkError))
-    & retry_if_not_exception_type(BadRequest),
-    stop=stop_after_attempt(3),
-    wait=_flood_wait,
-    reraise=True,
-)
 async def _send_file(
     bot, chat_id: int, topic_id: int | None, file: FileEmitted, *, silent: bool
 ) -> None:
@@ -1519,12 +1524,25 @@ async def _send_file(
         "filename": file.filename,
     }
     try:
-        await getattr(bot, method)(**{field: data}, **kwargs)
+        await _upload(getattr(bot, method), **{field: data}, **kwargs)
     except BadRequest:
         if method == "send_document":
             raise
         logger.info("%s refused id=%s, sending as a document", method, file.file_id)
-        await bot.send_document(document=data, **kwargs)
+        await _upload(bot.send_document, document=data, **kwargs)
+
+
+@retry(
+    # BadRequest is a NetworkError too, but resending what Telegram refused never helps;
+    # nor is a timed-out upload retried, as Telegram may have received it all the same.
+    retry=retry_if_exception_type((RetryAfter, NetworkError))
+    & retry_if_not_exception_type((BadRequest, TimedOut)),
+    stop=stop_after_attempt(3),
+    wait=_flood_wait,
+    reraise=True,
+)
+async def _upload(send: Callable[..., Awaitable[Message]], **kwargs) -> None:
+    await send(**kwargs)
 
 
 def _send_method(media_type: str) -> tuple[str, str]:

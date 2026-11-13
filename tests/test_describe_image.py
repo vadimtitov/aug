@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessage
 
+from aug.core.tools import blocked_paths
 from aug.core.tools.describe_image import make_describe_image_tool
 
 
@@ -58,3 +59,17 @@ async def test_describe_image_uses_specified_model(image_file):
         tool = make_describe_image_tool("gemini-2.0-flash")
         await tool.ainvoke({"path": str(image_file), "question": "What is this?"})
         mock_build.assert_called_once_with("gemini-2.0-flash")
+
+
+@pytest.mark.asyncio
+async def test_describe_image_refuses_a_blocked_path(describe_tool, tmp_path, monkeypatch):
+    tool, _, mock_llm = describe_tool
+    key = tmp_path / "keys" / "id_ed25519"
+    key.parent.mkdir()
+    key.write_text("PRIVATE KEY")
+    monkeypatch.setattr(blocked_paths, "BLOCKED_PATHS", (tmp_path / "keys",))
+
+    result = await tool.ainvoke({"path": str(key), "question": "What is this?"})
+
+    assert "NOT described" in result
+    mock_llm.ainvoke.assert_not_called()

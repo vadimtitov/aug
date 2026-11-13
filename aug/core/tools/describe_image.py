@@ -14,6 +14,7 @@ from langchain_core.tools import BaseTool, tool
 
 from aug.core.llm import build_chat_model
 from aug.core.prompts import IMAGE_DESCRIPTION_FAILED, IMAGE_DESCRIPTION_PROMPT
+from aug.core.tools.blocked_paths import path_block_reason
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,8 @@ def make_describe_image_tool(model: str) -> BaseTool:
             path: Absolute path to the image file on disk.
             question: Specific question about the image to answer.
         """
+        if reason := path_block_reason(Path(path)):
+            return f"Image NOT described. {reason}"
         try:
             data = await _read_image(path)
         except FileNotFoundError:

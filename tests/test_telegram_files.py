@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from telegram.error import BadRequest
+from telegram.error import BadRequest, NetworkError, TimedOut
 
 from aug.api.interfaces.base import FileContent, TextContent
 from aug.api.interfaces.telegram.interface import (
@@ -186,6 +186,25 @@ async def test_two_albums_are_kept_apart():
     assert sorted(received) == [[1, 3], [2]]
 
 
+async def test_an_item_after_its_album_closed_starts_a_batch_of_its_own():
+    received: list[list] = []
+    errors: list = []
+    asyncio.get_running_loop().set_exception_handler(lambda _, c: errors.append(c))
+
+    async def on_album(updates):
+        received.append([u.message.message_id for u in updates])
+        await asyncio.sleep(0.05)  # a slow download
+
+    albums = _AlbumCollector(on_album, wait=0.02)
+    albums.add(_album_item(1), "tg-111-0")
+    await asyncio.sleep(0.03)  # the first batch is closed and still downloading
+    albums.add(_album_item(2), "tg-111-0")
+    await albums.settled("tg-111-0")
+
+    assert received == [[1], [2]]
+    assert errors == []
+
+
 async def test_an_album_becomes_one_message(interface):
     handled = []
     with patch.object(
@@ -313,6 +332,27 @@ async def test_a_refused_photo_goes_again_as_a_document(tmp_path):
     await _send_file(bot, 5, None, _file(tmp_path), silent=False)
 
     assert bot.send_document.call_args.kwargs["document"] == b"bytes"
+
+
+async def test_a_dropped_connection_is_retried(tmp_path):
+    bot = MagicMock()
+    bot.send_photo = AsyncMock(side_effect=[NetworkError("reset"), None])
+
+    with patch("aug.api.interfaces.telegram.interface._flood_wait", return_value=0):
+        await _send_file(bot, 5, None, _file(tmp_path), silent=False)
+
+    assert bot.send_photo.await_count == 2
+
+
+async def test_a_timed_out_upload_is_not_sent_again(tmp_path):
+    # Telegram may have received it: a retry could deliver the file twice.
+    bot = MagicMock()
+    bot.send_photo = AsyncMock(side_effect=TimedOut())
+
+    with pytest.raises(TimedOut):
+        await _send_file(bot, 5, None, _file(tmp_path), silent=False)
+
+    assert bot.send_photo.await_count == 1
 
 
 async def test_live_chat_sends_a_file_as_soon_as_it_is_made(interface, tmp_path):

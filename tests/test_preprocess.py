@@ -4,9 +4,11 @@ Covers both halves: the interface's _preprocess (transcription, geocoding, files
 files) and the LangGraph harness's rendering of the resulting Message.
 """
 
+import io
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from PIL import Image
 
 from aug.api.interfaces import base
 from aug.api.interfaces.base import FileContent, IncomingMessage, LocationContent, TextContent
@@ -27,8 +29,11 @@ async def _preprocess(parts) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _image_fc(tmp_path, data: bytes = b"imgbytes", mime: str = "image/jpeg") -> FileContent:
-    return await base.store_file(data, "photo.jpg", mime)
+async def _image_fc(tmp_path, mime: str = "image/jpeg") -> FileContent:
+    fmt = {"image/jpeg": "JPEG", "image/png": "PNG"}[mime]
+    out = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(out, format=fmt)
+    return await base.store_file(out.getvalue(), "photo.jpg", mime)
 
 
 async def _voice_fc(tmp_path, data: bytes = b"audiobytes") -> FileContent:
@@ -71,7 +76,7 @@ async def test_multiple_text_parts_joined_as_string():
 
 @pytest.mark.asyncio
 async def test_image_produces_img_marker(tmp_path):
-    fc = await _image_fc(tmp_path, data=b"imgdata")
+    fc = await _image_fc(tmp_path)
     result = await _preprocess([fc])
 
     assert isinstance(result, str)
@@ -91,7 +96,7 @@ async def test_image_marker_contains_path(tmp_path):
 
 @pytest.mark.asyncio
 async def test_image_png_mime_type_in_marker(tmp_path):
-    fc = await _image_fc(tmp_path, data=b"png", mime="image/png")
+    fc = await _image_fc(tmp_path, mime="image/png")
     result = await _preprocess([fc])
 
     assert isinstance(result, str)

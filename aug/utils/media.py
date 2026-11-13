@@ -36,18 +36,19 @@ def normalise_image(data: bytes | bytearray, media_type: str) -> tuple[bytes | b
     long edge, or the original bytes when they already are within bounds.
 
     The bytes decide, not *media_type*: a HEIC sent as "image/jpeg" is still converted,
-    and what passes through is labelled with its real type.  Data Pillow cannot read
-    (or will not, being too large to decode safely) is returned unchanged; so are
-    animated images, as re-encoding would keep only their first frame.
+    and what passes through is labelled with its real type.  An animated image within
+    bounds passes through whole; one over them keeps only its first frame.  Data Pillow
+    cannot read (or will not, being too large to decode safely) is returned unchanged,
+    and is never labelled as a type a model would be sent: one bad image in a history
+    would fail every call after it.
     """
     try:
         image = Image.open(io.BytesIO(data))
         actual = Image.MIME.get(image.format or "", media_type)
-        if getattr(image, "is_animated", False):
-            return data, actual
         image.load()
     except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError):
-        return data, media_type
+        unreadable = "application/octet-stream" if media_type in MODEL_IMAGE_TYPES else media_type
+        return data, unreadable
     if (
         actual in MODEL_IMAGE_TYPES
         and max(image.size) <= MAX_IMAGE_EDGE

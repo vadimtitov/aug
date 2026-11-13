@@ -24,7 +24,7 @@ from typing import Literal
 from uuid import uuid4
 
 from aug.utils.data import FILES_DIR
-from aug.utils.media import extension_for, normalise_image
+from aug.utils.media import MODEL_IMAGE_TYPES, extension_for, normalise_image
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ class FileStore:
         and a re-encoded image gets a .jpg name to match."""
         if media_type.startswith("image/"):
             normalised, new_type = await asyncio.to_thread(normalise_image, data, media_type)
-            if new_type != media_type:
+            if new_type != media_type and new_type in MODEL_IMAGE_TYPES:
                 filename = f"{Path(filename).stem or 'image'}{extension_for(new_type)}"
             data, media_type = normalised, new_type
         return await asyncio.to_thread(self._write, "inbox", data, filename, media_type)
@@ -75,18 +75,18 @@ class FileStore:
             return None
         try:
             raw = json.loads((self.root / "index" / f"{file_id}.json").read_text())
-        except (FileNotFoundError, ValueError):
-            return None
-        stored = StoredFile(
-            id=raw["id"],
-            path=Path(raw["path"]),
-            media_type=raw["media_type"],
-            filename=raw["filename"],
-            size=raw["size"],
-            sha256=raw["sha256"],
-            box=raw["box"],
-            created_at=datetime.fromisoformat(raw["created_at"]),
-        )
+            stored = StoredFile(
+                id=raw["id"],
+                path=Path(raw["path"]),
+                media_type=raw["media_type"],
+                filename=raw["filename"],
+                size=raw["size"],
+                sha256=raw["sha256"],
+                box=raw["box"],
+                created_at=datetime.fromisoformat(raw["created_at"]),
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            return None  # missing, or a record that is not one of ours
         # The index is a plain file the agent could write to: never follow it out of here.
         inside = stored.path.resolve().is_relative_to(self.root.resolve())
         return stored if inside and stored.path.is_file() else None

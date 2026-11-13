@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from aug.core.tools.image_gen import generate_image
+from aug.core.tools import blocked_paths
+from aug.core.tools.image_gen import edit_image, generate_image
 
 
 def _invoke(prompt: str):
@@ -68,3 +69,29 @@ async def test_generate_image_no_data(sent_files):
 
     assert "did not return" in result.content.lower()
     assert not sent_files
+
+
+@pytest.mark.asyncio
+async def test_edit_image_refuses_a_blocked_path(tmp_path, monkeypatch):
+    key = tmp_path / "keys" / "id_ed25519"
+    key.parent.mkdir()
+    key.write_text("PRIVATE KEY")
+    monkeypatch.setattr(blocked_paths, "BLOCKED_PATHS", (tmp_path / "keys",))
+
+    with patch("aug.core.tools.image_gen.AsyncOpenAI") as openai:
+        result = await edit_image.ainvoke({"source_path": str(key), "prompt": "make it blue"})
+
+    assert "NOT edited" in result
+    openai.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_generate_image_outside_a_chat_says_nothing_was_sent():
+    response, _ = _mock_openai_response_b64()
+    mock_openai = AsyncMock()
+    mock_openai.images.generate = AsyncMock(return_value=response)
+
+    with patch("aug.core.tools.image_gen.AsyncOpenAI", return_value=mock_openai):
+        result = await _invoke("a red cat")
+
+    assert "did NOT send" in result.content

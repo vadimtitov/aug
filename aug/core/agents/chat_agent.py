@@ -259,6 +259,8 @@ async def _expand_images(messages: list[AnyMessage], *, vision: bool) -> list[An
     total = sum(
         len(IMAGE_MARKER.findall(_text(m.content))) for m in messages if isinstance(m, HumanMessage)
     )
+    # Past the cap each new image moves the cutoff and so changes the cached prefix;
+    # compaction normally folds the history long before it holds that many.
     budget = _ImageBudget(skip=max(0, total - MAX_INLINE_IMAGES) if vision else total)
     result = list(messages)
     for i, msg in enumerate(messages):

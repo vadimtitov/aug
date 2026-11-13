@@ -11,6 +11,7 @@ from langchain_core.tools import tool
 from openai import AsyncOpenAI
 
 from aug.config import get_settings
+from aug.core.tools.blocked_paths import path_block_reason
 from aug.core.tools.context import current_tool_context
 from aug.utils.file_settings import load_settings
 from aug.utils.storage import file_store
@@ -70,8 +71,9 @@ async def generate_image(
         return "Image generation did not return any data."
 
     paths = [await _send_image(data, f"generated-{i + 1}.png") for i, data in enumerate(images)]
+    sent = "sent them to the user" if current_tool_context() else "did NOT send them (no chat)"
     return (
-        f"Generated {len(images)} image(s) for prompt {prompt!r} and sent them to the user. "
+        f"Generated {len(images)} image(s) for prompt {prompt!r} and {sent}. "
         f"Saved at: {', '.join(paths)}"
     )
 
@@ -96,6 +98,8 @@ async def edit_image(
                      Default: "1024x1024".
     """
     resolved = Path(source_path).resolve()
+    if reason := path_block_reason(resolved):
+        return f"Image NOT edited. {reason}"
     if not resolved.exists():
         return f"Source image not found at path: {source_path}"
 
@@ -137,7 +141,8 @@ async def edit_image(
         return "Image editing returned no URL or data."
 
     path = await _send_image(image_data, f"{resolved.stem}-edited.png")
-    return f"Edited the image using prompt {prompt!r} and sent it to the user. Saved at: {path}"
+    sent = "sent it to the user" if current_tool_context() else "did NOT send it (no chat)"
+    return f"Edited the image using prompt {prompt!r} and {sent}. Saved at: {path}"
 
 
 async def _send_image(data: bytes, filename: str) -> str:

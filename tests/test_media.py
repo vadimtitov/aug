@@ -65,17 +65,36 @@ def test_small_png_keeps_its_format():
     assert normalise_image(original, "image/png") == (original, "image/png")
 
 
-def test_unreadable_data_is_returned_unchanged():
-    assert normalise_image(b"not an image", "image/jpeg") == (b"not an image", "image/jpeg")
+def test_unreadable_data_is_never_labelled_a_model_image():
+    # Inlined, it would fail every later model call in the conversation.
+    assert normalise_image(b"not an image", "image/jpeg") == (
+        b"not an image",
+        "application/octet-stream",
+    )
 
 
-def test_animated_gif_is_left_alone():
-    frames = [Image.new("RGB", (4000, 100), c) for c in ((255, 0, 0), (0, 255, 0))]
+def test_unreadable_data_keeps_a_type_no_model_is_sent():
+    assert normalise_image(b"<svg/>", "image/svg+xml") == (b"<svg/>", "image/svg+xml")
+
+
+def _animated_gif(size: tuple[int, int]) -> bytes:
+    frames = [Image.new("RGB", size, c) for c in ((255, 0, 0), (0, 255, 0))]
     out = io.BytesIO()
     frames[0].save(out, format="GIF", save_all=True, append_images=frames[1:])
-    original = out.getvalue()
+    return out.getvalue()
+
+
+def test_a_small_animated_gif_is_left_alone():
+    original = _animated_gif((400, 100))
 
     assert normalise_image(original, "image/gif") == (original, "image/gif")
+
+
+def test_an_oversized_animated_gif_keeps_its_first_frame():
+    data, media_type = normalise_image(_animated_gif((4000, 100)), "image/gif")
+
+    assert media_type == "image/jpeg"
+    assert _size(data) == (MAX_IMAGE_EDGE, 39)
 
 
 def test_guess_media_type():
@@ -168,17 +187,30 @@ def test_an_image_over_the_byte_limit_is_reencoded(monkeypatch):
     assert media_type == "image/jpeg"
 
 
-def test_a_decompression_bomb_is_left_unread(monkeypatch):
+def test_a_decompression_bomb_is_left_unread_and_never_inlined(monkeypatch):
     monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1000)  # a 100x100 image is now a bomb
     original = _image((100, 100), "PNG")
 
-    assert normalise_image(original, "image/png") == (original, "image/png")
+    assert normalise_image(original, "image/png") == (original, "application/octet-stream")
 
 
 async def test_stored_files_are_read_only():
     stored = await file_store.save_inbound(b"%PDF", "a.pdf", "application/pdf")
 
     assert stored.path.stat().st_mode & 0o222 == 0
+
+
+async def test_a_malformed_index_record_is_no_file():
+    stored = await file_store.save_outbound(b"x", "x.txt", "text/plain")
+    (file_store.root / "index" / f"{stored.id}.json").write_text('{"id": "x"}')
+
+    assert file_store.get(stored.id) is None
+
+
+async def test_an_unreadable_upload_keeps_its_name():
+    stored = await file_store.save_inbound(b"truncated", "photo.png", "image/png")
+
+    assert (stored.filename, stored.media_type) == ("photo.png", "application/octet-stream")
 
 
 async def test_get_never_follows_an_index_out_of_the_store(tmp_path):

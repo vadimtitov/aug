@@ -179,7 +179,12 @@ async def browser(
                 if ctx is not None:
                     await ctx.send_file(stored)
             sent = len(new_files) + bool(screenshots)
-            note = f"\n\n({sent} file(s) already sent to the user.)" if sent else ""
+            if not sent:
+                note = ""
+            elif ctx is None:
+                note = f"\n\n({sent} file(s) saved but NOT sent: there is no chat.)"
+            else:
+                note = f"\n\n({sent} file(s) already sent to the user.)"
             return f"{history.final_result()}{note}"
 
         if run and run.user_requested_stop.is_set():
