@@ -6,7 +6,7 @@ fire_task(task_id)
     Called by APScheduler when a scheduled task fires.  Loads the task from
     the database, then delegates to fire_push.
 
-fire_push(app, *, interface, thread_id, message, push_type, isolated, ...)
+fire_push(app, *, interface, context_id, message, push_type, isolated, ...)
     Resolves the target thread via the interface, then either:
       - delivers the message directly (push_type="forward"), or
       - runs a constrained agent turn and delivers the final response
@@ -16,38 +16,52 @@ broadcast(app, message)
     Delivers a service-level announcement to every registered interface, with
     no target thread and no agent run.
 
-External agent runs are capped at _PUSH_RECURSION_LIMIT iterations.
-Tool restriction (e.g. excluding run_bash) is a TODO: it requires either a
-dedicated agent variant or a hook in the agent graph to filter tool calls.
+Agent pushes run through the harness like any turn, under the same run lock, as an
+unattended turn (``TurnContext.attended=False``), which the harness caps at a few steps.
 """
 
+import asyncio
 import logging
 import re
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import FastAPI
-from langchain_core.messages import HumanMessage
-from langchain_core.runnables.config import RunnableConfig
-from langgraph.errors import GraphRecursionError
-from langgraph.types import Command
 
-from aug.core.agents.base_agent import BaseAgent
-from aug.core.events import AgentEvent
-from aug.core.registry import get_agent
-from aug.core.state import AgentState
+from aug.core.harness import (
+    Address,
+    HarnessEvent,
+    Message,
+    Sender,
+    TextPart,
+    TurnContext,
+    TurnEnded,
+    error_text,
+)
+from aug.core.harness.langgraph import LangGraphHarness
+from aug.core.prompts import UNATTENDED_TIMED_OUT_MESSAGE
+from aug.core.registry import get_harness
+from aug.core.run import run_registry
 from aug.utils.app_ref import get_app
 from aug.utils.db import get_pool
 from aug.utils.tasks import ScheduledTask, get_task, mark_fired
 
 InterfaceName = Literal["telegram", "rest_api"]
 
+
+class PushTurnFailed(RuntimeError):
+    """An agent push ran but its turn ended with an error."""
+
+
 logger = logging.getLogger(__name__)
 
-# Maximum agentic loop iterations allowed for externally-triggered agent runs.
-_PUSH_RECURSION_LIMIT = 10
+# How long an agent push or scheduled task may run.  Nobody is watching it and it can't
+# be stopped with /stop (an isolated push has a context of its own), so a command that
+# hangs would otherwise hold the chat's run lock, and the task's scheduler slot, for good.
+UNATTENDED_TIMEOUT_SECONDS = 15 * 60
 
 # Retry configuration for fire_task delivery failures.
 _MAX_TASK_RETRIES = 10
@@ -88,7 +102,7 @@ async def fire_task(task_id: str, retry_count: int = 0) -> None:
         await fire_push(
             app,
             interface=task.interface,
-            thread_id=task.thread_id,
+            context_id=task.thread_id,  # the tasks table keeps its column name
             message=task.message,
             push_type=task.push_type,
         )
@@ -109,7 +123,7 @@ async def fire_push(
     app: FastAPI,
     *,
     interface: InterfaceName,
-    thread_id: str,
+    context_id: str,
     message: str,
     push_type: Literal["forward", "agent", "agent_isolated", "inject"],
     topic_name: str | None = None,
@@ -120,14 +134,14 @@ async def fire_push(
     Args:
         app:        The FastAPI application (for accessing shared state).
         interface:  Registered interface name, e.g. ``"telegram"``.
-        thread_id:  ``"default"``, ``"new"``, or a specific thread ID.
+        context_id:  ``"default"``, ``"new"``, or a specific thread ID.
         message:    Text to forward or use as the agent prompt.
         push_type:  Delivery mode:
                     ``"forward"``        — relay message as-is, no agent run.
                     ``"agent"``          — agent run in the thread's history.
                     ``"agent_isolated"`` — agent run in a throwaway session.
                     ``"inject"``         — write message to context + forward to chat, no reply.
-        topic_name: Topic name when creating a new thread (``thread_id="new"``).
+        topic_name: Topic name when creating a new thread (``context_id="new"``).
         chat_id:    Group chat ID when creating a new Telegram forum topic.
 
     Raises:
@@ -138,64 +152,83 @@ async def fire_push(
     if iface is None:
         raise ValueError(f"Interface {interface!r} is not registered")
 
-    actual_thread_id = await iface.resolve_thread(thread_id, topic_name=topic_name, chat_id=chat_id)
+    actual_context_id = await iface.resolve_context(
+        context_id, topic_name=topic_name, chat_id=chat_id
+    )
 
     if push_type == "forward":
-        await iface.send_proactive(actual_thread_id, message)
+        await iface.send_proactive(actual_context_id, message)
         return
 
+    harness = get_harness(iface.get_agent_version(actual_context_id))
     if push_type == "inject":
-        agent = get_agent(iface.get_agent_version(actual_thread_id))
-        inject_config: RunnableConfig = {
-            "configurable": {
-                "thread_id": actual_thread_id,
-                "interface": interface,
-                "sender_id": _extract_chat_id(actual_thread_id) or "",
-            },
-        }
-        await agent.aupdate_state(
-            inject_config,
-            {"messages": [HumanMessage(content=message)]},
-            app.state.checkpointer,
-        )
-        await iface.send_proactive(actual_thread_id, message)
+        if not isinstance(harness, LangGraphHarness):
+            raise ValueError(f"inject pushes are not supported on {type(harness).__name__}")
+        await harness.add_context(message, actual_context_id)
+        await iface.send_proactive(actual_context_id, message)
         return
 
     # push_type == "agent" or "agent_isolated"
-    agent = get_agent(iface.get_agent_version(actual_thread_id))
-
-    # agent_isolated uses a throw-away thread so it doesn't share history with
-    # the target thread.  The orphaned checkpoints accumulate in Postgres; a
-    # periodic cleanup job should purge push-isolated-* threads older than a few days.
-    run_thread_id = (
-        f"push-isolated-{uuid.uuid4()}" if push_type == "agent_isolated" else actual_thread_id
+    # agent_isolated uses a throw-away session so it doesn't share history with the
+    # target thread.  The orphaned checkpoints accumulate in Postgres; a periodic
+    # cleanup job should purge push-isolated-* threads older than a few days.
+    run_context_id = (
+        f"push-isolated-{uuid.uuid4()}" if push_type == "agent_isolated" else actual_context_id
     )
-
-    config: RunnableConfig = {
-        "recursion_limit": _PUSH_RECURSION_LIMIT,
-        "configurable": {
-            "thread_id": run_thread_id,
-            "interface": interface,
-            "sender_id": _extract_chat_id(actual_thread_id) or "",
-        },
-    }
-
-    initial_state = AgentState(
-        messages=[HumanMessage(content=message)],
-        thread_id=run_thread_id,
-        interface=interface,
+    turn = TurnContext(
+        reply_to=Address(
+            interface=interface,
+            conversation_id=iface.conversation_id(actual_context_id),
+            chat_id=_extract_chat_id(actual_context_id) or "",
+        ),
+        attended=False,
     )
-    stream = _push_agent_stream(agent, initial_state, config, app.state.checkpointer)
-    try:
-        await iface.send_proactive_stream(actual_thread_id, stream)
-    except GraphRecursionError:
-        logger.warning(
-            "fire_push: recursion limit hit interface=%s thread_id=%s", interface, actual_thread_id
-        )
-        await iface.send_proactive(
-            actual_thread_id,
-            "⚠️ Reached the step limit without completing — the task may be too complex.",
-        )
+    prompt = Message(parts=[TextPart(text=message)], sender=Sender(interface=interface, user_id=""))
+    ended: TurnEnded | None = None
+
+    async def events(stream: AsyncIterator[HarnessEvent]) -> AsyncIterator[HarnessEvent]:
+        nonlocal ended
+        async for event in stream:
+            if isinstance(event, TurnEnded):
+                ended = event
+                if event.error is not None and event.error.kind != "step_limit":
+                    # Raised inside the stream, before the interface sends the text it
+                    # collected: fire_task retries the whole turn, so a partial reply
+                    # now would reach the user twice.
+                    raise PushTurnFailed(f"push turn failed: {event.error.kind}")
+            yield event
+
+    async with run_registry.run_lock(run_context_id):
+        timeout = asyncio.timeout(UNATTENDED_TIMEOUT_SECONDS)
+        try:
+            async with timeout:
+                async with aclosing(harness.run(prompt, run_context_id, turn)) as stream:
+                    await iface.send_proactive_stream(actual_context_id, events(stream))
+        except TimeoutError:
+            if not timeout.expired():
+                raise  # a timeout inside delivery, not ours: fire_task retries it
+            # Not retried: the same turn would most likely hang the same way.
+            logger.warning("push turn timed out context=%s", run_context_id)
+            minutes = UNATTENDED_TIMEOUT_SECONDS // 60
+            await iface.send_proactive(
+                actual_context_id, UNATTENDED_TIMED_OUT_MESSAGE.format(minutes=minutes)
+            )
+            return
+
+    if ended is not None and ended.error is not None:  # step_limit: retrying won't help
+        await iface.send_proactive(actual_context_id, error_text(ended.error))
+
+
+async def deliver_unsolicited(context_id: str, events: AsyncIterator[HarnessEvent]) -> None:
+    """Receive a turn a harness started by itself (the ``running()`` sink).
+
+    LangGraph never starts one; the Claude Code harness will (background work that
+    finishes after its turn) and routes it here.  Until then there is nothing to
+    deliver to, so such a turn is drained and logged rather than lost silently.
+    """
+    async for _ in events:
+        pass
+    logger.warning("unsolicited turn dropped context=%s: no delivery route yet", context_id)
 
 
 async def broadcast(app: FastAPI, message: str) -> int:
@@ -218,18 +251,18 @@ async def broadcast(app: FastAPI, message: str) -> int:
         except Exception:
             logger.warning("broadcast: target lookup failed interface=%s", name, exc_info=True)
             continue
-        for thread_id in threads:
+        for context_id in threads:
             try:
-                await iface.send_proactive(thread_id, message)
+                await iface.send_proactive(context_id, message)
                 delivered += 1
             except Exception as e:
                 # No traceback: a failure here is an API-level answer that says all
                 # there is to say ("Chat not found" for an owner who never DM'd the
                 # bot), and it happens on every boot until they do.
                 logger.warning(
-                    "broadcast: delivery failed interface=%s thread_id=%s error=%s",
+                    "broadcast: delivery failed interface=%s context_id=%s error=%s",
                     name,
-                    thread_id,
+                    context_id,
                     e,
                 )
     return delivered
@@ -283,31 +316,7 @@ def _schedule_task_retry(task_id: str, retry_count: int) -> None:
     )
 
 
-async def _push_agent_stream(
-    agent: BaseAgent,
-    initial_state: AgentState,
-    config: RunnableConfig,
-    checkpointer,
-) -> AsyncIterator[AgentEvent]:
-    """Loop across interrupt_after=["call_tools"] boundaries, yielding all events.
-
-    Mirrors the logic in base.py:_agent_stream but without stop/injection handling,
-    since push runs have no interactive user present.
-    """
-    graph_input: AgentState | Command | None = initial_state
-    while True:
-        async for event in agent.astream_events(graph_input, config, checkpointer):
-            yield event
-
-        graph_state = await agent.aget_state(config, checkpointer)
-        if not graph_state.next:
-            return  # graph reached END naturally
-        if graph_state.interrupts:
-            return  # approval interrupt — skip silently in push context
-        graph_input = None  # resume from where the graph paused
-
-
-def _extract_chat_id(thread_id: str) -> str | None:
+def _extract_chat_id(context_id: str) -> str | None:
     """Extract the chat_id string from a ``tg-{chat_id}-…`` thread ID."""
-    m = _TG_CHAT_ID_RE.match(thread_id)
+    m = _TG_CHAT_ID_RE.match(context_id)
     return m.group(1) if m else None

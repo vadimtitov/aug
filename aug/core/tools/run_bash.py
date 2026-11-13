@@ -1,8 +1,10 @@
 """Bash execution tool with hushed secret injection and blacklist filtering."""
 
+import asyncio
 import logging
+import os
 import re
-import subprocess
+import signal
 
 from langchain_core.tools import tool
 
@@ -15,11 +17,27 @@ _KEYS_DIR = str(DATA_DIR / "keys")
 
 logger = logging.getLogger(__name__)
 
-_TIMEOUT = 60
+# Runs the command ($1) with its output in temp files, then prints them.  hushed relays
+# (and redacts) output only once every process holding it has let go, so a background
+# job started by the command would otherwise keep the call open until it exits.  With
+# the files, it inherits those instead, and the call returns when the command does.
+#
+# The files hold output before hushed redacts it, so they are deleted as soon as they
+# are open and read back through the open descriptors: a /stop (SIGKILL) leaves nothing
+# on disk.  They live in /dev/shm (RAM) where there is one, so a full disk can't swallow
+# the output of the very command that diagnoses it.  If no file can be made, the command
+# runs on the pipe directly, as before.
+_WRAPPER = """\
+d=/dev/shm; [ -d "$d" ] && [ -w "$d" ] || d=${TMPDIR:-/tmp}
+o=$(mktemp "$d/aug-bash.XXXXXX") && e=$(mktemp "$d/aug-bash.XXXXXX") || exec bash -c "$1"
+exec 3>"$o" 4<"$o" 5>"$e" 6<"$e"; rm -f "$o" "$e"
+bash -c "$1" >&3 2>&5 3>&- 4<&- 5>&- 6<&-; s=$?
+exec 3>&- 5>&-; cat <&4; cat <&6 >&2; exit $s
+"""
 
 
 @tool
-def run_bash(command: str) -> str:
+async def run_bash(command: str) -> str:
     """Execute a shell command inside the container.
 
     SECRETS: The user may have stored secrets (API keys, passwords, tokens, urls,etc.)
@@ -32,6 +50,11 @@ def run_bash(command: str) -> str:
 
     Always run `hushed list` first if a command might need credentials.
 
+    BACKGROUND JOBS: the call returns as soon as the command itself exits. To leave
+    something running after that (a server, a long job), start it with
+    `setsid nohup CMD > /tmp/CMD.log 2>&1 &` so it neither holds the output open nor
+    dies if the user stops this call.
+
     Args:
         command: Shell command to run.
     """
@@ -40,21 +63,35 @@ def run_bash(command: str) -> str:
 
     logger.info("run_bash cmd=%.120r", command)
 
-    result = subprocess.run(
-        ["hushed", "run", "--", "bash", "-c", command],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=_TIMEOUT,
+    # Its own process group, so /stop (which cancels this coroutine) kills the command
+    # and everything it started, not just the hushed wrapper.  No timeout: long
+    # commands are fine, and /stop is how they end early.
+    proc = await asyncio.create_subprocess_exec(
+        "hushed",
+        "run",
+        "--",
+        "bash",
+        "-c",
+        _WRAPPER,
+        "bash",
+        command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
-    if result.returncode != 0:
-        logger.warning(
-            "run_bash exit_code=%d stderr=%.200r", result.returncode, result.stderr.strip()
-        )
+    try:
+        stdout, stderr = await proc.communicate()
+    except asyncio.CancelledError:
+        _kill_group(proc)
+        await proc.wait()  # reap it; SIGKILL makes this immediate
+        raise
+    out = stdout.decode("utf-8", errors="replace")
+    err = stderr.decode("utf-8", errors="replace")
+    if proc.returncode != 0:
+        logger.warning("run_bash exit_code=%d stderr=%.200r", proc.returncode, err.strip())
     else:
         logger.debug("run_bash exit_code=0")
-    output = (result.stdout + result.stderr).strip()
+    output = (out + err).strip()
     return output or "(no output)"
 
 
@@ -69,3 +106,15 @@ def _check_blacklist(command: str) -> str | None:
             logger.warning("run_bash blocked by blacklist pattern %r: %s", pattern, command)
             return f"Command blocked by blacklist pattern: {pattern}"
     return None
+
+
+def _kill_group(proc: asyncio.subprocess.Process) -> None:
+    """SIGKILL the command's whole process group, background jobs included.  Processes
+    that left it with setsid (or docker run -d) survive."""
+    if proc.returncode is not None:
+        return  # already reaped: its pid may belong to someone else by now
+    logger.info("run_bash killed pid=%d", proc.pid)
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass

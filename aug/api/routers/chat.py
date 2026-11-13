@@ -9,9 +9,8 @@ from aug.api.interfaces.rest import RestApiInterface
 from aug.api.schemas.chat import ApprovalRequest, ChatRequest, ChatResponse
 from aug.api.security import require_api_key
 from aug.core.registry import list_agents
-from aug.core.run import run_registry
 from aug.core.tools.approval import ApprovalDecision
-from aug.utils.logging import set_thread_id
+from aug.utils.logging import set_context_id
 
 logger = logging.getLogger(__name__)
 
@@ -33,14 +32,14 @@ def _validate_agent(agent: str) -> None:
 @router.post("/invoke", response_model=ChatResponse)
 async def invoke(body: ChatRequest, request: Request) -> ChatResponse:
     """Run the agent and return the full response as JSON."""
-    set_thread_id(body.thread_id)
+    set_context_id(body.context_id)
     interface = _get_interface(request)
-    agent = body.agent or interface.get_agent_version(body.thread_id)
+    agent = body.agent or interface.get_agent_version(body.context_id)
     _validate_agent(agent)
-    logger.info("invoke thread=%s agent=%s", body.thread_id, agent)
+    logger.info("invoke thread=%s agent=%s", body.context_id, agent)
     text = await interface.invoke(body, agent)
     return ChatResponse(
-        thread_id=body.thread_id,
+        context_id=body.context_id,
         agent=agent,
         response=text,
         tool_calls=[],
@@ -50,9 +49,9 @@ async def invoke(body: ChatRequest, request: Request) -> ChatResponse:
 @router.post("/stream")
 async def stream(body: ChatRequest, request: Request) -> StreamingResponse:
     """Run the agent and stream the response as Server-Sent Events."""
-    set_thread_id(body.thread_id)
+    set_context_id(body.context_id)
     interface = _get_interface(request)
-    agent = body.agent or interface.get_agent_version(body.thread_id)
+    agent = body.agent or interface.get_agent_version(body.context_id)
     _validate_agent(agent)
     return StreamingResponse(
         interface.stream_sse(body, agent),
@@ -61,38 +60,36 @@ async def stream(body: ChatRequest, request: Request) -> StreamingResponse:
     )
 
 
-@router.post("/{thread_id}/run/cancel", status_code=status.HTTP_204_NO_CONTENT)
-async def cancel_run(thread_id: str) -> None:
+@router.post("/{context_id}/run/cancel", status_code=status.HTTP_204_NO_CONTENT)
+async def cancel_run(context_id: str, request: Request) -> None:
     """Cancel the currently active agent run for a thread, if any."""
-    run = run_registry.get(thread_id)
-    if run and run.active:
-        logger.info("cancel_run thread=%s run=%s", thread_id, run.id)
-        run.request_stop()
+    if await _get_interface(request).stop_run(context_id):
+        logger.info("cancel_run thread=%s", context_id)
 
 
-@router.post("/{thread_id}/approve", response_model=ChatResponse)
-async def approve_command(thread_id: str, body: ApprovalRequest, request: Request) -> ChatResponse:
+@router.post("/{context_id}/approve", response_model=ChatResponse)
+async def approve_command(context_id: str, body: ApprovalRequest, request: Request) -> ChatResponse:
     """Resume an agent run paused on a command approval interrupt.
 
     Call this after receiving the approval prompt text in the /invoke or /stream
     response.  The agent will continue with the given decision and return its
     next response.
     """
-    set_thread_id(thread_id)
+    set_context_id(context_id)
     interface = _get_interface(request)
-    agent = body.agent or interface.get_agent_version(thread_id)
+    agent = body.agent or interface.get_agent_version(context_id)
     _validate_agent(agent)
     decision = ApprovalDecision(body.decision)
-    sender_id = body.sender_id or thread_id
-    if await interface.get_pending_approval(thread_id, agent) is None:
+    sender_id = body.sender_id or context_id
+    if await interface.get_pending_approval(context_id, agent) is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Thread '{thread_id}' has no pending approval interrupt.",
+            detail=f"Thread '{context_id}' has no pending approval interrupt.",
         )
-    logger.info("approve_command thread=%s agent=%s decision=%s", thread_id, agent, decision)
-    text = await interface.invoke_resume(thread_id, agent, sender_id, decision)
-    return ChatResponse(thread_id=thread_id, agent=agent, response=text, tool_calls=[])
+    logger.info("approve_command thread=%s agent=%s decision=%s", context_id, agent, decision)
+    text = await interface.invoke_resume(context_id, agent, sender_id, decision)
+    return ChatResponse(context_id=context_id, agent=agent, response=text, tool_calls=[])
 
 
 def _get_interface(request: Request) -> RestApiInterface:
-    return RestApiInterface(request.app.state.checkpointer)
+    return RestApiInterface()

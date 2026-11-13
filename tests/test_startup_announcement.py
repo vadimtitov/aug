@@ -83,14 +83,14 @@ async def test_broadcast_with_no_interfaces_registered():
 async def test_rest_has_no_announcement_threads():
     from aug.api.interfaces.rest import RestApiInterface
 
-    assert await RestApiInterface(checkpointer=MagicMock()).announcement_threads() == []
+    assert await RestApiInterface().announcement_threads() == []
 
 
 @pytest.mark.asyncio
 async def test_telegram_announces_to_allowed_users_dms():
     from aug.api.interfaces.telegram.interface import TelegramInterface
 
-    iface = TelegramInterface(checkpointer=MagicMock())
+    iface = TelegramInterface()
     settings = MagicMock(allowed_chat_ids={222, 111, -1003820312204})
 
     with (
@@ -111,7 +111,7 @@ async def test_telegram_falls_back_to_known_dm_conversations():
     from aug.api.interfaces.telegram.interface import TelegramInterface
     from aug.utils.file_settings import AppSettings, ConversationSettings
 
-    iface = TelegramInterface(checkpointer=MagicMock())
+    iface = TelegramInterface()
     settings = MagicMock(allowed_chat_ids=set())
     file_settings = AppSettings(
         conversations={
@@ -140,7 +140,7 @@ async def test_telegram_has_no_targets_when_nobody_is_known():
     from aug.api.interfaces.telegram.interface import TelegramInterface
     from aug.utils.file_settings import AppSettings
 
-    iface = TelegramInterface(checkpointer=MagicMock())
+    iface = TelegramInterface()
     settings = MagicMock(allowed_chat_ids=set())
 
     with (
@@ -209,8 +209,8 @@ def test_lifespan_announces_to_whatever_interface_registered_itself():
     iface = _boot(announce=True)
 
     iface.send_proactive.assert_awaited_once()
-    thread_id, message = iface.send_proactive.await_args[0]
-    assert thread_id == "fake-thread"
+    context_id, message = iface.send_proactive.await_args[0]
+    assert context_id == "fake-thread"
     assert message == "🟢 AUG 1.2.3 is up."
 
 

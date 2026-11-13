@@ -15,37 +15,43 @@ import io
 import logging
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import aclosing
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
 import httpx
-import psycopg
-from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.runnables.config import RunnableConfig
-from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.errors import GraphRecursionError
-from langgraph.types import Command
-from openai import AsyncOpenAI, InternalServerError, RateLimitError
+from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from aug.config import get_settings
-from aug.core.agents.base_agent import BaseAgent
-from aug.core.compaction import compact_thread
-from aug.core.events import AgentEvent, ChatModelStreamEvent
+from aug.core.events import ChatModelStreamEvent
+from aug.core.harness import (
+    Address,
+    FilePart,
+    Harness,
+    HarnessError,
+    HarnessEvent,
+    Message,
+    Sender,
+    TextPart,
+    TurnContext,
+    TurnEnded,
+    error_text,
+)
+from aug.core.harness.langgraph import LangGraphHarness
 from aug.core.prompts import (
+    HARNESS_STOPPED_MESSAGE,
     LOCATION_SHARE_TEMPLATE,
     LOCATION_SHARE_UNKNOWN_SENDER,
-    MID_RUN_INJECTION_PREFIX,
 )
-from aug.core.reflexes import Reflex, ReflexOutput, run_reflexes
-from aug.core.registry import get_agent
-from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, MessageContent, run_registry
-from aug.core.state import AgentState
+from aug.core.registry import get_harness, harnesses
+from aug.core.run import run_registry
 from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
 from aug.utils.file_settings import ConversationSettings, load_settings, save_settings
-from aug.utils.logging import set_correlation_id, set_thread_id
+from aug.utils.logging import set_context_id, set_correlation_id
 from aug.utils.state import ConversationLocationState, LiveLocationState, load_state, save_state
 
 logger = logging.getLogger(__name__)
@@ -133,7 +139,7 @@ class IncomingMessage(BaseModel):
     parts: list[ContentPart]
     interface: Literal["telegram", "rest_api"]
     sender_id: str  # delivery target — the chat a reply goes back to
-    thread_id: str
+    context_id: str
     agent_version: str
     # Platform id of the person who sent this.  Distinct from sender_id, which addresses
     # a place: in a group chat many user_ids share one sender_id.
@@ -150,9 +156,8 @@ class BaseInterface[ContextT](ABC):
     # 0.0 = disabled (start immediately).
     _debounce_window: float = 0.0
 
-    def __init__(self, checkpointer: BaseCheckpointSaver) -> None:
-        self._checkpointer = checkpointer
-        self._debounce_buf: dict[str, list[tuple[IncomingMessage, MessageContent]]] = {}
+    def __init__(self) -> None:
+        self._debounce_buf: dict[str, list[tuple[IncomingMessage, Message]]] = {}
         self._debounce_tasks: dict[str, asyncio.Task[None]] = {}
 
     @abstractmethod
@@ -173,14 +178,14 @@ class BaseInterface[ContextT](ABC):
         """
 
     @abstractmethod
-    async def resolve_thread(
+    async def resolve_context(
         self,
-        thread_id: str,
+        context_id: str,
         *,
         topic_name: str | None = None,
         chat_id: int | None = None,
     ) -> str:
-        """Resolve a logical thread_id to a concrete thread ID for this interface.
+        """Resolve a logical context_id to a concrete thread ID for this interface.
 
         Accepts:
           ``"default"``    — the interface's canonical default delivery target
@@ -195,8 +200,8 @@ class BaseInterface[ContextT](ABC):
         """
 
     @abstractmethod
-    def conversation_id(self, thread_id: str) -> str:
-        """Return the stable conversation key that *thread_id* belongs to.
+    def conversation_id(self, context_id: str) -> str:
+        """Return the stable conversation key that *context_id* belongs to.
 
         Thread IDs may rotate — Telegram's /clear starts a new session and thus a
         new thread ID — but per-conversation settings must survive that.  The
@@ -206,8 +211,8 @@ class BaseInterface[ContextT](ABC):
         """
 
     @abstractmethod
-    async def send_proactive(self, thread_id: str, text: str) -> None:
-        """Send a plain-text message to *thread_id* without an agent turn.
+    async def send_proactive(self, context_id: str, text: str) -> None:
+        """Send a plain-text message to *context_id* without an agent turn.
 
         Used for ``type="forward"`` pushes.  Must raise on failure.
         """
@@ -224,16 +229,16 @@ class BaseInterface[ContextT](ABC):
 
     @abstractmethod
     async def send_proactive_stream(
-        self, thread_id: str, stream: AsyncIterator[AgentEvent]
+        self, context_id: str, stream: AsyncIterator[HarnessEvent]
     ) -> None:
-        """Consume an agent event stream and deliver the final response to *thread_id*.
+        """Consume an agent event stream and deliver the final response to *context_id*.
 
         Only the accumulated final text and any tool output attachments are
         sent — intermediate streaming updates and tool call messages are
         suppressed.  Used for ``type="agent"`` pushes and scheduled tasks.
         """
 
-    async def send_stream(self, stream: AsyncIterator[AgentEvent], context: ContextT) -> None:
+    async def send_stream(self, stream: AsyncIterator[HarnessEvent], context: ContextT) -> None:
         """Consume the agent event stream and deliver the response.
 
         Default: collect the full response then call send_message.
@@ -260,13 +265,13 @@ class BaseInterface[ContextT](ABC):
         """
         return None
 
-    def get_agent_version(self, thread_id: str) -> str:
-        """Return the agent version selected for *thread_id*'s conversation.
+    def get_agent_version(self, context_id: str) -> str:
+        """Return the agent version selected for *context_id*'s conversation.
 
         Falls back to the parent conversation when this one has no selection of its own.
         """
         conversations = load_settings().conversations
-        conversation = self.conversation_id(thread_id)
+        conversation = self.conversation_id(context_id)
         if conversation in conversations:
             return conversations[conversation].agent
         parent = self.parent_conversation_id(conversation)
@@ -274,23 +279,23 @@ class BaseInterface[ContextT](ABC):
             return conversations[parent].agent
         return ConversationSettings().agent
 
-    def set_agent_version(self, thread_id: str, agent: str) -> None:
-        """Select *agent* for *thread_id*'s conversation, leaving other conversations alone."""
-        conversation = self.conversation_id(thread_id)
+    def set_agent_version(self, context_id: str, agent: str) -> None:
+        """Select *agent* for *context_id*'s conversation, leaving other conversations alone."""
+        conversation = self.conversation_id(context_id)
         settings = load_settings()
         settings.conversations.setdefault(conversation, ConversationSettings()).agent = agent
         save_settings(settings)
 
-    def live_locations(self, thread_id: str) -> dict[str, LiveLocationState]:
-        """Latest location per user for *thread_id*'s conversation, keyed by user id.
+    def live_locations(self, context_id: str) -> dict[str, LiveLocationState]:
+        """Latest location per user for *context_id*'s conversation, keyed by user id.
 
         Includes users whose sharing period has already expired — callers decide what
         counts as stale via ``LiveLocationState.is_live`` / ``age_seconds``.
         """
-        return self._location_state(thread_id).users
+        return self._location_state(context_id).users
 
-    def record_location(self, thread_id: str, user_id: str, location: LocationContent) -> bool:
-        """Persist *location* as *user_id*'s latest position in *thread_id*'s conversation.
+    def record_location(self, context_id: str, user_id: str, location: LocationContent) -> bool:
+        """Persist *location* as *user_id*'s latest position in *context_id*'s conversation.
 
         Called for every location that arrives, whoever sent it, so several people in
         one group are tracked side by side.  An update the platform timestamped before
@@ -304,11 +309,11 @@ class BaseInterface[ContextT](ABC):
         now = time.time()
         state = load_state()
         conversation = state.locations.setdefault(
-            self.conversation_id(thread_id), ConversationLocationState()
+            self.conversation_id(context_id), ConversationLocationState()
         )
         previous = conversation.users.get(user_id, LiveLocationState(user_id=user_id))
         if location.reported_at and location.reported_at < previous.reported_at:
-            logger.debug("dropping out-of-order location for %s in %s", user_id, thread_id)
+            logger.debug("dropping out-of-order location for %s in %s", user_id, context_id)
             return False
 
         conversation.users[user_id] = LiveLocationState(
@@ -322,8 +327,8 @@ class BaseInterface[ContextT](ABC):
         save_state(state)
         return True
 
-    def claim_location_run(self, thread_id: str) -> bool:
-        """Reserve a location-triggered agent run for *thread_id*'s conversation.
+    def claim_location_run(self, context_id: str) -> bool:
+        """Reserve a location-triggered agent run for *context_id*'s conversation.
 
         Returns True and stamps the throttle if enough time has passed since the last
         such run, False if the update should be recorded but not woken on.  Only for
@@ -333,7 +338,7 @@ class BaseInterface[ContextT](ABC):
         now = time.time()
         state = load_state()
         conversation = state.locations.setdefault(
-            self.conversation_id(thread_id), ConversationLocationState()
+            self.conversation_id(context_id), ConversationLocationState()
         )
         if now - conversation.last_run_at < conversation.throttle_seconds:
             return False
@@ -341,7 +346,7 @@ class BaseInterface[ContextT](ABC):
         save_state(state)
         return True
 
-    def stamp_location_run(self, thread_id: str) -> None:
+    def stamp_location_run(self, context_id: str) -> None:
         """Record that a location is starting an agent run now, throttle or no throttle.
 
         The decision to run has already been made by the time this is called — a first
@@ -350,24 +355,24 @@ class BaseInterface[ContextT](ABC):
         """
         state = load_state()
         state.locations.setdefault(
-            self.conversation_id(thread_id), ConversationLocationState()
+            self.conversation_id(context_id), ConversationLocationState()
         ).last_run_at = time.time()
         save_state(state)
 
-    def location_throttle(self, thread_id: str) -> int:
+    def location_throttle(self, context_id: str) -> int:
         """Minimum seconds between location-triggered agent runs in this conversation."""
-        return self._location_state(thread_id).throttle_seconds
+        return self._location_state(context_id).throttle_seconds
 
-    def set_location_throttle(self, thread_id: str, seconds: int) -> None:
+    def set_location_throttle(self, context_id: str, seconds: int) -> None:
         """Set the minimum seconds between location-triggered runs in this conversation."""
         state = load_state()
         state.locations.setdefault(
-            self.conversation_id(thread_id), ConversationLocationState()
+            self.conversation_id(context_id), ConversationLocationState()
         ).throttle_seconds = seconds
         save_state(state)
 
     async def run(self, context: ContextT) -> None:
-        """Route: inject into active run or start a new one."""
+        """Route: inject into the turn in flight, or start a new one."""
         incoming = await self.receive_message(context)
         if incoming is None:
             return
@@ -381,18 +386,17 @@ class BaseInterface[ContextT](ABC):
         for part in incoming.parts:
             if isinstance(part, LocationContent):
                 accepted = self.record_location(
-                    incoming.thread_id, incoming.user_id or incoming.sender_id, part
+                    incoming.context_id, incoming.user_id or incoming.sender_id, part
                 )
                 located = located or accepted
 
         # Preprocess before the lock — may be slow (Whisper, geocoding).
-        content = await _preprocess(incoming.parts)
+        message = await _preprocess(incoming)
 
         fire_inline = False
-        async with run_registry.thread_lock(incoming.thread_id):
-            existing = run_registry.get(incoming.thread_id)
-            if existing and existing.active and not existing.user_requested_stop.is_set():
-                existing.inject_message(content)
+        async with run_registry.routing_lock(incoming.context_id):
+            harness = _harness_for(incoming.agent_version)
+            if harness is not None and await harness.inject(message, incoming.context_id):
                 return
 
             # A location is about to start a run.  Stamp the throttle here, under the
@@ -400,275 +404,199 @@ class BaseInterface[ContextT](ABC):
             # check happened before preprocessing, and the run it saw may since have
             # finished.  Covers the first share too, which never passes such a check.
             if located:
-                self.stamp_location_run(incoming.thread_id)
+                self.stamp_location_run(incoming.context_id)
 
-            # No active run — buffer for debounce window (or fire immediately if disabled).
-            self._debounce_buf.setdefault(incoming.thread_id, []).append((incoming, content))
-            task = self._debounce_tasks.get(incoming.thread_id)
+            # No turn in flight — buffer for the debounce window (or fire at once).
+            self._debounce_buf.setdefault(incoming.context_id, []).append((incoming, message))
+            task = self._debounce_tasks.get(incoming.context_id)
             if task is None or task.done():
                 if self._debounce_window == 0:
                     fire_inline = True  # await _debounce_fire after releasing the lock
                 else:
-                    self._debounce_tasks[incoming.thread_id] = asyncio.create_task(
-                        self._debounce_fire(incoming.thread_id, context)
+                    self._debounce_tasks[incoming.context_id] = asyncio.create_task(
+                        self._debounce_fire(incoming.context_id, context)
                     )
 
         if fire_inline:
-            await self._debounce_fire(incoming.thread_id, context)
+            await self._debounce_fire(incoming.context_id, context)
 
-    async def _debounce_fire(self, thread_id: str, context: ContextT) -> None:
-        """Wait out the debounce window, then start a single merged run."""
+    async def _debounce_fire(self, context_id: str, context: ContextT) -> None:
+        """Wait out the debounce window, then start a single merged turn."""
         if self._debounce_window > 0:
             await asyncio.sleep(self._debounce_window)
 
-        entries = self._debounce_buf.pop(thread_id, [])
-        self._debounce_tasks.pop(thread_id, None)
+        entries = self._debounce_buf.pop(context_id, [])
+        self._debounce_tasks.pop(context_id, None)
         if not entries:
             return
+        await self._converse(entries[0][0], _merge_messages([m for _, m in entries]), context)
 
-        merged = _merge_contents([content for _, content in entries])
-
-        async with run_registry.thread_lock(thread_id):
-            existing = run_registry.get(thread_id)
-            if existing and existing.active:
-                existing.user_requested_stop.set()
-            run = AgentRun()
-            run_registry.set(thread_id, run)
-
-        await self._execute_run(run, entries[0][0], merged, context)
-
-    async def _execute_run(
-        self,
-        run: AgentRun,
-        incoming: IncomingMessage,
-        content: MessageContent,
-        context: ContextT,
-        fire_reflexes: bool = True,
+    async def _converse(
+        self, incoming: IncomingMessage, message: Message, context: ContextT
     ) -> None:
-        """Execute the full agent pipeline for a newly started run."""
-        set_thread_id(incoming.thread_id)
-
-        try:
-            agent = get_agent(incoming.agent_version)
-        except ValueError:
+        """Run *message* as a turn, then a follow-up turn for anything injected too late."""
+        set_context_id(incoming.context_id)
+        harness = _harness_for(incoming.agent_version)
+        if harness is None:
             await self.send_message(
                 "No agent selected. Use /version to pick one before chatting.", context
             )
             return
 
-        # Fire reflexes in parallel with the agent run.  The task injects results
-        # into the run as soon as they're available so the agent can pick them up
-        # at the next interrupt_after=["call_tools"] pause — rather than always
-        # landing as a leftover follow-up run after the agent has finished.
-        # Reflexes only fire for real user input — not for system-injected follow-up runs.
-        reflex_task: asyncio.Task[list[ReflexOutput]] | None = None
-        if agent.reflexes and fire_reflexes:
-            query = (
-                content
-                if isinstance(content, str)
-                else " ".join(b["text"] for b in content if b.get("type") == "text")
-            )
-            history = await _recent_history(agent, incoming.thread_id, self._checkpointer)
-            reflex_task = asyncio.create_task(
-                self._run_reflexes_and_inject(agent.reflexes, query, history, run, context)
+        turn = self._turn_context(incoming.interface, incoming.context_id, incoming.sender_id)
+        async with run_registry.run_lock(incoming.context_id):
+            await self._deliver_with_follow_ups(
+                harness,
+                lambda: harness.run(message, incoming.context_id, turn),
+                incoming.context_id,
+                turn,
+                context,
             )
 
-        stream = _agent_stream(content, incoming, self._checkpointer, run)
-        t0 = time.monotonic()
-        logger.info(
-            "request_start thread=%s run=%s interface=%s agent=%s",
-            incoming.thread_id,
-            run.id,
-            incoming.interface,
-            incoming.agent_version,
-        )
-        completed = await self._stream_and_handle(stream, run, incoming, context)
-        if not completed:
-            return
-        logger.info(
-            "request_end thread=%s run=%s duration=%.2fs",
-            incoming.thread_id,
-            run.id,
-            time.monotonic() - t0,
-        )
+    async def _deliver_with_follow_ups(
+        self,
+        harness: Harness,
+        start: Callable[[], AsyncGenerator[HarnessEvent]],
+        context_id: str,
+        turn: TurnContext,
+        context: ContextT,
+    ) -> None:
+        """Deliver a turn, then one follow-up turn per batch of messages it left
+        unconsumed.  The caller holds the run lock."""
+        ended = await self._deliver(start, context_id, context)
+        follow_up = replace(turn, follow_up=True)
+        while ended and ended.unconsumed and not ended.error and not ended.approval:
+            # Arrived during the final streaming phase, with no tool-round pause left
+            # to take it: it gets a turn of its own, straight away.
+            logger.info("leftover_injection context=%s", context_id)
+            leftover = _merge_messages(ended.unconsumed)
+            ended = await self._deliver(
+                lambda message=leftover: harness.run(message, context_id, follow_up),
+                context_id,
+                context,
+            )
 
-        # Ensure the reflex task has completed and its inject has been placed.
-        # If the reflex finished mid-run the inject was already consumed there;
-        # if it finished after, it now sits in the leftover queue below.
-        if reflex_task is not None:
-            await reflex_task
+    async def _deliver(
+        self,
+        start: Callable[[], AsyncGenerator[HarnessEvent]],
+        context_id: str,
+        context: ContextT,
+    ) -> TurnEnded | None:
+        """Stream one turn to the user, then report its error or ask its approval.
 
-        # A message that arrived during the final streaming phase (no interrupt point available)
-        # sits unconsumed on the queue. Start a new run for it now.
-        async with run_registry.thread_lock(incoming.thread_id):
+        The turn is started under the routing lock and held there until TurnStarted,
+        so a message arriving in between is injected rather than queued behind it.
+        Returns the TurnEnded, or None when delivering the stream itself failed.
+        """
+        async with run_registry.routing_lock(context_id):
+            stream = start()
+            first = await anext(stream)
+        ended: TurnEnded | None = None
+
+        async def events() -> AsyncIterator[HarnessEvent]:
+            nonlocal ended
+            yield first
+            async for event in stream:
+                if isinstance(event, TurnEnded):
+                    ended = event
+                yield event
+
+        async with aclosing(stream):
             try:
-                leftover = run.pending_agent_injection.get_nowait()
-            except asyncio.QueueEmpty:
-                return
-            new_run = AgentRun()
-            run_registry.set(incoming.thread_id, new_run)
+                await self.send_stream(events(), context)
+                if ended is not None and ended.error is None and ended.approval is not None:
+                    await self.request_approval(ended.approval, context)
+            except Exception as e:
+                logger.exception("turn delivery failed: %s: %s", type(e).__name__, e)
+                await self._send_quietly(error_text(HarnessError(kind="internal")), context)
+                return None
+        if ended is not None and ended.error is not None:
+            await self._send_quietly(error_text(ended.error), context)
+        elif ended is not None and ended.cancelled:
+            await self._send_quietly(HARNESS_STOPPED_MESSAGE, context)
+        return ended
 
-        logger.info("leftover_injection thread=%s new_run=%s", incoming.thread_id, new_run.id)
-        await self._execute_run(new_run, incoming, leftover, context, fire_reflexes=False)
+    async def _send_quietly(self, text: str, context: ContextT) -> None:
+        try:
+            await self.send_message(text, context)
+        except Exception:
+            logger.warning("failed to deliver error message to user")
 
-    def _location_state(self, thread_id: str) -> ConversationLocationState:
-        """Stored location state for *thread_id*'s conversation, defaults if never used."""
-        return load_state().locations.get(
-            self.conversation_id(thread_id), ConversationLocationState()
+    def _turn_context(self, interface: str, context_id: str, chat_id: str) -> TurnContext:
+        return TurnContext(
+            reply_to=Address(
+                interface=interface,
+                conversation_id=self.conversation_id(context_id),
+                chat_id=chat_id,
+            ),
+            attended=True,
         )
 
-    def stop_run(self, thread_id: str) -> bool:
-        """Stop the active run for a thread. Returns True if there was one."""
-        run = run_registry.get(thread_id)
-        if run and run.active:
-            run.request_stop()
-            return True
+    def _location_state(self, context_id: str) -> ConversationLocationState:
+        """Stored location state for *context_id*'s conversation, defaults if never used."""
+        return load_state().locations.get(
+            self.conversation_id(context_id), ConversationLocationState()
+        )
+
+    async def stop_run(self, context_id: str) -> bool:
+        """Stop the turn in flight for *context_id*.  Returns True if there was one.
+
+        Asks every harness rather than the one selected in settings: the turn may have
+        been started with an explicit agent (REST) or before a /version switch.
+        """
+        for harness in harnesses():
+            if await harness.cancel(context_id):
+                return True
         return False
 
     async def get_pending_approval(
-        self, thread_id: str, agent_version: str
+        self, context_id: str, agent_version: str
     ) -> ApprovalRequest | None:
-        """Return the pending ApprovalRequest for *thread_id*, or None if not paused."""
-        return await _extract_approval_request(
-            get_agent(agent_version), thread_id, self._checkpointer
-        )
+        """Return the pending ApprovalRequest for *context_id*, or None if not paused."""
+        harness = _harness_for(agent_version)
+        if not isinstance(harness, LangGraphHarness):
+            return None
+        return await harness.pending_approval(context_id)
 
-    async def _execute_compact(self, thread_id: str, agent_version: str) -> bool:
-        """Compact the message history for *thread_id*.
+    async def _execute_compact(self, context_id: str, agent_version: str) -> bool:
+        """Compact the message history for *context_id*, waiting for any turn in flight.
 
         Returns True if compaction ran, False if there was nothing to compact.
         Raises ValueError if the agent has no compaction_model configured.
         """
-        agent = get_agent(agent_version)
-        return await compact_thread(agent, thread_id, self._checkpointer)
+        harness = get_harness(agent_version)
+        async with run_registry.run_lock(context_id):
+            return await harness.compact(context_id)
 
     async def _execute_resume(
         self,
-        thread_id: str,
+        context_id: str,
         agent_version: str,
         sender_id: str,
         interface: Literal["telegram", "rest_api"],
         decision: ApprovalDecision,
         context: ContextT,
     ) -> None:
-        """Resume a graph that is paused on an approval interrupt.
+        """Resume a turn paused on an approval with the user's *decision*.
 
         Called by each interface's approval-response handler (Telegram button
         callback, REST /chat/approve endpoint) after the user has responded.
         """
-        incoming = IncomingMessage(
-            parts=[],
-            interface=interface,
-            sender_id=sender_id,
-            thread_id=thread_id,
-            agent_version=agent_version,
-        )
-
-        async with run_registry.thread_lock(thread_id):
-            existing = run_registry.get(thread_id)
-            if existing and existing.active:
-                existing.user_requested_stop.set()
-            run = AgentRun()
-            run_registry.set(thread_id, run)
-
-        set_thread_id(thread_id)
-        stream = _resume_stream(Command(resume=decision), incoming, self._checkpointer, run)
-        t0 = time.monotonic()
-        logger.info(
-            "approval_resume thread=%s run=%s decision=%s",
-            thread_id,
-            run.id,
-            decision.value,
-        )
-        completed = await self._stream_and_handle(stream, run, incoming, context)
-        if completed:
-            logger.info(
-                "approval_resume_end thread=%s run=%s duration=%.2fs",
-                thread_id,
-                run.id,
-                time.monotonic() - t0,
+        harness = _harness_for(agent_version)
+        if not isinstance(harness, LangGraphHarness):
+            logger.warning("approval_resume: %r has no resumable approvals", agent_version)
+            return
+        set_context_id(context_id)
+        turn = self._turn_context(interface, context_id, sender_id)
+        async with run_registry.run_lock(context_id):
+            logger.info("approval_resume context=%s decision=%s", context_id, decision.value)
+            await self._deliver_with_follow_ups(
+                harness,
+                lambda: harness.resume(decision, context_id, turn),
+                context_id,
+                turn,
+                context,
             )
-
-    async def _stream_and_handle(
-        self,
-        stream: AsyncIterator[AgentEvent],
-        run: AgentRun,
-        incoming: IncomingMessage,
-        context: ContextT,
-    ) -> bool:
-        """Stream agent events to the user and handle errors + approval interrupts.
-
-        Owns the run lifecycle: sets ``run.active = False`` and pops from the
-        registry in a ``finally`` block regardless of how the stream ends.
-
-        Returns True if the stream completed normally (caller may do post-processing
-        such as leftover-injection checks).  Returns False if an approval prompt was
-        sent or an error occurred — caller should return immediately.
-        """
-        error_msg: str | None = None
-        try:
-            await self.send_stream(stream, context)
-            approval = await _extract_approval_request(
-                get_agent(incoming.agent_version),
-                incoming.thread_id,
-                self._checkpointer,
-            )
-            if approval is not None:
-                await self.request_approval(approval, context)
-                return False
-            return True
-        except psycopg.OperationalError:
-            logger.exception("DB connection lost")
-            error_msg = "Database connection lost. Please try again in a moment."
-        except RateLimitError:
-            logger.warning("LLM rate limit hit")
-            error_msg = "Context window is full. Use /clear to start a fresh conversation."
-        except InternalServerError as e:
-            logger.warning("LLM internal server error: %s", e)
-            error_msg = "The AI model is overloaded. Please try again in a moment."
-        except GraphRecursionError:
-            logger.warning("Agent hit recursion limit")
-            error_msg = (
-                "The agent got stuck in a loop and was stopped. Try rephrasing your request."
-            )
-        except Exception as e:
-            logger.exception("Unhandled error in agent pipeline: %s: %s", type(e).__name__, e)
-            error_msg = "Sorry, something went wrong."
-        finally:
-            run.active = False
-            run_registry.pop(incoming.thread_id)
-
-        if error_msg:
-            try:
-                await self.send_message(error_msg, context)
-            except Exception:
-                logger.warning("failed to deliver error message to user")
-        return False
-
-    async def _run_reflexes_and_inject(
-        self,
-        reflexes: list[Reflex],
-        query: str,
-        history: list[MessageContent],
-        run: AgentRun,
-        context: ContextT,
-    ) -> list[ReflexOutput]:
-        """Run reflexes and inject each result into the run immediately on completion.
-
-        By injecting as soon as the reflex finishes (rather than after the agent
-        finishes), the inject lands in the pending queue while the agent may still
-        be running — making it available at the next interrupt_after=["call_tools"]
-        pause point instead of always becoming a leftover follow-up run.
-        """
-        results = await run_reflexes(reflexes, query, history)
-        for result in results:
-            run.inject_message(result.inject)
-            if result.display:
-                try:
-                    await self.send_message(result.display, context)
-                except Exception:
-                    logger.warning("reflex_display_failed", exc_info=True)
-        return results
 
 
 # ---------------------------------------------------------------------------
@@ -676,180 +604,23 @@ class BaseInterface[ContextT](ABC):
 # ---------------------------------------------------------------------------
 
 
-async def _agent_stream(
-    content: MessageContent,
-    message: IncomingMessage,
-    checkpointer: BaseCheckpointSaver,
-    run: AgentRun,
-) -> AsyncIterator[AgentEvent]:
-    """Streaming generator that loops across LangGraph interrupt boundaries.
-
-    On the first pass the graph receives an AgentState with the user's message.
-    After each interrupt_after=["call_tools"] pause the graph is resumed with
-    either a Command(update=…) carrying an injected HumanMessage, or None to
-    simply continue.  The loop exits when the graph finishes or cancel is set.
-    """
-    agent = get_agent(message.agent_version)
-    config: RunnableConfig = {
-        "configurable": {
-            "thread_id": message.thread_id,
-            "interface": message.interface,
-            "sender_id": message.sender_id,
-            AGENT_RUN_CONFIG_KEY: run,
-        }
-    }
-
-    graph_input: AgentState | Command | None = AgentState(
-        messages=[HumanMessage(content=content)],
-        thread_id=message.thread_id,
-        interface=message.interface,
-    )
-
-    while True:
-        async for event in agent.astream_events(graph_input, config, checkpointer):
-            if run.user_requested_stop.is_set():
-                return
-            yield event
-
-        if run.user_requested_stop.is_set():
-            return
-
-        # Determine whether the graph finished or paused at interrupt_after=["call_tools"].
-        graph_state = await agent.aget_state(config, checkpointer)
-        if not graph_state.next:
-            return  # graph reached END naturally
-
-        # Approval interrupt — exit cleanly; _execute_run will send the prompt.
-        if graph_state.interrupts:
-            return
-
-        # Graph paused at interrupt_after=["call_tools"] — check for a queued soft interrupt.
-        try:
-            injection = run.pending_agent_injection.get_nowait()
-            logger.info("soft_interrupt thread=%s run=%s", message.thread_id, run.id)
-            graph_input = Command(
-                update={"messages": [HumanMessage(content=_frame_injection(injection))]}
-            )
-        except asyncio.QueueEmpty:
-            graph_input = None  # resume from where the graph left off
-
-
-async def _resume_stream(
-    command: Command,
-    message: IncomingMessage,
-    checkpointer: BaseCheckpointSaver,
-    run: AgentRun,
-) -> AsyncIterator[AgentEvent]:
-    """Streaming generator that resumes a graph paused on an approval interrupt."""
-    agent = get_agent(message.agent_version)
-    config: RunnableConfig = {
-        "configurable": {
-            "thread_id": message.thread_id,
-            "interface": message.interface,
-            "sender_id": message.sender_id,
-            AGENT_RUN_CONFIG_KEY: run,
-        }
-    }
-    graph_input: Command | None = command
-
-    while True:
-        async for event in agent.astream_events(graph_input, config, checkpointer):
-            if run.user_requested_stop.is_set():
-                return
-            yield event
-
-        if run.user_requested_stop.is_set():
-            return
-
-        graph_state = await agent.aget_state(config, checkpointer)
-        if not graph_state.next:
-            return
-
-        # Another approval interrupt — exit so _execute_resume can handle it.
-        if graph_state.interrupts:
-            return
-
-        try:
-            injection = run.pending_agent_injection.get_nowait()
-            logger.info("soft_interrupt thread=%s run=%s", message.thread_id, run.id)
-            graph_input = Command(
-                update={"messages": [HumanMessage(content=_frame_injection(injection))]}
-            )
-        except asyncio.QueueEmpty:
-            graph_input = None
-
-
-async def _extract_approval_request(
-    agent: BaseAgent,
-    thread_id: str,
-    checkpointer: BaseCheckpointSaver,
-) -> ApprovalRequest | None:
-    """Return the first ApprovalRequest from graph state interrupts, or None."""
+def _harness_for(agent_version: str) -> Harness | None:
+    """The harness for *agent_version*, or None when no such version is registered."""
     try:
-        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
-        graph_state = await agent.aget_state(config, checkpointer)
-        for interrupt_obj in graph_state.interrupts:
-            if isinstance(interrupt_obj.value, ApprovalRequest):
-                return interrupt_obj.value
-    except Exception:
-        logger.warning("approval_state_check_failed thread=%s", thread_id, exc_info=True)
-    return None
+        return get_harness(agent_version)
+    except ValueError:
+        return None
 
 
-async def _recent_history(
-    agent: BaseAgent,
-    thread_id: str,
-    checkpointer: BaseCheckpointSaver,
-    n: int = 3,
-) -> list[MessageContent]:
-    """Return the last *n* human/AI messages from the thread's checkpoint as labeled strings."""
-    config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
-    try:
-        snapshot = await agent.aget_state(config, checkpointer)
-    except Exception:
-        logger.warning("history_fetch_failed thread=%s", thread_id, exc_info=True)
-        return []
-    messages = (snapshot.values or {}).get("messages", [])
-    filtered = [m for m in messages if isinstance(m, (HumanMessage, AIMessage))]
-    result: list[MessageContent] = []
-    for msg in filtered[-n:]:
-        prefix = "User" if isinstance(msg, HumanMessage) else "Assistant"
-        if isinstance(msg.content, str):
-            result.append(f"{prefix}: {msg.content}")
-        elif isinstance(msg.content, list):
-            texts = [
-                b["text"] for b in msg.content if isinstance(b, dict) and b.get("type") == "text"
-            ]
-            if texts:
-                result.append(f"{prefix}: {' '.join(texts)}")
-    return result
+def _merge_messages(messages: list[Message]) -> Message:
+    """Merge messages that arrived together into one, keeping the first sender."""
+    if len(messages) == 1:
+        return messages[0]
+    parts = [part for m in messages for part in m.parts]
+    return Message(parts=parts, sender=messages[0].sender)
 
 
-def _merge_contents(contents: list[MessageContent]) -> MessageContent:
-    """Merge multiple preprocessed message contents into one."""
-    if len(contents) == 1:
-        return contents[0]
-    blocks: list[dict] = []
-    for content in contents:
-        if isinstance(content, str):
-            if content:
-                blocks.append({"type": "text", "text": content})
-        else:
-            blocks.extend(content)
-    if all(b.get("type") == "text" for b in blocks):
-        return "\n\n".join(b["text"] for b in blocks)
-    return blocks
-
-
-def _frame_injection(content: MessageContent) -> MessageContent:
-    """Prepend MID_RUN_INJECTION_PREFIX so the LLM knows not to abandon its current task."""
-    if isinstance(content, str):
-        return MID_RUN_INJECTION_PREFIX + content
-    # Multimodal: prepend a text block before the existing blocks.
-    return [{"type": "text", "text": MID_RUN_INJECTION_PREFIX}, *content]
-
-
-async def _collect(stream: AsyncIterator[AgentEvent]) -> str:
+async def _collect(stream: AsyncIterator[HarnessEvent]) -> str:
     text = ""
     async for event in stream:
         match event:
@@ -880,44 +651,37 @@ def _live_until(location: LocationContent, previous: LiveLocationState, now: flo
     return previous.live_until if previous.is_live(now) else 0.0
 
 
-async def _preprocess(parts: list[ContentPart]) -> MessageContent:
-    blocks = []
-    for part in parts:
+async def _preprocess(incoming: IncomingMessage) -> Message:
+    """Turn what an interface received into the harness Message: files stay files,
+    voice notes become their transcript, locations become an address."""
+    parts: list[TextPart | FilePart] = []
+    for part in incoming.parts:
         if isinstance(part, TextContent):
-            blocks.append({"type": "text", "text": part.text})
+            parts.append(TextPart(text=part.text))
         elif isinstance(part, FileContent):
-            if part.mime_type.startswith("image/"):
-                blocks.append({"type": "text", "text": f"[[img:{part.path}|{part.mime_type}]]"})
-            elif part.transcribe:
+            if part.transcribe:
                 transcript = await _transcribe(await part.read(), part.mime_type)
-                blocks.append(
-                    {
-                        "type": "text",
-                        "text": (
+                parts.append(
+                    TextPart(
+                        text=(
                             f"[Voice message, already transcribed]\n"
                             f"{transcript}\n"
                             f"[Audio saved to: {part.path}]"
-                        ),
-                    }
+                        )
+                    )
                 )
             else:
-                blocks.append(
-                    {
-                        "type": "text",
-                        "text": (
-                            f"[File uploaded: {part.filename}"
-                            f" ({part.mime_type}) — saved to {part.path}]"
-                        ),
-                    }
+                parts.append(
+                    FilePart(
+                        path=Path(part.path), media_type=part.mime_type, filename=part.filename
+                    )
                 )
         elif isinstance(part, LocationContent):
             text = await _geocode(part.latitude, part.longitude, part.sender_name)
-            blocks.append({"type": "text", "text": text})
-
-    text_only = all(b["type"] == "text" for b in blocks)
-    if text_only:
-        return "\n\n".join(b["text"] for b in blocks)
-    return blocks
+            parts.append(TextPart(text=text))
+    return Message(
+        parts=parts, sender=Sender(interface=incoming.interface, user_id=incoming.user_id)
+    )
 
 
 async def _transcribe(data: bytes, mime_type: str) -> str:

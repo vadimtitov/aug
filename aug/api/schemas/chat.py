@@ -9,7 +9,7 @@ class Attachment(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    thread_id: str = Field(
+    context_id: str = Field(
         ..., max_length=128, pattern=r"^[\w\-]+$", description="Conversation thread ID."
     )
     message: str = Field(..., max_length=32_000, description="User message text.")
@@ -28,7 +28,7 @@ class ToolCallInfo(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    thread_id: str
+    context_id: str
     agent: str
     response: str
     tool_calls: list[ToolCallInfo] = Field(default_factory=list)
@@ -51,5 +51,5 @@ class ApprovalRequest(BaseModel):
     sender_id: str = Field(
         default="",
         max_length=128,
-        description="Sender ID to attribute the resume to (e.g. thread_id for REST).",
+        description="Sender ID to attribute the resume to (e.g. context_id for REST).",
     )

@@ -21,7 +21,6 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import markdown as md
-from langgraph.checkpoint.base import BaseCheckpointSaver
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -57,22 +56,22 @@ from aug.api.interfaces.base import (
 from aug.api.interfaces.telegram.ssh import _SshMixin
 from aug.api.interfaces.telegram.utils import (
     escape,
+    get_context_id,
     get_conversation_id,
     get_parent_conversation_id,
-    get_thread_id,
     is_allowed,
     parse_chat_conversation,
     restricted,
 )
 from aug.config import get_settings
 from aug.core.events import (
-    AgentEvent,
     ChatModelStreamEvent,
     StatusEvent,
     ToolEndEvent,
     ToolProgressEvent,
     ToolStartEvent,
 )
+from aug.core.harness import HarnessEvent, TurnEnded
 from aug.core.memory import run_deep_consolidation, run_light_consolidation
 from aug.core.prompts import build_system_prompt
 from aug.core.registry import list_agents
@@ -113,6 +112,7 @@ class _ToolEntry:
     sub_lines: list[str] = field(default_factory=list)
     done: bool = False
     error: bool = False
+    stopped: bool = False  # cut short by /stop
 
 
 _TG_MAX_LEN = MessageLimit.MAX_TEXT_LENGTH
@@ -124,8 +124,8 @@ _no_draft_chats: set[int] = set()
 class TelegramInterface(_SshMixin, BaseInterface[Update]):
     _debounce_window = 0.1  # 100ms — collects rapid-fire forwarded messages into one run
 
-    def __init__(self, checkpointer: BaseCheckpointSaver) -> None:
-        super().__init__(checkpointer)
+    def __init__(self) -> None:
+        super().__init__()
         self._bot_app = None
 
     # ------------------------------------------------------------------
@@ -143,8 +143,8 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         if not is_allowed(user_id):
             return None
 
-        thread_id = get_thread_id(chat_id, topic_id=msg.message_thread_id)
-        upload_dir = UPLOADS_DIR / thread_id
+        context_id = get_context_id(chat_id, topic_id=msg.message_thread_id)
+        upload_dir = UPLOADS_DIR / context_id
 
         parts = []
         if msg.voice:
@@ -229,12 +229,12 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             parts=parts,
             interface="telegram",
             sender_id=str(chat_id),
-            thread_id=thread_id,
-            agent_version=self.get_agent_version(thread_id),
+            context_id=context_id,
+            agent_version=self.get_agent_version(context_id),
             user_id=str(user_id),
         )
 
-    async def send_stream(self, stream: AsyncIterator[AgentEvent], context: Update) -> None:
+    async def send_stream(self, stream: AsyncIterator[HarnessEvent], context: Update) -> None:
         msg = context.effective_message
         chat_id = context.effective_chat.id  # type: ignore[union-attr]
         bot = msg.get_bot()  # type: ignore[union-attr]
@@ -257,6 +257,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         last_stream_edit = 0.0
 
         stream_completed_normally = False
+        turn_failed = False
         spinner_stop = asyncio.Event()
 
         async def _push_tool_draft() -> None:
@@ -493,6 +494,17 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                         except Exception:
                             logger.debug("status event send failed", exc_info=True)
 
+                    case TurnEnded(error=error) if error is not None:
+                        turn_failed = True
+
+                    case TurnEnded(cancelled=True):
+                        for entry in tool_entries:
+                            if not entry.done:
+                                entry.done = entry.stopped = True
+
+            if turn_failed:
+                return  # the caller reports the error; `finally` marks open tools failed
+
             if tool_entries:
                 await _finalize_tool_draft()
 
@@ -577,9 +589,9 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         for chunk in _chunk(message):
             await _reply_text_with_retry(context.effective_message, chunk)  # type: ignore[arg-type]
 
-    async def resolve_thread(
+    async def resolve_context(
         self,
-        thread_id: str,
+        context_id: str,
         *,
         topic_name: str | None = None,
         chat_id: int | None = None,
@@ -591,52 +603,52 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         ``"new"`` creates a Telegram forum topic in *chat_id* and returns its
         thread ID.  Any other value is returned unchanged.
         """
-        if thread_id == "default" or thread_id.startswith("default:"):
-            if thread_id.startswith("default:"):
-                cid = int(thread_id.split(":", 1)[1])
-                return get_thread_id(cid, None)
+        if context_id == "default" or context_id.startswith("default:"):
+            if context_id.startswith("default:"):
+                cid = int(context_id.split(":", 1)[1])
+                return get_context_id(cid, None)
             if chat_id is not None:
-                return get_thread_id(chat_id, None)
+                return get_context_id(chat_id, None)
             # Legacy fallback: tasks stored before the "default:{chat_id}" encoding.
             for conversation in load_settings().conversations:
                 cid = parse_chat_conversation(conversation)
                 if cid is not None and cid > 0:
                     logger.warning(
-                        "resolve_thread: using first known chat_id %d as 'default' — "
+                        "resolve_context: using first known chat_id %d as 'default' — "
                         "tasks should store 'default:{chat_id}' for deterministic routing",
                         cid,
                     )
-                    return get_thread_id(cid, None)
+                    return get_context_id(cid, None)
             raise ValueError("No default Telegram DM chat found in settings")
 
-        if thread_id == "new":
+        if context_id == "new":
             if chat_id is None:
-                raise ValueError("chat_id is required when thread_id='new'")
+                raise ValueError("chat_id is required when context_id='new'")
             if not self._bot_app:
                 raise RuntimeError("Telegram bot is not running")
             topic = await self._bot_app.bot.create_forum_topic(
                 chat_id=chat_id,
                 name=topic_name or "New Topic",
             )
-            return get_thread_id(chat_id, topic_id=topic.message_thread_id)
+            return get_context_id(chat_id, topic_id=topic.message_thread_id)
 
-        return thread_id
+        return context_id
 
-    def conversation_id(self, thread_id: str) -> str:
-        return get_conversation_id(thread_id)
+    def conversation_id(self, context_id: str) -> str:
+        return get_conversation_id(context_id)
 
     def parent_conversation_id(self, conversation_id: str) -> str | None:
         return get_parent_conversation_id(conversation_id)
 
-    async def send_proactive(self, thread_id: str, text: str) -> None:
-        """Send *text* to *thread_id* without an agent turn.
+    async def send_proactive(self, context_id: str, text: str) -> None:
+        """Send *text* to *context_id* without an agent turn.
 
         Used for ``type="forward"`` external pushes that relay a message
         verbatim (e.g. a Home Assistant notification).
         """
         if not self._bot_app:
             raise RuntimeError("Telegram bot is not running")
-        chat_id, topic_id = _parse_thread_id(thread_id)
+        chat_id, topic_id = _parse_context_id(context_id)
         for chunk in _chunk(text):
             await self._bot_app.bot.send_message(
                 chat_id=chat_id,
@@ -657,12 +669,12 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         if not chat_ids:
             known = (parse_chat_conversation(c) for c in load_settings().conversations)
             chat_ids = {cid for cid in known if cid is not None and cid > 0}
-        return [get_thread_id(cid, None) for cid in sorted(chat_ids)]
+        return [get_context_id(cid, None) for cid in sorted(chat_ids)]
 
     async def send_proactive_stream(
-        self, thread_id: str, stream: AsyncIterator[AgentEvent]
+        self, context_id: str, stream: AsyncIterator[HarnessEvent]
     ) -> None:
-        """Stream the agent response to *thread_id* using draft updates, then send final message.
+        """Stream the agent response to *context_id* using draft updates, then send final message.
 
         Uses sendMessageDraft to show tokens as they arrive (same as interactive chat).
         Falls back to send-then-edit if drafts are unsupported. Tool call messages are
@@ -671,7 +683,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         """
         if not self._bot_app:
             raise RuntimeError("Telegram bot is not running")
-        chat_id, topic_id = _parse_thread_id(thread_id)
+        chat_id, topic_id = _parse_context_id(context_id)
         bot = self._bot_app.bot
 
         accumulated_text = ""
@@ -804,25 +816,25 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         """Send an approval prompt with inline buttons to the user."""
         msg = context.effective_message  # type: ignore[union-attr]
         chat_id = context.effective_chat.id  # type: ignore[union-attr]
-        thread_id = get_thread_id(chat_id, topic_id=msg.message_thread_id)  # type: ignore[union-attr]
-        agent_version = self.get_agent_version(thread_id)
+        context_id = get_context_id(chat_id, topic_id=msg.message_thread_id)  # type: ignore[union-attr]
+        agent_version = self.get_agent_version(context_id)
         buttons = [
             [
                 InlineKeyboardButton(
                     "✅ Run Once",
-                    callback_data=f"approval:{thread_id}:{ApprovalDecision.APPROVED_ONCE.value}:{agent_version}",
+                    callback_data=f"approval:{context_id}:{ApprovalDecision.APPROVED_ONCE.value}:{agent_version}",
                 )
             ],
             [
                 InlineKeyboardButton(
                     "✅✅ Allow Always",
-                    callback_data=f"approval:{thread_id}:{ApprovalDecision.APPROVED_ALWAYS.value}:{agent_version}",
+                    callback_data=f"approval:{context_id}:{ApprovalDecision.APPROVED_ALWAYS.value}:{agent_version}",
                 )
             ],
             [
                 InlineKeyboardButton(
                     "❌ Deny",
-                    callback_data=f"approval:{thread_id}:{ApprovalDecision.DENIED.value}:{agent_version}",
+                    callback_data=f"approval:{context_id}:{ApprovalDecision.DENIED.value}:{agent_version}",
                 )
             ],
         ]
@@ -856,15 +868,14 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     # ------------------------------------------------------------------
 
     def build_bot(self) -> Application:
-        bot_app = (  # type: ignore[arg-type]
-            Application.builder()
-            .token(get_settings().TELEGRAM_BOT_TOKEN)
-            .concurrent_updates(True)
-            .build()
-        )
+        builder = Application.builder().token(get_settings().TELEGRAM_BOT_TOKEN)  # type: ignore[arg-type]
+        base_url = get_settings().TELEGRAM_BASE_URL
+        if base_url:
+            builder = builder.base_url(f"{base_url}/bot").base_file_url(f"{base_url}/file/bot")
+        bot_app = builder.concurrent_updates(True).build()
         bot_app.add_handler(CommandHandler("clear", self._handle_clear))
         bot_app.add_handler(CommandHandler("stop", self._handle_stop))
-        bot_app.add_handler(CommandHandler("thread_id", self._handle_thread_id))
+        bot_app.add_handler(CommandHandler("context_id", self._handle_context_id))
         bot_app.add_handler(CommandHandler("throttle", self._handle_throttle))
         bot_app.add_handler(
             ConversationHandler(
@@ -941,7 +952,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                 ("consolidate_deep", "Run deep (weekly) memory consolidation now"),
                 ("approvals", "List and revoke saved SSH command approvals"),
                 ("ssh", "Manage SSH targets"),
-                ("thread_id", "Show the thread ID of this chat"),
+                ("context_id", "Show the context ID (current session) of this chat"),
                 ("throttle", "Set live location update throttle (seconds)"),
             ]
         )
@@ -989,19 +1000,18 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             return
 
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        thread_id = get_thread_id(chat_id, topic_id=msg.message_thread_id)
+        context_id = get_context_id(chat_id, topic_id=msg.message_thread_id)
         if not self.record_location(
-            thread_id, str(update.effective_user.id), _location_content(msg)
+            context_id, str(update.effective_user.id), _location_content(msg)
         ):
             return  # delivered out of order — we already hold a newer position
 
         # Cheap gate: skip the whole pipeline for an update nothing is waiting on.
         # It is only a gate — run() takes the real decision under its thread lock,
         # since the run seen here can finish while run() is still preprocessing.
-        run = run_registry.get(thread_id)
-        injecting = bool(run and run.active and not run.user_requested_stop.is_set())
-        if not injecting and not self.claim_location_run(thread_id):
-            logger.debug("live location throttled for %s", thread_id)
+        injecting = run_registry.accepting(context_id)
+        if not injecting and not self.claim_location_run(context_id):
+            logger.debug("live location throttled for %s", context_id)
             return
 
         # run() injects into the active run if there is one, else starts a new one.
@@ -1014,7 +1024,8 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     @restricted
     async def _handle_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        stopped = self.stop_run(get_thread_id(chat_id, update.effective_message.message_thread_id))  # type: ignore[union-attr]
+        topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
+        stopped = await self.stop_run(get_context_id(chat_id, topic_id))
         msg = "Stopping..." if stopped else "Nothing is running."
         await update.message.reply_text(msg)  # type: ignore[union-attr]
 
@@ -1036,7 +1047,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     async def _handle_version(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
-        current = self.get_agent_version(get_thread_id(chat_id, topic_id))
+        current = self.get_agent_version(get_context_id(chat_id, topic_id))
         current_label = current if current in list_agents() else "none selected"
         agents = [a for a in list_agents() if a != "fake"]
         buttons = [
@@ -1075,7 +1086,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         if agent_name not in list_agents():
             await query.edit_message_text("Unknown version.")
             return
-        self.set_agent_version(get_thread_id(chat_id, msg.message_thread_id), agent_name)
+        self.set_agent_version(get_context_id(chat_id, msg.message_thread_id), agent_name)
         await query.edit_message_text(
             f"Switched to <code>{escape(agent_name)}</code>.", parse_mode="HTML"
         )
@@ -1129,7 +1140,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         state = AgentState(
             messages=[],
-            thread_id=get_thread_id(chat_id, update.effective_message.message_thread_id),  # type: ignore[union-attr]
+            thread_id=get_context_id(chat_id, update.effective_message.message_thread_id),  # type: ignore[union-attr]
             interface="telegram",
         )
         prompt_text = build_system_prompt(state)
@@ -1138,12 +1149,12 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         await update.message.reply_document(document=file, filename="system_prompt.txt")  # type: ignore[union-attr]
 
     @restricted
-    async def _handle_thread_id(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _handle_context_id(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         topic_id = update.message.message_thread_id  # type: ignore[union-attr]
-        thread_id = get_thread_id(chat_id, topic_id)
+        context_id = get_context_id(chat_id, topic_id)
         await update.message.reply_text(  # type: ignore[union-attr]
-            f"<code>{escape(thread_id)}</code>",
+            f"<code>{escape(context_id)}</code>",
             parse_mode="HTML",
         )
 
@@ -1151,11 +1162,11 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
     async def _handle_throttle(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
-        thread_id = get_thread_id(chat_id, topic_id)
+        context_id = get_context_id(chat_id, topic_id)
         reply = update.effective_message.reply_text  # type: ignore[union-attr]
 
         if not context.args:
-            await reply(f"Live location throttle: {self.location_throttle(thread_id)}s")
+            await reply(f"Live location throttle: {self.location_throttle(context_id)}s")
             return
 
         try:
@@ -1167,23 +1178,23 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             await reply("Minimum throttle is 60 seconds.")
             return
 
-        self.set_location_throttle(thread_id, seconds)
+        self.set_location_throttle(context_id, seconds)
         await reply(f"Live location throttle set to {seconds}s.")
 
     @restricted
     async def _handle_compact(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
         topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
-        thread_id = get_thread_id(chat_id, topic_id)
+        context_id = get_context_id(chat_id, topic_id)
         await update.message.reply_text("🗜 Compacting conversation…")  # type: ignore[union-attr]
         try:
-            agent_version = self.get_agent_version(thread_id)
+            agent_version = self.get_agent_version(context_id)
             if agent_version not in list_agents():
                 await update.message.reply_text(  # type: ignore[union-attr]
                     "No agent selected. Use /version to pick one first."
                 )
                 return
-            ran = await self._execute_compact(thread_id, agent_version)
+            ran = await self._execute_compact(context_id, agent_version)
             await update.message.reply_text("✅ Done." if ran else "Nothing to compact.")  # type: ignore[union-attr]
         except ValueError as e:
             await update.message.reply_text(str(e))  # type: ignore[union-attr]
@@ -1229,13 +1240,13 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         await query.answer()
         chat_id = update.effective_chat.id  # type: ignore[union-attr]
 
-        # callback_data: "approval:{thread_id}:{decision}:{agent_version}"
+        # callback_data: "approval:{context_id}:{decision}:{agent_version}"
         parts = (query.data or "").split(":", 3)
         if len(parts) != 4:
             return
-        _, thread_id, decision_str, agent_version = parts
+        _, context_id, decision_str, agent_version = parts
 
-        if not thread_id.startswith(f"tg-{chat_id}-"):
+        if not context_id.startswith(f"tg-{chat_id}-"):
             await query.edit_message_text("❌ Unauthorized.")
             return
 
@@ -1244,7 +1255,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         except ValueError:
             return
 
-        if await self.get_pending_approval(thread_id, agent_version) is None:
+        if await self.get_pending_approval(context_id, agent_version) is None:
             await query.edit_message_text("⚠️ This approval has already been resolved.")
             return
 
@@ -1256,7 +1267,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             await query.edit_message_text("✅ Approved for this run.")
 
         await self._execute_resume(
-            thread_id=thread_id,
+            context_id=context_id,
             agent_version=agent_version,
             sender_id=str(chat_id),
             interface="telegram",
@@ -1363,10 +1374,6 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
 # ---------------------------------------------------------------------------
 
 
-def build_interface(checkpointer: BaseCheckpointSaver) -> TelegramInterface:
-    return TelegramInterface(checkpointer)
-
-
 # ---------------------------------------------------------------------------
 # Private utilities
 # ---------------------------------------------------------------------------
@@ -1400,7 +1407,9 @@ def _render_tool_lines(entries: list[_ToolEntry], spin_tick: int) -> str:
     lines: list[str] = [f"…+{hidden} more"] if hidden else []
     for entry in visible:
         args_part = f"({entry.args_preview})" if entry.args_preview else "()"
-        if entry.done:
+        if entry.stopped:
+            icon = "⏹"
+        elif entry.done:
             icon = "🔴" if entry.error else "🟢"
         else:
             icon = spinner
@@ -1575,15 +1584,15 @@ def _chunk(text: str) -> list[str]:
 _TG_THREAD_RE = re.compile(r"^tg-(-?\d+)-(?:topic-(\d+)|\d+)$")
 
 
-def _parse_thread_id(thread_id: str) -> tuple[int, int | None]:
+def _parse_context_id(context_id: str) -> tuple[int, int | None]:
     """Parse a Telegram thread ID into ``(chat_id, topic_id | None)``.
 
     Accepts both DM format ``tg-{chat_id}-{session}`` and topic format
     ``tg-{chat_id}-topic-{topic_id}``.  Raises ValueError for unrecognised formats.
     """
-    m = _TG_THREAD_RE.match(thread_id)
+    m = _TG_THREAD_RE.match(context_id)
     if not m:
-        raise ValueError(f"Unparseable Telegram thread ID: {thread_id!r}")
+        raise ValueError(f"Unparseable Telegram thread ID: {context_id!r}")
     chat_id = int(m.group(1))
     topic_id = int(m.group(2)) if m.group(2) is not None else None
     return chat_id, topic_id

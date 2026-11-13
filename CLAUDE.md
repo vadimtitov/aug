@@ -21,7 +21,11 @@ aug/
 │   │   ├── state.py            ← AgentState + AgentStateUpdate (Pydantic models)
 │   │   ├── prompts.py          ← build_system_prompt() — assembles full system prompt from memory files + state
 │   │   ├── memory.py           ← Memory file init, append_note(), light + deep consolidation, scheduler
-│   │   ├── registry.py         ← Agent registry + compiled-graph cache
+│   │   ├── registry.py         ← Agent registry + get_harness(): one harness per agent version
+│   │   ├── harness/            ← Harness ABC + types (Message, TurnContext, TurnEnded…) + LangGraphHarness
+│   │   ├── run.py              ← run_registry: per-context run lock, routing lock, LangGraph AgentRuns
+│   │   ├── dispatch.py         ← fire_task / fire_push / broadcast — pushes run through the harness
+│   │   ├── transcript.py       ← AUG's own append-only turn log, data/transcripts/<conversation>.jsonl
 │   │   ├── mcp/                ← MCP servers: manager (sessions → tools), install plans, restart flow
 │   │   ├── agents/
 │   │   │   ├── base_agent.py   ← BaseAgent ABC with agentic loop in build()
@@ -36,8 +40,9 @@ aug/
 │   ├── api/
 │   │   ├── security.py         ← require_api_key FastAPI dependency
 │   │   ├── schemas/            ← Pydantic request/response models
-│   │   ├── routers/            ← FastAPI routers (chat, threads, files)
-│   │   └── telegram.py         ← Telegram polling bot
+│   │   ├── routers/            ← FastAPI routers (chat, threads, files, hooks)
+│   │   └── interfaces/         ← BaseInterface + Telegram + REST: receive, build a Message, render events
+│   ├── dev/scripted.py         ← dev-only "scripted" agent for the scenario suite (SCRIPTED_AGENT)
 │   └── utils/
 │       ├── db.py               ← asyncpg pool + schema bootstrap
 │       ├── storage.py          ← File storage abstraction
@@ -78,7 +83,7 @@ Local API key is set in `.env` as `API_KEY`.
 curl -s -X POST http://localhost:8000/chat/invoke \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $API_KEY" \
-  -d '{"message": "what time is it?", "thread_id": "test-1", "agent": "default"}' \
+  -d '{"message": "what time is it?", "context_id": "test-1", "agent": "default"}' \
   | python3 -m json.tool
 ```
 
@@ -87,13 +92,33 @@ curl -s -X POST http://localhost:8000/chat/invoke \
 curl -N -X POST http://localhost:8000/chat/stream \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $API_KEY" \
-  -d '{"message": "search the web for latest AI news", "thread_id": "test-2", "agent": "default"}'
+  -d '{"message": "search the web for latest AI news", "context_id": "test-2", "agent": "default"}'
 ```
 
 **Health check:**
 ```bash
 curl http://localhost:8000/health
 ```
+
+`context_id` names the chat's current session (`/clear` starts a new one);
+`conversation_id` is the stable chat it belongs to. The REST API has no `thread_id`
+alias; only `/hooks/push` still accepts `thread_id`, for existing automations.
+
+---
+
+## Scenario suite (free end-to-end check)
+
+```bash
+make scenarios                 # writes .scenarios/transcript-<commit>.txt
+make scenarios ONLY=s3,s4      # a subset
+```
+
+Runs AUG against a fake LLM and a fake Telegram (`scripts/fakes.py`) through the
+dev-only `scripted` agent, drives S1–S8 (reply, tool progress, approvals, injection,
+/stop, /compact + /clear, errors, pushes) and writes what a user would see. Its own
+compose project and ports (8013, 8091), no `.env`, so it never calls a real model or
+bot. Run it on `main` and on your branch and `diff` the transcripts to prove "no
+behaviour change". Scripts and step formats: top of `scripts/fakes.py`.
 
 ---
 
@@ -195,16 +220,16 @@ keyed by a conversation ID:
 ```
 
 Rules:
-- The conversation ID comes from `BaseInterface.conversation_id(thread_id)` — every
+- The conversation ID comes from `BaseInterface.conversation_id(context_id)` — every
   interface implements it and must prefix its own namespace (`tg-`, `rest-`) so keys
   from different frontends never collide.
-- A conversation ID must be **stable across context resets**. Telegram thread IDs carry
+- A conversation ID must be **stable across context resets**. Telegram context IDs carry
   a session counter that /clear bumps; `conversation_id` strips it so the selection
   survives.
 - Each Telegram forum topic is its own conversation — settings must never leak between
   topics in the same group.
-- Read/write agent selection through `BaseInterface.get_agent_version(thread_id)` /
-  `set_agent_version(thread_id, agent)` — never reach into `settings.conversations[...].agent`
+- Read/write agent selection through `BaseInterface.get_agent_version(context_id)` /
+  `set_agent_version(context_id, agent)` — never reach into `settings.conversations[...].agent`
   directly, so the inheritance fallback below applies everywhere.
 - A conversation with no selection of its own inherits from
   `BaseInterface.parent_conversation_id()` (Telegram: a topic falls back to its group).
@@ -232,6 +257,8 @@ only when there is a clear, immediate reason.
 - **Async everywhere** — `async def` throughout.
 - **ruff only** — no black, flake8, isort.
 - **uv only** — no `requirements.txt`.
+- **Turns go through the harness** — interfaces, pushes and jobs call `get_harness(version).run()` and render its events; they never touch LangGraph (graph state, `Command`, checkpoints). `run()` never raises: errors arrive as `TurnEnded.error` (a `HarnessError` kind), and their user text lives in `HARNESS_ERROR_MESSAGES` in `prompts.py`.
+- **One turn per context at a time** — whoever runs a turn holds `run_registry.run_lock(context_id)` for all of it (interfaces, approval resumes, `/compact`, `fire_push`).
 - **Agent versions are immutable** — never modify the tools or behaviour of an existing agent version. Add a new version instead (`v3_claude`, `v4_claude`, etc.).
 
 ## Code style

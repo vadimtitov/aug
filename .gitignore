@@ -213,3 +213,6 @@ __marimo__/
 
 # User data — volume-mounted at runtime, not committed
 /data/*
+
+# Scenario stack output (make scenarios)
+/.scenarios/

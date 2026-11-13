@@ -1,10 +1,24 @@
-"""Tests for _preprocess — translating ContentPart lists into LLM message content."""
+"""Tests for preprocessing — from what an interface received to the text the model sees.
+
+Covers both halves: the interface's _preprocess (transcription, geocoding, files kept as
+files) and the LangGraph harness's rendering of the resulting Message.
+"""
 
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from aug.api.interfaces.base import FileContent, LocationContent, TextContent, _preprocess
+from aug.api.interfaces import base
+from aug.api.interfaces.base import FileContent, IncomingMessage, LocationContent, TextContent
+from aug.core.harness.langgraph import _render
+
+
+async def _preprocess(parts) -> str:
+    incoming = IncomingMessage(
+        parts=parts, interface="telegram", sender_id="1", context_id="tg-1-0", agent_version="x"
+    )
+    return _render(await base._preprocess(incoming))
+
 
 # ---------------------------------------------------------------------------
 # Helpers

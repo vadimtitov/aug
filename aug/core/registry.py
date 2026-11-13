@@ -4,10 +4,14 @@ To add a new agent, instantiate a BaseAgent subclass and add it to _REGISTRY.
 """
 
 from langchain_core.tools import BaseTool
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
+from aug.config import get_settings
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.agents.chat_agent import AugAgent
 from aug.core.agents.fake_agent import FakeAgent
+from aug.core.harness.base import Harness
+from aug.core.harness.langgraph import LangGraphHarness
 from aug.core.reflexes.homeassistant import homeassistant_reflex
 from aug.core.tools.brave_search import brave_search
 from aug.core.tools.browser import browser
@@ -35,6 +39,7 @@ from aug.core.tools.run_ssh import download_ssh_file, list_ssh_targets, run_ssh,
 from aug.core.tools.skills import delete_skill, get_skill, save_skill, write_skill_file
 from aug.core.tools.subagent import make_run_subagent_tool
 from aug.core.tools.tasks import create_task, delete_task, list_tasks, update_task
+from aug.dev.scripted import build_scripted_agent
 
 _V7_TOOLS = [
     brave_search,
@@ -489,6 +494,8 @@ def configure_mcp_tools(tools: list[BaseTool]) -> None:
     graceful degradation as "every MCP server failed to connect".
     """
     _REGISTRY.update(_build_v12_agents(tools))
+    if get_settings().SCRIPTED_AGENT:
+        _REGISTRY["scripted"] = build_scripted_agent()
 
 
 _REGISTRY: dict[str, BaseAgent] = {
@@ -709,6 +716,56 @@ def get_agent(name: str) -> BaseAgent:
         registered = ", ".join(_REGISTRY)
         raise ValueError(f"Unknown agent '{name}'. Registered agents: {registered}")
     return _REGISTRY[name]
+
+
+def configure_harnesses(checkpointer: BaseCheckpointSaver) -> None:
+    """Give every agent version's harness the app's checkpointer.  Called once from
+    aug/app.py's lifespan(), before any turn runs."""
+    _harnesses.configure(checkpointer)
+
+
+def get_harness(name: str) -> Harness:
+    """Return the harness that runs agent version *name*.
+
+    Raises:
+        ValueError: if *name* is not in the registry.
+    """
+    return _harnesses.get(name)
+
+
+def harnesses() -> list[Harness]:
+    """Every agent version's harness, for the lifespan to enter."""
+    return [_harnesses.get(name) for name in _REGISTRY]
+
+
+class _Harnesses:
+    """One harness per agent version, built on first use.
+
+    Keyed by the agent object too: configure_mcp_tools() rebuilds the v12 agents, and a
+    harness must never keep running the version it replaced.
+    """
+
+    def __init__(self) -> None:
+        self._checkpointer: BaseCheckpointSaver | None = None
+        self._built: dict[str, tuple[BaseAgent, Harness]] = {}
+
+    def configure(self, checkpointer: BaseCheckpointSaver) -> None:
+        self._checkpointer = checkpointer
+        self._built.clear()
+
+    def get(self, name: str) -> Harness:
+        agent = get_agent(name)
+        built = self._built.get(name)
+        if built is not None and built[0] is agent:
+            return built[1]
+        if self._checkpointer is None:
+            raise RuntimeError("configure_harnesses() has not run yet")
+        harness = LangGraphHarness(agent, self._checkpointer)
+        self._built[name] = (agent, harness)
+        return harness
+
+
+_harnesses = _Harnesses()
 
 
 def _build_v12_agents(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:

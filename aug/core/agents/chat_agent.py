@@ -64,6 +64,7 @@ class ChatAgent(BaseAgent):
         self.reflexes = reflexes or []
         self._system_prompt = system_prompt
         self._model_name = model
+        self.model_name = model
         self._compaction_model = compaction_model
         self._compaction_threshold = compaction_threshold
         self._context_window = context_window
@@ -174,6 +175,7 @@ class AugAgent(BaseAgent):
         self.reflexes = reflexes or []
         self.recursion_limit = recursion_limit
         self._model_name = model
+        self.model_name = model
         self._compaction_model = compaction_model
         self._compaction_threshold = compaction_threshold
         self._context_window = context_window

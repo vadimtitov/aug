@@ -134,7 +134,7 @@ async def compact_messages(
 
 async def compact_thread(
     agent: BaseAgent,
-    thread_id: str,
+    context_id: str,
     checkpointer: BaseCheckpointSaver,
 ) -> bool:
     """Compact the full message history of a thread on demand.
@@ -144,7 +144,7 @@ async def compact_thread(
 
     Args:
         agent: The agent whose compaction settings to use.
-        thread_id: The thread to compact.
+        context_id: The thread to compact.
         checkpointer: The checkpointer holding the thread state.
 
     Returns:
@@ -156,7 +156,7 @@ async def compact_thread(
     if not agent._compaction_model:
         raise ValueError(f"Agent '{type(agent).__name__}' has no compaction_model configured.")
 
-    config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+    config: RunnableConfig = {"configurable": {"thread_id": context_id}}
     snapshot = await agent.aget_state(config, checkpointer)
     messages: list[AnyMessage] = snapshot.values.get("messages", [])
 

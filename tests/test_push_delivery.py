@@ -1,6 +1,6 @@
 """Tests for push delivery interface methods.
 
-Covers RestApiInterface stubs and TelegramInterface.resolve_thread / send_proactive /
+Covers RestApiInterface stubs and TelegramInterface.resolve_context / send_proactive /
 send_proactive_stream — the three abstract BaseInterface methods added to support
 scheduled tasks and external push routing.
 """
@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from aug.core.events import ChatModelStreamEvent
+from tests.harness_fakes import ScriptedHarness
 
 # ---------------------------------------------------------------------------
 # RestApiInterface
@@ -22,28 +23,28 @@ def rest_iface():
     """Return a RestApiInterface with a mock checkpointer."""
     from aug.api.interfaces.rest import RestApiInterface
 
-    return RestApiInterface(checkpointer=MagicMock())
+    return RestApiInterface()
 
 
 @pytest.mark.asyncio
 async def test_rest_resolve_thread_returns_passthrough(rest_iface):
     """Specific thread IDs are returned unchanged."""
-    assert await rest_iface.resolve_thread("tg-12345-0") == "tg-12345-0"
-    assert await rest_iface.resolve_thread("some-thread-id") == "some-thread-id"
+    assert await rest_iface.resolve_context("tg-12345-0") == "tg-12345-0"
+    assert await rest_iface.resolve_context("some-thread-id") == "some-thread-id"
 
 
 @pytest.mark.asyncio
 async def test_rest_resolve_thread_default_raises(rest_iface):
     """'default' is not meaningful for REST — must raise ValueError."""
     with pytest.raises(ValueError, match="default"):
-        await rest_iface.resolve_thread("default")
+        await rest_iface.resolve_context("default")
 
 
 @pytest.mark.asyncio
 async def test_rest_resolve_thread_new_raises(rest_iface):
     """'new' is not meaningful for REST — must raise ValueError."""
     with pytest.raises(ValueError, match="new"):
-        await rest_iface.resolve_thread("new")
+        await rest_iface.resolve_context("new")
 
 
 @pytest.mark.asyncio
@@ -67,47 +68,47 @@ async def test_rest_send_proactive_stream_consumes_stream(rest_iface):
 
 
 # ---------------------------------------------------------------------------
-# Telegram: _parse_thread_id
+# Telegram: _parse_context_id
 # ---------------------------------------------------------------------------
 
 
 def test_parse_dm_thread_id():
     """DM thread IDs parse to (chat_id, None)."""
-    from aug.api.interfaces.telegram.interface import _parse_thread_id
+    from aug.api.interfaces.telegram.interface import _parse_context_id
 
-    chat_id, topic_id = _parse_thread_id("tg-12345-3")
+    chat_id, topic_id = _parse_context_id("tg-12345-3")
     assert chat_id == 12345
     assert topic_id is None
 
 
 def test_parse_topic_thread_id():
     """Topic thread IDs parse to (chat_id, topic_id)."""
-    from aug.api.interfaces.telegram.interface import _parse_thread_id
+    from aug.api.interfaces.telegram.interface import _parse_context_id
 
-    chat_id, topic_id = _parse_thread_id("tg-12345-topic-42")
+    chat_id, topic_id = _parse_context_id("tg-12345-topic-42")
     assert chat_id == 12345
     assert topic_id == 42
 
 
 def test_parse_negative_chat_id():
     """Negative chat IDs (Telegram supergroups) are parsed correctly."""
-    from aug.api.interfaces.telegram.interface import _parse_thread_id
+    from aug.api.interfaces.telegram.interface import _parse_context_id
 
-    chat_id, topic_id = _parse_thread_id("tg--100123456789-topic-5")
+    chat_id, topic_id = _parse_context_id("tg--100123456789-topic-5")
     assert chat_id == -100123456789
     assert topic_id == 5
 
 
 def test_parse_invalid_thread_id_raises():
     """Malformed thread IDs raise ValueError."""
-    from aug.api.interfaces.telegram.interface import _parse_thread_id
+    from aug.api.interfaces.telegram.interface import _parse_context_id
 
     with pytest.raises(ValueError):
-        _parse_thread_id("not-a-telegram-id")
+        _parse_context_id("not-a-telegram-id")
 
 
 # ---------------------------------------------------------------------------
-# TelegramInterface: resolve_thread
+# TelegramInterface: resolve_context
 # ---------------------------------------------------------------------------
 
 
@@ -116,7 +117,7 @@ def tg_iface():
     """Return a TelegramInterface with a mock checkpointer and mock bot."""
     from aug.api.interfaces.telegram.interface import TelegramInterface
 
-    iface = TelegramInterface(checkpointer=MagicMock())
+    iface = TelegramInterface()
     mock_bot = AsyncMock()
     iface._bot_app = MagicMock()
     iface._bot_app.bot = mock_bot
@@ -126,7 +127,7 @@ def tg_iface():
 @pytest.mark.asyncio
 async def test_tg_resolve_thread_passthrough(tg_iface):
     """Concrete thread IDs are returned unchanged."""
-    result = await tg_iface.resolve_thread("tg-12345-topic-42")
+    result = await tg_iface.resolve_context("tg-12345-topic-42")
     assert result == "tg-12345-topic-42"
 
 
@@ -135,7 +136,7 @@ async def test_tg_resolve_thread_default_with_explicit_chat_id(tg_iface):
     """'default' with an explicit chat_id resolves to the DM thread for that chat."""
     with patch("aug.api.interfaces.telegram.utils.load_state") as mock_state:
         mock_state.return_value.telegram.chats = {}
-        result = await tg_iface.resolve_thread("default", chat_id=12345)
+        result = await tg_iface.resolve_context("default", chat_id=12345)
     assert result == "tg-12345-0"
 
 
@@ -144,7 +145,7 @@ async def test_tg_resolve_thread_embedded_chat_id(tg_iface):
     """'default:{chat_id}' resolves to the DM thread for that exact chat_id."""
     with patch("aug.api.interfaces.telegram.utils.load_state") as mock_state:
         mock_state.return_value.telegram.chats = {}
-        result = await tg_iface.resolve_thread("default:77777")
+        result = await tg_iface.resolve_context("default:77777")
     assert result == "tg-77777-0"
 
 
@@ -159,7 +160,7 @@ async def test_tg_resolve_thread_default_finds_chat_from_settings(tg_iface):
         patch("aug.api.interfaces.telegram.utils.load_state") as mock_state,
     ):
         mock_state.return_value.telegram.chats = {}
-        result = await tg_iface.resolve_thread("default")
+        result = await tg_iface.resolve_context("default")
     assert result == "tg-99999-0"
 
 
@@ -171,7 +172,7 @@ async def test_tg_resolve_thread_default_no_chats_raises(tg_iface):
     settings = AppSettings(conversations={})
     with patch("aug.api.interfaces.telegram.interface.load_settings", return_value=settings):
         with pytest.raises(ValueError, match="No default"):
-            await tg_iface.resolve_thread("default")
+            await tg_iface.resolve_context("default")
 
 
 @pytest.mark.asyncio
@@ -182,7 +183,7 @@ async def test_tg_resolve_thread_new_creates_forum_topic(tg_iface):
     )
     with patch("aug.api.interfaces.telegram.utils.load_state") as mock_state:
         mock_state.return_value.telegram.chats = {}
-        result = await tg_iface.resolve_thread("new", chat_id=12345, topic_name="My Topic")
+        result = await tg_iface.resolve_context("new", chat_id=12345, topic_name="My Topic")
 
     tg_iface._bot_app.bot.create_forum_topic.assert_called_once_with(chat_id=12345, name="My Topic")
     assert result == "tg-12345-topic-99"
@@ -263,7 +264,7 @@ async def test_fire_push_into_topic_inherits_group_version(tg_iface):
     """Tasks created from a forum topic store the raw tg-{chat}-topic-{n} thread ID.
 
     If such a topic has no version of its own, resolution must fall back to the group's
-    rather than yielding the unregistered "default" sentinel — get_agent would raise,
+    rather than yielding the unregistered "default" sentinel — get_harness would raise,
     fire_task would swallow it into 10 backoff retries and then dead-letter, and the
     user would never be told their scheduled task stopped running.
     """
@@ -278,17 +279,17 @@ async def test_fire_push_into_topic_inherits_group_version(tg_iface):
 
     with (
         patch("aug.api.interfaces.base.load_settings", return_value=settings),
-        patch("aug.core.dispatch.get_agent") as mock_get_agent,
+        patch("aug.core.dispatch.get_harness", return_value=ScriptedHarness()) as mock_get_harness,
     ):
         await fire_push(
             app,
             interface="telegram",
-            thread_id="tg--100-topic-7",
+            context_id="tg--100-topic-7",
             message="daily standup",
             push_type="agent",
         )
 
-    mock_get_agent.assert_called_once_with("v9_claude")
+    mock_get_harness.assert_called_once_with("v9_claude")
     tg_iface.send_proactive_stream.assert_awaited_once()
 
 
@@ -297,7 +298,7 @@ async def test_tg_resolve_thread_default_skips_topic_and_rest_keys(tg_iface):
     """The legacy fallback scans every conversation key, not just Telegram chat ones.
 
     A topic key or a REST key must be skipped, not parsed as a chat_id — int() on
-    "tg--100-topic-7" would raise and take down every thread_id="default" task.
+    "tg--100-topic-7" would raise and take down every context_id="default" task.
     """
     from aug.utils.file_settings import AppSettings, ConversationSettings
 
@@ -313,7 +314,7 @@ async def test_tg_resolve_thread_default_skips_topic_and_rest_keys(tg_iface):
         patch("aug.api.interfaces.telegram.utils.load_state") as mock_state,
     ):
         mock_state.return_value.telegram.chats = {}
-        assert await tg_iface.resolve_thread("default") == "tg-99999-0"
+        assert await tg_iface.resolve_context("default") == "tg-99999-0"
 
 
 def test_rest_conversation_id_is_namespaced(rest_iface):

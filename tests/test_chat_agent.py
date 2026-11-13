@@ -49,7 +49,7 @@ def time_aware_agent():
 def _state(content: str | list) -> AgentState:
     return AgentState(
         messages=[HumanMessage(content=content)],
-        thread_id="test",
+        context_id="test",
         interface="telegram",
     )
 

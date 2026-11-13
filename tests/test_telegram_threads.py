@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from aug.api.interfaces.telegram.utils import get_conversation_id, get_thread_id
+from aug.api.interfaces.telegram.utils import get_context_id, get_conversation_id
 from aug.utils.file_settings import AppSettings, ConversationSettings
 
 
@@ -25,23 +25,23 @@ def allow_all_chats():
 
 
 def test_named_topic_produces_topic_thread_id():
-    thread_id = get_thread_id(chat_id=123, topic_id=42)
-    assert thread_id == "tg-123-topic-42"
+    context_id = get_context_id(chat_id=123, topic_id=42)
+    assert context_id == "tg-123-topic-42"
 
 
 def test_same_topic_different_chats_are_isolated():
-    assert get_thread_id(chat_id=111, topic_id=1) != get_thread_id(chat_id=222, topic_id=1)
+    assert get_context_id(chat_id=111, topic_id=1) != get_context_id(chat_id=222, topic_id=1)
 
 
 def test_different_topics_same_chat_are_isolated():
-    assert get_thread_id(chat_id=123, topic_id=1) != get_thread_id(chat_id=123, topic_id=2)
+    assert get_context_id(chat_id=123, topic_id=1) != get_context_id(chat_id=123, topic_id=2)
 
 
 def test_no_topic_falls_back_to_session_based():
     with patch("aug.api.interfaces.telegram.utils.load_state") as mock_load:
         mock_load.return_value.telegram.chats = {}
-        thread_id = get_thread_id(chat_id=123, topic_id=None)
-    assert thread_id == "tg-123-0"
+        context_id = get_context_id(chat_id=123, topic_id=None)
+    assert context_id == "tg-123-0"
 
 
 def test_no_topic_reflects_non_zero_session():
@@ -50,8 +50,8 @@ def test_no_topic_reflects_non_zero_session():
     state = AppState()
     state.telegram.chats["123"] = TelegramChatState(session=5)
     with patch("aug.api.interfaces.telegram.utils.load_state", return_value=state):
-        thread_id = get_thread_id(chat_id=123, topic_id=None)
-    assert thread_id == "tg-123-5"
+        context_id = get_context_id(chat_id=123, topic_id=None)
+    assert context_id == "tg-123-5"
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ def test_no_topic_reflects_non_zero_session():
 def telegram_interface():
     from aug.api.interfaces.telegram.interface import TelegramInterface
 
-    return TelegramInterface(checkpointer=MagicMock())
+    return TelegramInterface()
 
 
 @pytest.mark.asyncio

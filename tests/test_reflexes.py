@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from aug.api.interfaces.base import _recent_history
+from aug.core.harness.langgraph import LangGraphHarness
 from aug.core.reflexes import Reflex, ReflexOutput, run_reflexes
 
 # ---------------------------------------------------------------------------
@@ -88,8 +88,12 @@ async def test_run_reflexes_swallows_timeout() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _recent_history
+# LangGraphHarness._recent_history
 # ---------------------------------------------------------------------------
+
+
+async def _recent_history(agent, context_id: str, checkpointer, n: int = 3):
+    return await LangGraphHarness(agent, checkpointer)._recent_history(context_id, n=n)
 
 
 def _make_agent(messages: list) -> MagicMock:

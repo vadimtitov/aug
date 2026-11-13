@@ -1,0 +1,62 @@
+"""The "scripted" agent: a real AugAgent whose model is the fake LLM in scripts/fakes.py.
+
+Registered only when ``SCRIPTED_AGENT`` is set, which only the scenario stack
+(docker-compose.scenarios.yml) does.  That stack also points ``LLM_BASE_URL`` at the
+fake, so every model call — the agent's, compaction's, consolidation's — is scripted
+and free.  The tools below exist so scenarios can exercise progress, approvals and
+/stop without touching anything real.
+"""
+
+import asyncio
+
+from langchain_core.runnables.config import RunnableConfig
+from langchain_core.tools import tool
+
+from aug.core.agents.chat_agent import AugAgent
+from aug.core.events import send_tool_progress_update
+from aug.core.run import AGENT_RUN_CONFIG_KEY
+from aug.core.tools.approval import requires_approval
+
+SCRIPTED_MODEL = "scripted"
+
+
+@tool
+async def dev_progress(steps: int) -> str:
+    """Report *steps* progress updates, then finish."""
+    for i in range(1, steps + 1):
+        await send_tool_progress_update(f"Step {i} of {steps}")
+        await asyncio.sleep(0.05)
+    return f"Completed {steps} steps."
+
+
+@tool
+@requires_approval(describe=lambda command: ("dev", command))
+async def dev_guarded(command: str) -> str:
+    """Run *command*, which needs the user's approval first."""
+    return f"Ran: {command}"
+
+
+@tool
+async def dev_wait(seconds: float, config: RunnableConfig) -> str:
+    """Wait *seconds*, stopping early if the user asks the run to stop."""
+    run = (config or {}).get("configurable", {}).get(AGENT_RUN_CONFIG_KEY)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + seconds
+    while loop.time() < deadline:
+        if run is not None and run.user_requested_stop.is_set():
+            return "Stopped by the user before the wait finished."
+        await asyncio.sleep(0.05)
+    return f"Waited {seconds} seconds."
+
+
+def build_scripted_agent() -> AugAgent:
+    return AugAgent(
+        model=SCRIPTED_MODEL,
+        tools=[dev_progress, dev_guarded, dev_wait],
+        temperature=0.0,
+        recursion_limit=100,
+        compaction_model=SCRIPTED_MODEL,
+        compaction_threshold=0.8,
+        context_window=200_000,
+        max_summary_tokens=500,
+    )

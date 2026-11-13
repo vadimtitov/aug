@@ -7,11 +7,10 @@ import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
-from langgraph.checkpoint.base import BaseCheckpointSaver
-
 from aug.api.interfaces.base import BaseInterface, IncomingMessage, TextContent
 from aug.api.schemas.chat import ChatRequest
-from aug.core.events import AgentEvent, ChatModelStreamEvent
+from aug.core.events import ChatModelStreamEvent
+from aug.core.harness import HarnessEvent
 from aug.core.tools.approval import ApprovalDecision, ApprovalRequest
 
 logger = logging.getLogger(__name__)
@@ -51,24 +50,21 @@ class RestApiInterface(BaseInterface[_RestContext]):
     """REST API frontend — runs every request through the full BaseInterface pipeline.
 
     Both /chat/invoke and /chat/stream benefit from reflexes, structured logging,
-    run lifecycle management, and error handling defined in BaseInterface._execute_run.
+    run lifecycle management, and error handling defined in BaseInterface.
     """
-
-    def __init__(self, checkpointer: BaseCheckpointSaver) -> None:
-        super().__init__(checkpointer)
 
     async def receive_message(self, context: _RestContext) -> IncomingMessage | None:
         req = context.request
         return IncomingMessage(
             parts=[TextContent(text=req.message)],
             interface="rest_api",
-            sender_id=req.thread_id,
-            thread_id=req.thread_id,
+            sender_id=req.context_id,
+            context_id=req.context_id,
             agent_version=context.agent_version,
-            user_id=req.thread_id,  # REST has no separate user identity — the thread is the caller
+            user_id=req.context_id,  # REST has no separate user identity — the thread is the caller
         )
 
-    async def send_stream(self, stream: AsyncIterator[AgentEvent], context: _RestContext) -> None:
+    async def send_stream(self, stream: AsyncIterator[HarnessEvent], context: _RestContext) -> None:
         async for event in stream:
             if isinstance(event, ChatModelStreamEvent) and event.delta:
                 context._queue.put_nowait(event.delta)
@@ -79,30 +75,30 @@ class RestApiInterface(BaseInterface[_RestContext]):
     async def send_notification(self, target_id: str, text: str) -> None:
         pass  # REST has no push channel — reminders set during REST sessions are silently dropped
 
-    async def resolve_thread(
+    async def resolve_context(
         self,
-        thread_id: str,
+        context_id: str,
         *,
         topic_name: str | None = None,
         chat_id: int | None = None,
     ) -> str:
-        """Return *thread_id* unchanged; raise for logical aliases unsupported by REST.
+        """Return *context_id* unchanged; raise for logical aliases unsupported by REST.
 
         REST has no persistent connection, so ``"default"`` and ``"new"`` have no
         meaning.  Only concrete thread IDs are valid here.
         """
-        if thread_id in ("default", "new"):
+        if context_id in ("default", "new"):
             raise ValueError(
-                f"REST API does not support {thread_id!r} thread resolution — "
+                f"REST API does not support {context_id!r} thread resolution — "
                 "push delivery requires a Telegram interface."
             )
-        return thread_id
+        return context_id
 
-    def conversation_id(self, thread_id: str) -> str:
+    def conversation_id(self, context_id: str) -> str:
         """REST thread IDs are stable and client-chosen, so each is its own conversation."""
-        return f"rest-{thread_id}"
+        return f"rest-{context_id}"
 
-    async def send_proactive(self, thread_id: str, text: str) -> None:
+    async def send_proactive(self, context_id: str, text: str) -> None:
         """No-op: REST has no push channel for forward-type pushes."""
 
     async def announcement_threads(self) -> list[str]:
@@ -110,7 +106,7 @@ class RestApiInterface(BaseInterface[_RestContext]):
         return []
 
     async def send_proactive_stream(
-        self, thread_id: str, stream: AsyncIterator[AgentEvent]
+        self, context_id: str, stream: AsyncIterator[HarnessEvent]
     ) -> None:
         """Consume and discard the stream; REST has no push channel."""
         async for _ in stream:
@@ -119,7 +115,7 @@ class RestApiInterface(BaseInterface[_RestContext]):
     async def request_approval(self, request: ApprovalRequest, context: _RestContext) -> None:
         context._queue.put_nowait(
             f"\n⏸ Approval required: [{request.tool_name}] `{request.description}`. "
-            f"Use POST /chat/{{thread_id}}/approve with "
+            f"Use POST /chat/{{context_id}}/approve with "
             f'{{"decision": "approved_once" | "approved_always" | "denied"}}.'
         )
 
@@ -143,23 +139,23 @@ class RestApiInterface(BaseInterface[_RestContext]):
                 task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-        done_payload = json.dumps({"thread_id": request.thread_id, "agent": agent_version})
+        done_payload = json.dumps({"context_id": request.context_id, "agent": agent_version})
         yield f"event: done\ndata: {done_payload}\n\n"
 
     async def invoke_resume(
         self,
-        thread_id: str,
+        context_id: str,
         agent_version: str,
         sender_id: str,
         decision: ApprovalDecision,
     ) -> str:
         """Resume a paused approval and return the complete response text."""
         ctx = _RestContext(
-            request=ChatRequest(thread_id=thread_id, message="", agent=agent_version),
+            request=ChatRequest(context_id=context_id, message="", agent=agent_version),
             agent_version=agent_version,
         )
         task = asyncio.create_task(
-            self._resume_and_close(ctx, thread_id, agent_version, sender_id, decision)
+            self._resume_and_close(ctx, context_id, agent_version, sender_id, decision)
         )
         text = await ctx.collect()
         await task
@@ -174,14 +170,14 @@ class RestApiInterface(BaseInterface[_RestContext]):
     async def _resume_and_close(
         self,
         ctx: _RestContext,
-        thread_id: str,
+        context_id: str,
         agent_version: str,
         sender_id: str,
         decision: ApprovalDecision,
     ) -> None:
         try:
             await self._execute_resume(
-                thread_id=thread_id,
+                context_id=context_id,
                 agent_version=agent_version,
                 sender_id=sender_id,
                 interface="rest_api",

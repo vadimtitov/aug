@@ -10,7 +10,7 @@ class CreateThreadRequest(BaseModel):
 
 
 class ThreadMetadata(BaseModel):
-    thread_id: str
+    context_id: str
     agent_version: str
     created_at: datetime
     updated_at: datetime
@@ -23,7 +23,7 @@ class MessageRecord(BaseModel):
 
 
 class ThreadDetail(BaseModel):
-    thread_id: str
+    context_id: str
     agent_version: str
     created_at: datetime
     updated_at: datetime

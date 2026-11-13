@@ -39,7 +39,7 @@ async def create_thread(body: CreateThreadRequest, request: Request) -> ThreadMe
             detail=f"Unknown agent '{body.agent}'. Available: {list_agents()}",
         )
 
-    thread_id = str(uuid.uuid4())
+    context_id = str(uuid.uuid4())
     now = datetime.now(tz=UTC)
     pool = _get_pool(request)
 
@@ -48,34 +48,34 @@ async def create_thread(body: CreateThreadRequest, request: Request) -> ThreadMe
         INSERT INTO threads (thread_id, agent_version, created_at, updated_at)
         VALUES ($1, $2, $3, $4)
         """,
-        thread_id,
+        context_id,
         body.agent,
         now,
         now,
     )
-    logger.info("created thread=%s agent=%s", thread_id, body.agent)
+    logger.info("created thread=%s agent=%s", context_id, body.agent)
     return ThreadMetadata(
-        thread_id=thread_id,
+        context_id=context_id,
         agent_version=body.agent,
         created_at=now,
         updated_at=now,
     )
 
 
-@router.get("/{thread_id}", response_model=ThreadDetail)
-async def get_thread(thread_id: str, request: Request) -> ThreadDetail:
+@router.get("/{context_id}", response_model=ThreadDetail)
+async def get_thread(context_id: str, request: Request) -> ThreadDetail:
     """Return thread metadata and message history."""
     pool = _get_pool(request)
 
     row = await pool.fetchrow(
         "SELECT thread_id, agent_version, created_at, updated_at FROM threads WHERE thread_id = $1",
-        thread_id,
+        context_id,
     )
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found.")
 
     return ThreadDetail(
-        thread_id=row["thread_id"],
+        context_id=row["thread_id"],
         agent_version=row["agent_version"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -83,14 +83,14 @@ async def get_thread(thread_id: str, request: Request) -> ThreadDetail:
     )
 
 
-@router.delete("/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_thread(thread_id: str, request: Request) -> None:
+@router.delete("/{context_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_thread(context_id: str, request: Request) -> None:
     """Delete a thread and its associated checkpoint data."""
     pool = _get_pool(request)
     result = await pool.execute(
         "DELETE FROM threads WHERE thread_id = $1",
-        thread_id,
+        context_id,
     )
     if result == "DELETE 0":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found.")
-    logger.info("deleted thread=%s", thread_id)
+    logger.info("deleted thread=%s", context_id)

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-_CONFIG = {"configurable": {"thread_id": "test-thread", "interface": "telegram", "sender_id": ""}}
+_CONFIG = {"configurable": {"context_id": "test-thread", "interface": "telegram", "sender_id": ""}}
 
 
 def _future_iso(hours: float = 2.0) -> str:
@@ -84,7 +84,7 @@ async def test_set_reminder_stores_push_type_forward():
     mock_pool, mock_conn = _make_pool_mock()
     config = {
         "configurable": {
-            "thread_id": "test-thread",
+            "context_id": "test-thread",
             "interface": "telegram",
             "sender_id": "999888777",
         }
@@ -109,7 +109,7 @@ async def test_set_reminder_thread_id_uses_sender_id():
     mock_pool, mock_conn = _make_pool_mock()
     config = {
         "configurable": {
-            "thread_id": "tg-123-1",
+            "context_id": "tg-123-1",
             "interface": "telegram",
             "sender_id": "123",
         }
@@ -119,7 +119,7 @@ async def test_set_reminder_thread_id_uses_sender_id():
         await set_reminder.ainvoke({"when": _future_iso(1), "message": "ping"}, config=config)
 
     call_args = mock_conn.fetchval.call_args
-    # thread_id 'default:123' must appear in the INSERT args
+    # context_id 'default:123' must appear in the INSERT args
     assert "default:123" in call_args.args
 
 

@@ -418,6 +418,40 @@ LEGACY_SYSTEM_PROMPT = (
 # The LLM decides based on content: steer if it's a correction, stop if the user wants to cancel.
 MID_RUN_INJECTION_PREFIX = "[Message from user while you were working]: "
 
+# What the user is told when a turn ends with a HarnessError, keyed by its kind.  Every
+# harness maps its own client errors onto these kinds, so the wording is the same on all.
+HARNESS_ERROR_MESSAGES = {
+    "context_full": "Context window is full. Use /clear to start a fresh conversation.",
+    "rate_limited": "The model is rate-limited right now. Please try again in a minute.",
+    "auth": "The model provider rejected AUG's credentials. Check the model login or API key.",
+    "unavailable": (
+        "The model or a service AUG depends on is unavailable right now. "
+        "Please try again in a moment."
+    ),
+    "step_limit": "The agent got stuck in a loop and was stopped. Try rephrasing your request.",
+    "internal": "Sorry, something went wrong.",
+}
+# Appended to a rate_limited message when the harness knows when the limit resets.
+HARNESS_RETRY_AT_SUFFIX = " The limit resets at {time} UTC."
+
+# Told after /stop ended a turn.  Whatever already ran is not undone.
+HARNESS_STOPPED_MESSAGE = "⏹ Stopped."
+
+# Sent when an agent push or scheduled task runs past its time limit and is stopped.
+UNATTENDED_TIMED_OUT_MESSAGE = (
+    "⏹ A background task ran for over {minutes} minutes without finishing and was stopped."
+)
+
+# Written into the history when the user stops a turn with /stop, so the model knows on
+# the next turn that it was interrupted rather than guessing what happened.  The first is
+# the result of every tool call the stop cut off; the second is added when the stop came
+# while the model was still writing, with no tool running.
+HARNESS_TOOL_STOPPED_RESULT = (
+    "Stopped: the user pressed /stop while this tool was running, so it did not finish "
+    "and returned no result. Whatever it did before that may already have taken effect."
+)
+HARNESS_TURN_STOPPED_NOTE = "[The user pressed /stop and ended your turn before you replied.]"
+
 # Rendered into the conversation when someone shares a location.  The sharer is named
 # because a group can have several live locations running at once, and coordinates alone
 # leave the agent unable to say whose is whose.
