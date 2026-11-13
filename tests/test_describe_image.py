@@ -45,7 +45,8 @@ async def test_describe_image_vision_model_failure(image_file, describe_tool):
     tool, _, mock_llm = describe_tool
     mock_llm.ainvoke = AsyncMock(side_effect=Exception("model error"))
     result = await tool.ainvoke({"path": str(image_file), "question": "What is this?"})
-    assert "error" in result.lower()
+    assert "FAILED" in result
+    assert "Do not try to analyse it another way" in result  # no pixel-poking fallbacks
 
 
 @pytest.mark.asyncio

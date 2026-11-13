@@ -6,13 +6,16 @@ that cannot process image inputs directly.
 
 import asyncio
 import base64
+import logging
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool, tool
 
 from aug.core.llm import build_chat_model
-from aug.core.prompts import IMAGE_DESCRIPTION_PROMPT
+from aug.core.prompts import IMAGE_DESCRIPTION_FAILED, IMAGE_DESCRIPTION_PROMPT
+
+logger = logging.getLogger(__name__)
 
 
 def make_describe_image_tool(model: str) -> BaseTool:
@@ -54,7 +57,8 @@ def make_describe_image_tool(model: str) -> BaseTool:
             response = await _llm.ainvoke(messages, config={"callbacks": []})
             return str(response.content)
         except Exception as exc:
-            return f"Error describing image: {exc}"
+            logger.warning("describe_image failed model=%s: %s", model, exc)
+            return IMAGE_DESCRIPTION_FAILED.format(error=type(exc).__name__)
 
     return describe_image
 

@@ -525,6 +525,15 @@ Answer the following question about the image as specifically and concisely as p
 Include any details directly relevant to the question. Do not add conversational filler.\
 """
 
+# describe_image's result when the vision model fails.  Without the last sentence a
+# model tends to "look" at the image some other way (pixel statistics via run_bash),
+# burning many tool rounds for nothing.
+IMAGE_DESCRIPTION_FAILED = (
+    "Image description FAILED: {error}. You cannot see this image right now. Do not "
+    "try to analyse it another way (no run_bash, no OCR, no pixel inspection): tell "
+    "the user you couldn't look at the image and continue with the rest of the request."
+)
+
 IMAGE_DESCRIPTION_SYSTEM_NOTE = """\
 <image_handling>
     You cannot see images directly. When the user sends an image, call describe_image to \
