@@ -13,7 +13,7 @@ from langchain_core.tools import BaseTool
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.compaction import compact_messages, count_tokens
 from aug.core.llm import build_chat_model
-from aug.core.prompts import INTERFACE_PROMPTS, USER_IMAGE_HINT
+from aug.core.prompts import INTERFACE_PROMPTS, TOOL_IMAGE_OMITTED, USER_IMAGE_HINT
 from aug.core.reflexes import Reflex
 from aug.core.state import AgentState, AgentStateUpdate
 from aug.core.tools.describe_image import make_describe_image_tool
@@ -248,7 +248,9 @@ async def _expand_images(messages: list[AnyMessage], *, vision: bool) -> list[An
     """Expand the [[img:path|mime]] markers in every user message for the model call.
 
     With *vision* each marker becomes the image itself plus a hint with its path;
-    without, only the hint (the agent then has describe_image).  History keeps the
+    without, only the hint (the agent then has describe_image), and any image a tool
+    returned (an MCP screenshot) is replaced by a note, since such a model rejects the
+    whole call over one image.  History keeps the
     markers, and every call expands all of them the same way, re-reading each image
     from its path, so the prompt prefix stays byte-identical and cached from turn to
     turn.
@@ -265,6 +267,9 @@ async def _expand_images(messages: list[AnyMessage], *, vision: bool) -> list[An
     budget = _ImageBudget(skip=max(0, total - MAX_INLINE_IMAGES) if vision else total)
     result = list(messages)
     for i, msg in enumerate(messages):
+        if not vision and isinstance(msg, ToolMessage) and isinstance(msg.content, list):
+            result[i] = msg.model_copy(update={"content": _without_images(msg.content)})
+            continue
         if not isinstance(msg, HumanMessage):
             continue
         blocks = await _inline_image_markers(msg.content, budget)
@@ -330,6 +335,15 @@ async def _markers_to_blocks(text: str, budget: _ImageBudget) -> list:
     if after:
         blocks.append({"type": "text", "text": after})
     return blocks
+
+
+def _without_images(content: list) -> list:
+    return [
+        {"type": "text", "text": TOOL_IMAGE_OMITTED}
+        if isinstance(block, dict) and block.get("type") in ("image", "image_url")
+        else block
+        for block in content
+    ]
 
 
 def _read_stored_image(path: Path) -> bytes | None:
