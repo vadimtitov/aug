@@ -108,16 +108,16 @@ All endpoints require JWT auth (same as existing routes).
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/skills` | List local skills (name, description, always_on, file count) |
+| `GET` | `/skills` | List local skills (name, description, file count) |
 | `GET` | `/skills/{name}` | Skill detail + file list |
 | `GET` | `/skills/{name}/file?path=` | Raw file content |
-| `PUT` | `/skills/{name}` | Update description, always_on, and/or body (backend reassembles SKILL.md) |
+| `PUT` | `/skills/{name}` | Update description and/or body (backend reassembles SKILL.md, keeping its other frontmatter) |
 | `PUT` | `/skills/{name}/file?path=` | Update a supporting file's content |
 | `DELETE` | `/skills/{name}` | Delete entire skill directory (with confirmation on frontend) |
 | `DELETE` | `/skills/{name}/file?path=` | Delete a supporting file |
 | `POST` | `/skills/{name}/install` | Download ClawHub zip + extract to disk |
 
-The `POST /skills/{name}/install` body: `{ slug: string, version?: string }`. Backend calls `GET https://clawhub.ai/api/v1/download?slug=...&tag=latest`, extracts zip into `data/skills/{name}/`.
+The `POST /skills/{name}/install` body: `{ slug: string, version?: string }`. Backend calls `GET https://clawhub.ai/api/v1/download?slug=...&tag=latest`, extracts zip into `workspace/skills/{name}/`.
 
 ---
 

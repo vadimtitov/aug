@@ -140,7 +140,7 @@ export function getSkillFile(name: string, path: string): Promise<string> {
 
 export function updateSkill(
   name: string,
-  patch: Partial<{ description: string; body: string; always_on: boolean }>
+  patch: Partial<{ description: string; body: string }>
 ): Promise<void> {
   return request<void>(`/skills/${encodeURIComponent(name)}`, {
     method: "PUT",

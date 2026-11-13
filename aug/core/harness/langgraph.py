@@ -38,6 +38,7 @@ from aug.core.harness.types import (
 )
 from aug.core.llm import build_chat_model
 from aug.core.prompts import (
+    HARNESS_STEP_LIMIT_NOTE,
     HARNESS_TOOL_STOPPED_RESULT,
     HARNESS_TURN_STOPPED_NOTE,
     MID_RUN_INJECTION_PREFIX,
@@ -50,11 +51,13 @@ from aug.utils.media import MODEL_IMAGE_TYPES, image_marker
 
 logger = logging.getLogger(__name__)
 
-# Tool rounds an unattended turn (a push, a scheduled task) may take.  Nobody is
-# watching it, so a runaway task is stopped early.  Counted here, not with LangGraph's
-# recursion_limit: the graph pauses after every tool round and each resume starts a
-# fresh step count, so a recursion_limit never binds across rounds.
+# Tool rounds a turn may take before it is stopped as a loop.  An unattended turn (a
+# push, a scheduled task) has nobody watching, so it is stopped early; a chat turn gets
+# room for long real work.  Counted here, not with LangGraph's recursion_limit: the
+# graph pauses after every tool round and each resume starts a fresh step count, so a
+# recursion_limit never binds across rounds.
 UNATTENDED_MAX_TOOL_ROUNDS = 10
+ATTENDED_MAX_TOOL_ROUNDS = 100
 
 
 class LangGraphHarness(Harness):
@@ -99,6 +102,14 @@ class LangGraphHarness(Harness):
 
     async def compact(self, context_id: str) -> bool:
         return await compact_thread(self.agent, context_id, self._checkpointer)
+
+    async def session_prompt(self, context_id: str, interface: str) -> str:
+        snapshot = await self.agent.aget_state(_config(context_id), self._checkpointer)
+        values = snapshot.values or {}
+        stored = values.get("session_prompt")
+        if stored is not None and values.get("session_prompt_key") == self.agent.prompt_key():
+            return stored
+        return await asyncio.to_thread(self.agent.new_session_prompt, interface)
 
     async def oneshot(self, prompt: str, tier: ModelTier = ModelTier.STRONG) -> str:
         if not self.agent.model_name:
@@ -150,6 +161,7 @@ class LangGraphHarness(Harness):
         }
 
         finished = False
+        step_limited = False
         tool_rounds = 0
         displays: list[str] = []  # reflex results to show the user, as they land
         reflex_task: asyncio.Task[None] | None = None
@@ -173,12 +185,16 @@ class LangGraphHarness(Harness):
                     finished = True
                     break
                 tool_rounds += 1
-                if not turn.attended and tool_rounds >= UNATTENDED_MAX_TOOL_ROUNDS:
+                cap = ATTENDED_MAX_TOOL_ROUNDS if turn.attended else UNATTENDED_MAX_TOOL_ROUNDS
+                if tool_rounds >= cap:
                     logger.warning(
-                        "unattended turn hit %d tool rounds context=%s", tool_rounds, context_id
+                        "turn hit %d tool rounds context=%s attended=%s",
+                        tool_rounds,
+                        context_id,
+                        turn.attended,
                     )
-                    yield TurnEnded(error=HarnessError(kind="step_limit"))
-                    return
+                    step_limited = True
+                    break
                 try:
                     injection = run.pending_agent_injection.get_nowait()
                 except asyncio.QueueEmpty:
@@ -188,6 +204,10 @@ class LangGraphHarness(Harness):
                 graph_input = Command(
                     update={"messages": [HumanMessage(content=_frame_injection(injection))]}
                 )
+        except GraphRecursionError:
+            # One round ran past the graph's own limit: end it like the tool-round cap.
+            logger.warning("agent hit recursion limit context=%s", context_id)
+            step_limited = True
         except Exception as e:
             if not run.user_requested_stop.is_set():
                 yield TurnEnded(error=_harness_error(e))
@@ -203,6 +223,8 @@ class LangGraphHarness(Harness):
 
         if run.user_requested_stop.is_set():
             await self._record_stop(context_id)
+        elif step_limited:
+            await self._record_note(context_id, HARNESS_STEP_LIMIT_NOTE)
         if reflex_task is not None:
             await asyncio.gather(reflex_task, return_exceptions=True)
         for text in displays:
@@ -217,7 +239,11 @@ class LangGraphHarness(Harness):
             except asyncio.QueueEmpty:
                 break
             unconsumed.append(Message(parts=_parts(leftover), sender=message.sender))
-        yield TurnEnded(unconsumed=unconsumed, cancelled=run.user_requested_stop.is_set())
+        yield TurnEnded(
+            error=HarnessError(kind="step_limit") if step_limited else None,
+            unconsumed=unconsumed,
+            cancelled=run.user_requested_stop.is_set(),
+        )
 
     async def _run_reflexes(
         self,
@@ -249,6 +275,18 @@ class LangGraphHarness(Harness):
                 await self.agent.aupdate_state(config, {"messages": note}, self._checkpointer)
         except Exception:
             logger.warning("record_stop_failed context=%s", context_id, exc_info=True)
+
+    async def _record_note(self, context_id: str, note: str) -> None:
+        """Add *note* to the history, so the next turn knows how this one ended.
+
+        Never raises: the turn is over either way.
+        """
+        try:
+            await self.agent.aupdate_state(
+                _config(context_id), {"messages": [HumanMessage(content=note)]}, self._checkpointer
+            )
+        except Exception:
+            logger.warning("record_note_failed context=%s", context_id, exc_info=True)
 
     async def _recent_history(self, context_id: str, n: int = 3) -> list[MessageContent]:
         """The last *n* user/assistant messages, as labelled strings, for reflexes."""

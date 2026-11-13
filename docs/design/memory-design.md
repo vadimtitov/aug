@@ -6,9 +6,26 @@ Build an AI personal assistant that feels genuinely known over months and years 
 The agent should know the user deeply, have a stable sense of its own identity, and evolve
 as the relationship develops.
 
-The mechanism: four plain-text files on disk, injected into every conversation as context,
-written back by the agent periodically via background consolidation jobs and mid-conversation
-notes.
+The mechanism: plain-text files in `workspace/memory/`, written back periodically by a
+background consolidation job (the dream) from mid-conversation notes.
+
+## How memory reaches the agent
+
+The workspace (`/app/data/workspace/`) holds `AGENTS.md` (persona and approach), `memory/`,
+`skills/` and `files/`. Each session's system prompt is built once, when the session starts
+(`aug.core.workspace.session_prompt`), in this order: environment facts (in code, including
+where memory lives), `AGENTS.md`, the interface's rules, a snapshot of `memory/MEMORY.md`,
+the skills index. It is stored with the session and reused on every turn, so the cached
+prompt prefix never changes mid-chat; a note, a dream or an edit shows from the next
+session.
+
+`MEMORY.md` is the index: one line per memory file, capped at 2000 characters. The agent
+reads the files themselves with a shell command when it needs them. Only the dream writes
+`memory/` (including `MEMORY.md`); it never touches `AGENTS.md`.
+
+On first start, the files below are copied from the old `/app/data/memory/`, and
+`AGENTS.md` is written from the template in `aug/core/workspace_template/` with the old
+`self.md` as its persona. The old folder is left in place.
 
 ---
 
@@ -87,8 +104,8 @@ consolidation LLM has no basis for deciding what is stale.
 What it is: timestamped raw notes taken mid-conversation by the agent via the `note` tool.
 Pending consolidation.
 
-This file is injected into the system prompt so facts noted in one session are visible to
-the agent before consolidation has run. Cleared after each nightly consolidation pass.
+Never injected into the system prompt: notes reach the agent through the files the dream
+writes from them. Cleared after each consolidation pass.
 
 Capped at 100 lines (ring buffer — oldest entries dropped when full).
 
@@ -154,7 +171,7 @@ consolidation. Also appends the reflection to `reflections.md`.
 
 ## The `note` tool
 
-The single write mechanism during a conversation. Used liberally — the threshold is low.
+The single write mechanism during a conversation.
 If a fact, preference, correction, pattern, or operational detail might be useful to
 remember next time, it gets noted.
 

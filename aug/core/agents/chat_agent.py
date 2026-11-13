@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import hashlib
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,15 +13,11 @@ from langchain_core.tools import BaseTool
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.compaction import compact_messages, count_tokens
 from aug.core.llm import build_chat_model
-from aug.core.prompts import (
-    IMAGE_DESCRIPTION_SYSTEM_NOTE,
-    INTERFACE_PROMPTS,
-    USER_IMAGE_HINT,
-    build_system_prompt,
-)
+from aug.core.prompts import INTERFACE_PROMPTS, USER_IMAGE_HINT
 from aug.core.reflexes import Reflex
 from aug.core.state import AgentState, AgentStateUpdate
 from aug.core.tools.describe_image import make_describe_image_tool
+from aug.core.workspace import session_prompt
 from aug.utils.logging import log_token_usage
 from aug.utils.media import IMAGE_MARKER, MODEL_IMAGE_TYPES
 from aug.utils.storage import file_store
@@ -38,7 +35,7 @@ class ChatAgent(BaseAgent):
 
         ChatAgent(
             model="gpt-4o",
-            system_prompt="You are a concise assistant.",
+            system_prompt="...",
             tools=[search, calculator],
             temperature=0.2,
         )
@@ -84,14 +81,17 @@ class ChatAgent(BaseAgent):
             seed=seed,
         ).bind_tools(self.tools)
 
-    def _build_system_prompt(self, state: AgentState) -> str:
-        prompts = INTERFACE_PROMPTS.get(state.interface)
+    def new_session_prompt(self, interface: str) -> str:
+        prompts = INTERFACE_PROMPTS.get(interface)
         interface_context = prompts.interface_context if prompts else ""
         parts = [self._system_prompt, interface_context]
         return "\n\n".join(p for p in parts if p)
 
+    def prompt_key(self) -> str:
+        return f"ChatAgent:{hashlib.sha256(self._system_prompt.encode()).hexdigest()[:12]}"
+
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
-        return AgentStateUpdate(system_prompt=self._build_system_prompt(state))
+        return self.session_prompt_update(state)
 
     async def respond(self, state: AgentState) -> AgentStateUpdate:
         messages = _drop_orphaned_tool_calls(state.messages)
@@ -106,8 +106,8 @@ class ChatAgent(BaseAgent):
                 context_window=self._context_window,
                 max_summary_tokens=self._max_summary_tokens,
             )
-        if state.system_prompt:
-            messages = [SystemMessage(content=state.system_prompt), *messages]
+        if state.session_prompt:
+            messages = [SystemMessage(content=state.session_prompt), *messages]
         messages = await _expand_images(messages, vision=not self._vision_description_model)
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
         response: AIMessage = await self._llm.ainvoke(messages)
@@ -116,25 +116,23 @@ class ChatAgent(BaseAgent):
 
 
 class TimeAwareChatAgent(ChatAgent):
-    """ChatAgent that stamps incoming human messages with the current UTC time
-    and injects the current time into the system prompt."""
+    """ChatAgent that stamps incoming human messages with the current UTC time."""
 
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
+        update = super().preprocess(state)
         now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
-        prompt = self._build_system_prompt(state)
         last = state.messages[-1] if state.messages else None
         if isinstance(last, HumanMessage):
-            stamped = HumanMessage(content=_stamp(last.content, now), id=last.id)
-            return AgentStateUpdate(system_prompt=prompt, messages=[stamped])
-        return AgentStateUpdate(system_prompt=prompt)
+            update.messages = [HumanMessage(content=_stamp(last.content, now), id=last.id)]
+        return update
 
 
 class AugAgent(BaseAgent):
-    """Personal assistant agent using the full AUG system prompt.
+    """Personal assistant agent using the workspace's session prompt.
 
-    Reads identity, user knowledge, and memory from data/memory/ and builds
-    the system prompt via build_system_prompt(). Time-aware: stamps incoming
-    human messages with the current UTC time.
+    On a session's first turn it builds the system prompt from the workspace
+    (aug.core.workspace.session_prompt) and keeps it for the rest of the session.
+    Time-aware: stamps incoming human messages with the current UTC time.
     """
 
     def __init__(
@@ -198,16 +196,19 @@ class AugAgent(BaseAgent):
         """A new agent with this one's settings and *tools* added to its own."""
         return AugAgent(tools=[*self._base_tools, *tools], **self._settings)
 
+    def new_session_prompt(self, interface: str) -> str:
+        return session_prompt(interface, describes_images=bool(self._vision_description_model))
+
+    def prompt_key(self) -> str:
+        return f"AugAgent:describes_images={bool(self._vision_description_model)}"
+
     def preprocess(self, state: AgentState) -> AgentStateUpdate:
+        update = self.session_prompt_update(state)
         now = datetime.now(tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
-        prompt = build_system_prompt(state)
-        if self._vision_description_model:
-            prompt = f"{prompt}\n\n{IMAGE_DESCRIPTION_SYSTEM_NOTE}"
         last = state.messages[-1] if state.messages else None
         if isinstance(last, HumanMessage):
-            stamped = HumanMessage(content=_stamp(last.content, now), id=last.id)
-            return AgentStateUpdate(system_prompt=prompt, messages=[stamped])
-        return AgentStateUpdate(system_prompt=prompt)
+            update.messages = [HumanMessage(content=_stamp(last.content, now), id=last.id)]
+        return update
 
     async def respond(self, state: AgentState) -> AgentStateUpdate:
         messages = _drop_orphaned_tool_calls(state.messages)
@@ -222,8 +223,8 @@ class AugAgent(BaseAgent):
                 context_window=self._context_window,
                 max_summary_tokens=self._max_summary_tokens,
             )
-        if state.system_prompt:
-            messages = [SystemMessage(content=state.system_prompt), *messages]
+        if state.session_prompt:
+            messages = [SystemMessage(content=state.session_prompt), *messages]
         messages = await _expand_images(messages, vision=not self._vision_description_model)
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
         response: AIMessage = await self._llm.ainvoke(messages)

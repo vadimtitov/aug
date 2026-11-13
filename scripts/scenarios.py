@@ -16,6 +16,7 @@ change" becomes a diff, not a belief.
 import argparse
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import re
@@ -48,6 +49,8 @@ _SENT_FILE = {
 }
 # Files the scripted agent sends in S10, under the data dir (/app/data in the container).
 FIXTURES = "/app/data/fixtures"
+# The same data dir as seen from here (the compose file mounts it into the container).
+HOST_DATA = Path(".scenarios/data")
 
 SCRIPTS: dict[str, list[dict[str, Any]]] = {
     "s1": [{"text": "Hello from the scripted agent."}],
@@ -92,6 +95,19 @@ SCRIPTS: dict[str, list[dict[str, Any]]] = {
         {"tool": "respond_with_file", "args": {"path": "/app/data/settings.json"}},
         {"text": "Sent three files."},
     ],
+    "s11a": [
+        {"tool": "note", "args": {"content": "The tester likes scripted replies."}},
+        {"text": "Noted."},
+    ],
+    "s11b": [
+        {
+            "tool": "save_skill",
+            "args": {"name": "s11-skill", "description": "Added mid-chat", "body": "Do it."},
+        },
+        {"text": "Skill saved."},
+    ],
+    "s11c": [{"text": "Third turn."}],
+    "s11d": [{"text": "New session."}],
     "s10r": [
         {"tool": "respond_with_file", "args": {"path": f"{FIXTURES}/report.pdf"}},
         {"text": "Report attached."},
@@ -205,6 +221,47 @@ async def s10_files_out(d: "Driver") -> None:
     await d.rest_stream("report over rest #s10r", context="rest-s10", download=True)
 
 
+async def s11_session_prompt(d: "Driver") -> None:
+    await d.tg_text("/clear")
+    await d.quiet()
+    for key in ("s11a", "s11b", "s11c"):
+        await d.tg_text(f"turn #{key}")
+        await d.quiet()
+    session = [
+        r["system"] for r in await d.llm_requests() if r["script"] in ("s11a", "s11b", "s11c")
+    ]
+    d.note(f"model calls in the session: {len(session)}")
+    d.note(f"system prompt the same on every call: {_yes(len(set(session)) == 1)}")
+    last = session[-1]
+    d.note(f"the note stayed out of this session's prompt: {_yes('scripted replies' not in last)}")
+    d.note(f"the new skill stayed out of this session's prompt: {_yes('s11-skill' not in last)}")
+    await d.tg_text("/prompt")
+    await d.quiet()
+    shown = await d.last_document_sha()
+    d.note(f"/prompt is what the model got: {_yes(shown == _sha(session[-1]))}")
+    await d.tg_text("/clear")
+    await d.quiet()
+    await d.tg_text("after clear #s11d")
+    await d.quiet()
+    fresh = [r["system"] for r in await d.llm_requests() if r["script"] == "s11d"]
+    d.note(
+        f"the next session lists the new skill: {_yes('- s11-skill: Added mid-chat' in fresh[0])}"
+    )
+
+
+async def s12_dream(d: "Driver") -> None:
+    before = _workspace_hashes()
+    await d.tg_text("/consolidate")
+    await d.quiet()
+    after = _workspace_hashes()
+    changed = sorted(p for p in after if before.get(p) != after[p])
+    d.note(f"files the dream changed: {', '.join(changed) or '(none)'}")
+    inside = bool(changed) and all(p.startswith("memory/") for p in changed)
+    d.note(f"all inside memory/: {_yes(inside)}")
+    index = (HOST_DATA / "workspace" / "memory" / "MEMORY.md").read_text()
+    d.note(f"MEMORY.md: {_normalise(index.strip())}")
+
+
 SCENARIOS: dict[str, Callable[["Driver"], Awaitable[None]]] = {
     "s1": s1_reply,
     "s2": s2_tool,
@@ -216,6 +273,8 @@ SCENARIOS: dict[str, Callable[["Driver"], Awaitable[None]]] = {
     "s8": s8_push,
     "s9": s9_files_in,
     "s10": s10_files_out,
+    "s11": s11_session_prompt,
+    "s12": s12_dream,
 }
 
 
@@ -508,6 +567,17 @@ class Driver:
     async def _calls(self) -> list[dict]:
         return (await self._fake("GET", "/control/telegram/calls")).json()
 
+    def note(self, line: str) -> None:
+        """A line the scenario itself checked, rather than one AUG sent."""
+        self.lines.append(f"= {line}")
+
+    async def llm_requests(self) -> list[dict]:
+        return await self._llm()
+
+    async def last_document_sha(self) -> str:
+        documents = [c for c in await self._calls() if c["method"] == "sendDocument"]
+        return documents[-1]["params"].get("_sha256", "") if documents else ""
+
     async def _llm(self) -> list[dict]:
         return (await self._fake("GET", "/control/llm/requests")).json()
 
@@ -521,6 +591,24 @@ def _image(size: tuple[int, int], fmt: str, colour: tuple[int, int, int] = (90, 
     out = io.BytesIO()
     Image.new("RGB", size, colour).save(out, format=fmt)
     return out.getvalue()
+
+
+def _yes(ok: bool) -> str:
+    return "yes" if ok else "NO"
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _workspace_hashes() -> dict[str, str]:
+    """Every file in the workspace (bar the file store) by path, with its hash."""
+    root = HOST_DATA / "workspace"
+    return {
+        str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sorted(root.rglob("*"))
+        if p.is_file() and p.relative_to(root).parts[0] != "files"
+    }
 
 
 def _buttons(markup: Any) -> str:

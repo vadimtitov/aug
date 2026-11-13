@@ -404,7 +404,12 @@ async def test_respond_with_file_shows_no_status_line(interface, tmp_path):
     context.effective_message = msg
     context.effective_chat.id = 7
 
+    order: list[str] = []
+    bot.send_photo.side_effect = lambda **_: order.append("photo")
+    msg.reply_text.side_effect = lambda *a, **_: order.append(f"text:{a[0] if a else ''}")
+
     async def events():
+        yield TextDelta(text="before")
         yield ToolStarted(id="call-1", name="respond_with_file", args={"path": "/x/out.png"})
         yield FileEmitted(
             file_id="0123456789abcdef",
@@ -425,6 +430,7 @@ async def test_respond_with_file_shows_no_status_line(interface, tmp_path):
     assert bot.send_photo.await_count == 1
     assert not any("Send file" in text for text in shown)
     assert any("here it is" in text for text in shown)
+    assert order.index("photo") > next(i for i, o in enumerate(order) if "before" in o)
 
 
 async def test_a_push_sends_its_files_after_the_text(interface, tmp_path):

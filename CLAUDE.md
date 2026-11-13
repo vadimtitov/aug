@@ -19,8 +19,10 @@ aug/
 │   ├── core/
 │   │   ├── llm.py              ← build_chat_model() factory — always ChatOpenAI → LiteLLM proxy
 │   │   ├── state.py            ← AgentState + AgentStateUpdate (Pydantic models)
-│   │   ├── prompts.py          ← build_system_prompt() — assembles full system prompt from memory files + state
-│   │   ├── memory.py           ← Memory file init, append_note(), light + deep consolidation, scheduler
+│   │   ├── prompts.py          ← Every LLM-facing string; build_session_prompt() assembles a session's system prompt
+│   │   ├── workspace.py        ← Workspace layout + startup migration; session_prompt() reads it into a prompt
+│   │   ├── workspace_template/ ← AGENTS.md a fresh install starts with
+│   │   ├── memory.py           ← Memory file init, append_note(), light + deep consolidation (the dream), scheduler
 │   │   ├── registry.py         ← Agent registry + get_harness(): one harness per agent version
 │   │   ├── harness/            ← Harness ABC + types (Message, TurnContext, TurnEnded…) + LangGraphHarness
 │   │   ├── run.py              ← run_registry: per-context run lock, routing lock, LangGraph AgentRuns
@@ -47,7 +49,7 @@ aug/
 │       ├── db.py               ← asyncpg pool + schema bootstrap
 │       ├── storage.py          ← File storage abstraction
 │       ├── logging.py          ← JSON (prod) / human-readable (dev) structured logging
-│       ├── data.py             ← DATA_DIR, MEMORY_DIR, read_data_file() / write_data_file()
+│       ├── data.py             ← DATA_DIR, WORKSPACE_DIR and the paths inside it, read_data_file() / write_data_file()
 │       ├── homeassistant.py    ← HomeAssistantClient: typed HA REST+WebSocket client with entity cache
 │       └── user_settings.py    ← per-user settings; get_setting() / set_setting() with nested path
 ├── tests/
@@ -144,11 +146,11 @@ _REGISTRY: dict[str, BaseAgent] = {
 `max_retries`, `timeout`, `seed`.
 
 ### Hooks (override in subclass)
-- `preprocess(state)` — runs before LLM; inject system prompt, annotate messages, etc.
+- `preprocess(state)` — runs before LLM; builds the session prompt on a session's first turn, annotates messages, etc.
 - `respond(state)` — **required**; calls the LLM.
 - `postprocess(state)` — runs after LLM; logging, filtering, etc.
 
-All return `AgentStateUpdate(messages=[...])` or `AgentStateUpdate(system_prompt="...")`.
+All return `AgentStateUpdate(messages=[...])` or `AgentStateUpdate(session_prompt="...")`. Fields of `AgentState` that a node may leave unset must default to `None`: LangGraph writes back every non-`None` field a node returns.
 
 ---
 
@@ -254,6 +256,8 @@ only when there is a clear, immediate reason.
 - **LLM access** — always via `build_chat_model()` in `aug/core/llm.py`. Never instantiate `ChatOpenAI` directly.
 - **Settings** — always via `get_settings()` from `aug/config.py`. Never import `settings` at module level.
 - **Prompts** — all hardcoded strings passed to an LLM (system prompts, tool instructions, consolidation prompts, format instructions) must be defined as named constants in `aug/core/prompts.py`. Never define prompt strings inline in other modules.
+- **No behaviour prompts in code** — a prompt belongs in code only if it describes how the harness, an interface or a tool works, i.e. it is true for anyone running AUG (formatting rules, error and approval messages, tool docstrings, environment facts). Who the agent is (persona, voice) goes in the workspace's `AGENTS.md`, which the user owns; a fresh install starts from `aug/core/workspace_template/AGENTS.md`. Keep prompts neutral: describe the agent and how things work, never push a working style ("use tools liberally", "always verify", "default to noting"). Recent models follow such lines too literally and loop on tools.
+- **Prompt caching** — every agent must benefit from LLM prompt caching. The system prompt is fixed for the life of a conversation's session: it is built on the session's first turn (`AgentState.session_prompt`) and never rebuilt mid-conversation (e.g. because a tool wrote a note, memory changed or a skill was added). Anything that changes per turn (time, location, interface state) goes into the user message, not the system prompt. Changes to the workspace (`AGENTS.md`, memory, skills) take effect when a new session starts. Caching wins over features: if keeping the prompt cacheable means degrading a feature, confirm with the user first, then keep caching.
 - **Async everywhere** — `async def` throughout.
 - **ruff only** — no black, flake8, isort.
 - **uv only** — no `requirements.txt`.

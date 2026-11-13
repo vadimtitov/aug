@@ -8,7 +8,7 @@ covering mint → consent → callback → authenticated call → disconnect.
 **Not yet run against a real provider.** Strava is the first target — see
 [Testing](#testing).
 
-The agent-facing skill ships as runtime data in `/app/data/skills/`, not in this
+The agent-facing skill ships as runtime data in `/app/data/workspace/skills/`, not in this
 repo.
 
 The existing Gmail flow (`aug/api/routers/gmail_auth.py`) is deliberately left in
@@ -468,7 +468,7 @@ hand-edit. Real enforcement would mean running `run_bash` as a different user.
   Migrating it is the obvious follow-up.
 - **`run_bash` blocklist hardening** — a separate few-line change. It stops accidental
   disclosure, not deliberate reading.
-- **A `SKILL.md` in this repo.** Skills live in `/app/data/skills/` as runtime data.
+- **A `SKILL.md` in this repo.** Skills live in `/app/data/workspace/skills/` as runtime data.
 - **Device Authorization Grant** (RFC 8628). Sidesteps callbacks entirely; worth
   adding later, but none of the initial targets support it.
 - **Multi-user.** AUG has no `user_id`; the key is `(provider, account)`.

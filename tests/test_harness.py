@@ -19,6 +19,8 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.errors import GraphRecursionError
 
+from aug.api.interfaces.base import IncomingMessage, TextContent
+from aug.api.interfaces.rest import RestApiInterface
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.harness import (
     Address,
@@ -43,6 +45,7 @@ from aug.core.harness import (
     pending_approvals,
 )
 from aug.core.harness.langgraph import (
+    ATTENDED_MAX_TOOL_ROUNDS,
     UNATTENDED_MAX_TOOL_ROUNDS,
     LangGraphHarness,
     _harness_error,
@@ -50,6 +53,7 @@ from aug.core.harness.langgraph import (
 from aug.core.harness.langgraph_events import parse_event
 from aug.core.prompts import (
     HARNESS_ERROR_MESSAGES,
+    HARNESS_STEP_LIMIT_NOTE,
     HARNESS_STOPPED_MESSAGE,
     HARNESS_TOOL_STOPPED_RESULT,
     HARNESS_TURN_STOPPED_NOTE,
@@ -845,7 +849,7 @@ async def test_stop_run_cancels_whatever_agent_the_turn_uses() -> None:
 
 
 async def test_unattended_turns_are_capped_at_a_few_steps() -> None:
-    """A push that loops on tools stops at the cap with step_limit; a chat turn doesn't."""
+    """A push that loops on tools stops at its low cap with step_limit."""
     loop = [_call("slow", {"seconds": 0}, f"c{i}") for i in range(30)]
     harness, agent = _harness(*loop)
     loop = agent.replies
@@ -857,13 +861,76 @@ async def test_unattended_turns_are_capped_at_a_few_steps() -> None:
     assert len(loop) == 30 - UNATTENDED_MAX_TOOL_ROUNDS  # stopped asking the model
 
 
-async def test_attended_turns_have_no_tool_round_cap() -> None:
+async def test_attended_turns_get_room_for_long_work() -> None:
     loop = [_call("slow", {"seconds": 0}, f"c{i}") for i in range(15)]
     harness, _ = _harness(*loop, AIMessage(content="done"))
 
     events = await _collect(harness.run(_msg("chat"), "c1", TURN))
 
     assert events[-1] == TurnEnded()
+
+
+async def test_a_chat_turn_looping_on_tools_is_stopped_at_the_cap() -> None:
+    """A model that keeps calling tools (say, a note after every note) is stopped."""
+    total = ATTENDED_MAX_TOOL_ROUNDS + 20
+    loop = [_call("slow", {"seconds": 0}, f"c{i}") for i in range(total)]
+    harness, agent = _harness(*loop)
+    loop = agent.replies
+
+    events = await _collect(harness.run(_msg("chat"), "c1", TURN))
+
+    assert events[-1].error == HarnessError(kind="step_limit")
+    assert len(loop) == total - ATTENDED_MAX_TOOL_ROUNDS
+
+
+async def test_a_message_sent_as_the_cap_fires_is_kept() -> None:
+    n = ATTENDED_MAX_TOOL_ROUNDS
+    loop = [_call("slow", {"seconds": 0.3 if i == n - 1 else 0}, f"c{i}") for i in range(n)]
+    harness, agent = _harness(*loop)
+
+    async def inject_during_the_last_round() -> bool:
+        while len(agent.replies) > 0:  # noqa: ASYNC110 — the fake agent has no event
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        return await harness.inject(_msg("what are you doing?"), "c1")
+
+    events, injected = await asyncio.gather(
+        _collect(harness.run(_msg("chat"), "c1", TURN)), inject_during_the_last_round()
+    )
+
+    assert injected is True
+    assert events[-1].error == HarnessError(kind="step_limit")
+    assert events[-1].unconsumed == [_msg("what are you doing?")]
+
+
+async def test_the_next_turn_knows_the_last_one_hit_the_cap() -> None:
+    loop = [_call("slow", {"seconds": 0}, f"c{i}") for i in range(ATTENDED_MAX_TOOL_ROUNDS)]
+    harness, agent = _harness(*loop, AIMessage(content="sorry"))
+    await _collect(harness.run(_msg("chat"), "c1", TURN))
+
+    events = await _collect(harness.run(_msg("again"), "c1", TURN))
+
+    assert events[-1] == TurnEnded()
+    assert [m.content for m in agent.seen[-1][-2:]] == [HARNESS_STEP_LIMIT_NOTE, "again"]
+
+
+async def test_what_the_user_sent_as_the_cap_fired_gets_its_own_turn() -> None:
+    iface = RestApiInterface()
+    capped = TurnEnded(error=HarnessError(kind="step_limit"), unconsumed=[_msg("hey")])
+    iface._deliver = AsyncMock(side_effect=[capped, TurnEnded()])
+    incoming = IncomingMessage(
+        parts=[TextContent(text="go")],
+        interface="rest_api",
+        sender_id="1",
+        context_id="rest-c1",
+        agent_version="x",
+    )
+
+    with patch("aug.api.interfaces.base._harness_for", return_value=ScriptedHarness()):
+        await iface._converse(incoming, _msg("go"), MagicMock())
+
+    assert iface._deliver.await_count == 2
+    assert iface._deliver.await_args_list[1].args[1].text == "hey"
 
 
 async def test_a_stopped_turn_tells_the_user_it_stopped_not_that_it_failed() -> None:

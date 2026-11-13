@@ -50,3 +50,27 @@ def sent_files(monkeypatch) -> list:
     ):
         monkeypatch.setattr(f"{module}.current_tool_context", lambda: ctx)
     return sent
+
+
+@pytest.fixture
+def workspace(tmp_path, monkeypatch):
+    """A workspace of the test's own (tmp/workspace), with the pre-workspace folders at
+    tmp/legacy/memory and tmp/legacy/skills.  Returns the workspace root."""
+    root = tmp_path / "workspace"
+    legacy = tmp_path / "legacy"
+    paths = {
+        "WORKSPACE_DIR": root,
+        "AGENTS_MD": root / "AGENTS.md",
+        "MEMORY_DIR": root / "memory",
+        "MEMORY_INDEX": root / "memory" / "MEMORY.md",
+        "SKILLS_DIR": root / "skills",
+    }
+    for name, path in paths.items():
+        monkeypatch.setattr(f"aug.core.workspace.{name}", path)
+    monkeypatch.setattr("aug.core.workspace._LEGACY_MEMORY_DIR", legacy / "memory")
+    monkeypatch.setattr("aug.core.workspace._LEGACY_SKILLS_DIR", legacy / "skills")
+    monkeypatch.setattr("aug.core.memory.MEMORY_DIR", paths["MEMORY_DIR"])
+    monkeypatch.setattr("aug.core.memory.MEMORY_INDEX", paths["MEMORY_INDEX"])
+    monkeypatch.setattr("aug.core.tools.skills.SKILLS_DIR", paths["SKILLS_DIR"])
+    monkeypatch.setattr("aug.utils.skills.SKILLS_DIR", paths["SKILLS_DIR"])
+    return root

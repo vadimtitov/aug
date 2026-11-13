@@ -75,8 +75,6 @@ function LocalSkillDetail({
   const [desc, setDesc] = useState("");
   const [savingDesc, setSavingDesc] = useState(false);
 
-  const [alwaysOn, setAlwaysOn] = useState(false);
-  const [savingToggle, setSavingToggle] = useState(false);
 
   const [deleting, setDeleting] = useState(false);
 
@@ -105,7 +103,6 @@ function LocalSkillDetail({
       .then((s) => {
         setSkill(s);
         setDesc(s.description);
-        setAlwaysOn(s.always_on);
         setEditBody(s.body);
       })
       .catch((e) => setError(errorMessage(e)))
@@ -159,23 +156,6 @@ function LocalSkillDetail({
       setDesc(skill.description);
     } finally {
       setSavingDesc(false);
-    }
-  }
-
-  async function toggleAlwaysOn() {
-    if (!skill || savingToggle) return;
-    const next = !alwaysOn;
-    setAlwaysOn(next);
-    setSavingToggle(true);
-    tg()?.HapticFeedback?.impactOccurred("light");
-    try {
-      await updateSkill(skillName, { always_on: next });
-      setSkill({ ...skill, always_on: next });
-    } catch {
-      tg()?.HapticFeedback?.notificationOccurred("error");
-      setAlwaysOn(!next);
-    } finally {
-      setSavingToggle(false);
     }
   }
 
@@ -239,26 +219,6 @@ function LocalSkillDetail({
                 onBlur={saveDesc}
                 disabled={savingDesc}
               />
-            </div>
-          </div>
-        </div>
-
-        <div className="settings-section">
-          <div className="settings-card">
-            <div className="settings-row">
-              <span className="settings-row-label">Always active</span>
-              <span style={{ fontSize: 12, color: "var(--hint)", marginRight: 8 }}>
-                inject into every prompt
-              </span>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  checked={alwaysOn}
-                  onChange={toggleAlwaysOn}
-                  disabled={savingToggle}
-                />
-                <span className="toggle-slider" />
-              </label>
             </div>
           </div>
         </div>
