@@ -25,7 +25,6 @@ def test_load_returns_defaults_when_file_empty():
     with patch("aug.utils.file_settings.read_data_file", return_value=""):
         s = load_settings()
     assert s.conversations == {}
-    assert s.consolidation.model == "gpt-5.1"
     assert s.tools.approvals == []
     assert s.tools.ssh.targets == []
     assert s.tools.bash.blacklist == []
@@ -79,12 +78,12 @@ def test_load_migration_does_not_override_existing_conversation():
     raw = json.dumps(
         {
             "telegram": {"chats": {"123": {"agent": "v2_claude"}}},
-            "conversations": {"tg-123": {"agent": "v9_claude"}},
+            "conversations": {"tg-123": {"agent": "v13"}},
         }
     )
     with patch("aug.utils.file_settings.read_data_file", return_value=raw):
         s = load_settings()
-    assert s.conversations["tg-123"].agent == "v9_claude"
+    assert s.conversations["tg-123"].agent == "v13"
 
 
 def test_save_drops_legacy_telegram_section():
@@ -209,13 +208,6 @@ def test_load_bash_blacklist():
     with patch("aug.utils.file_settings.read_data_file", return_value=raw):
         s = load_settings()
     assert s.tools.bash.blacklist == ["rm -rf", "sudo"]
-
-
-def test_load_consolidation_model():
-    raw = json.dumps({"consolidation": {"model": "claude-opus-4"}})
-    with patch("aug.utils.file_settings.read_data_file", return_value=raw):
-        s = load_settings()
-    assert s.consolidation.model == "claude-opus-4"
 
 
 def test_load_reflexes_ha_entity_label():

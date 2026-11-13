@@ -13,6 +13,8 @@ MEMORY_DIR = WORKSPACE_DIR / "memory"
 MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
 SKILLS_DIR = WORKSPACE_DIR / "skills"
 FILES_DIR = WORKSPACE_DIR / "files"
+# Where the Playwright MCP server saves screenshots and downloads (see aug/core/mcp).
+PLAYWRIGHT_DIR = FILES_DIR / "playwright"
 
 
 def read_data_file(name: str) -> str:

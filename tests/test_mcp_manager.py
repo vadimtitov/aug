@@ -23,6 +23,7 @@ from aug.core.mcp.manager import (
     _resolve_hushed_ref,
     _resolve_stdio_env,
     _sanitize_error,
+    _stdio_env,
     get_manager,
     record_operation,
     set_manager,
@@ -225,6 +226,31 @@ async def test_resolve_stdio_env_precedence_secret_beats_static_beats_inherited(
         "SHARED": "secret-value",
         "OTHER": "static-only",
     }
+
+
+def _stdio(args: list[str], env_static: dict[str, str] | None = None) -> McpServerConfig:
+    return McpServerConfig(
+        name="s", transport="stdio", command="npx", args=args, env_static=env_static or {}
+    )
+
+
+@pytest.mark.parametrize("package", ["@playwright/mcp@0.0.82", "@playwright/mcp"])
+async def test_playwright_always_saves_into_the_workspace_folder(tmp_path, package):
+    folder = tmp_path / "files" / "playwright"
+    config = _stdio(["-y", package], {"PLAYWRIGHT_MCP_OUTPUT_DIR": "/tmp/playwright-mcp"})
+    with patch("aug.core.mcp.manager.PLAYWRIGHT_DIR", folder):
+        env = await _stdio_env(config)
+
+    assert env["PLAYWRIGHT_MCP_OUTPUT_DIR"] == str(folder)
+    assert folder.is_dir()
+
+
+async def test_other_servers_get_no_playwright_folder(tmp_path):
+    with patch("aug.core.mcp.manager.PLAYWRIGHT_DIR", tmp_path / "pw"):
+        env = await _stdio_env(_stdio(["-y", "@acme/playwright-helper"]))
+
+    assert "PLAYWRIGHT_MCP_OUTPUT_DIR" not in env
+    assert not (tmp_path / "pw").exists()
 
 
 # ---------------------------------------------------------------------------

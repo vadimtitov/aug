@@ -32,7 +32,7 @@ MEMORY.md (below) says what each file holds; read a file with a shell command wh
 could help. Only the nightly process writes here: to keep something, use the note tool.
 - {skills}: your skills, one folder each (index below).
 - {files}/inbox: every file the user sent you. {files}/outbox: a copy of every file you \
-sent.
+sent. {files}/playwright: what the browser (Playwright) saves, screenshots and downloads.
 
 Secrets: `hushed list` names the stored secrets; each reaches shell commands as $NAME, \
 and their values are redacted from output.

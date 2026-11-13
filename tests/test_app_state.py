@@ -10,8 +10,7 @@ def test_load_returns_defaults_when_file_empty():
     with patch("aug.utils.state.read_data_file", return_value=""):
         s = load_state()
     assert s.telegram.chats == {}
-    assert s.consolidation.last_light_run is None
-    assert s.consolidation.last_deep_run is None
+    assert s.jobs == {}
 
 
 def test_load_session_counter():
@@ -27,19 +26,11 @@ def test_load_missing_chat_returns_default_session():
     assert s.telegram.chats.get("999", TelegramChatState()).session == 0
 
 
-def test_load_consolidation_timestamps():
-    raw = json.dumps(
-        {
-            "consolidation": {
-                "last_light_run": "2026-04-13T00:24:51+00:00",
-                "last_deep_run": "2026-04-13T00:26:53+00:00",
-            }
-        }
-    )
+def test_load_job_timestamps():
+    raw = json.dumps({"jobs": {"dream_light": "2026-04-13T00:24:51+00:00"}})
     with patch("aug.utils.state.read_data_file", return_value=raw):
         s = load_state()
-    assert s.consolidation.last_light_run == "2026-04-13T00:24:51+00:00"
-    assert s.consolidation.last_deep_run == "2026-04-13T00:26:53+00:00"
+    assert s.jobs == {"dream_light": "2026-04-13T00:24:51+00:00"}
 
 
 def test_load_ignores_unknown_keys():
@@ -59,20 +50,6 @@ def test_save_round_trips_session():
 
     loaded = AppState.model_validate_json(written[0])
     assert loaded.telegram.chats["99"].session == 7
-
-
-def test_save_round_trips_consolidation_timestamps():
-    written: list[str] = []
-    s = AppState()
-    s.consolidation.last_light_run = "2026-04-13T00:24:51+00:00"
-    s.consolidation.last_deep_run = "2026-04-13T00:26:53+00:00"
-
-    with patch("aug.utils.state.write_data_file", side_effect=lambda _f, d: written.append(d)):
-        save_state(s)
-
-    loaded = AppState.model_validate_json(written[0])
-    assert loaded.consolidation.last_light_run == "2026-04-13T00:24:51+00:00"
-    assert loaded.consolidation.last_deep_run == "2026-04-13T00:26:53+00:00"
 
 
 def test_load_returns_no_mcp_operations_by_default():
@@ -116,3 +93,17 @@ def test_save_writes_to_state_file():
         save_state(s)
 
     assert filename_used == ["state.json"]
+
+
+def test_job_times_come_from_the_old_consolidation_state():
+    raw = json.dumps({"consolidation": {"last_light_run": "L", "last_deep_run": "D"}})
+    with patch("aug.utils.state.read_data_file", return_value=raw):
+        s = load_state()
+    assert s.jobs == {"dream_light": "L", "dream_deep": "D"}
+
+
+def test_job_times_of_their_own_win_over_the_old_state():
+    raw = json.dumps({"jobs": {"dream_light": "new"}, "consolidation": {"last_light_run": "L"}})
+    with patch("aug.utils.state.read_data_file", return_value=raw):
+        s = load_state()
+    assert s.jobs == {"dream_light": "new"}

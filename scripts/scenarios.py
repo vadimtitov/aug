@@ -9,8 +9,11 @@ frames) plus a summary of each model request, with volatile values (ids, timesta
 removed.  Run it on main and on a branch and diff the two files: "no visible behaviour
 change" becomes a diff, not a belief.
 
-    python scripts/scenarios.py seed .scenarios/data
-    python scripts/scenarios.py run --out .scenarios/transcript.txt [--only s1,s2]
+    python scripts/scenarios.py seed .scenarios/data [--agent v13]
+    python scripts/scenarios.py run --out .scenarios/transcript.txt [--only s1,s2] [--agent v13]
+
+``--agent`` runs the suite on another agent version (the scenario stack gives the real
+profiles the scripted agent's dev tools); seed and run must name the same one.
 """
 
 import argparse
@@ -51,6 +54,9 @@ _SENT_FILE = {
 FIXTURES = "/app/data/fixtures"
 # The same data dir as seen from here (the compose file mounts it into the container).
 HOST_DATA = Path(".scenarios/data")
+# Chats seeded on agent versions that no longer exist; startup moves them (S0).
+_LEGACY_CHAT = "rest-legacy"
+_LEGACY_GLM_CHAT = "rest-legacy-glm"
 
 SCRIPTS: dict[str, list[dict[str, Any]]] = {
     "s1": [{"text": "Hello from the scripted agent."}],
@@ -262,7 +268,14 @@ async def s12_dream(d: "Driver") -> None:
     d.note(f"MEMORY.md: {_normalise(index.strip())}")
 
 
+async def s0_boot(d: "Driver") -> None:
+    conversations = json.loads((HOST_DATA / "settings.json").read_text())["conversations"]
+    for chat in (_LEGACY_CHAT, _LEGACY_GLM_CHAT):
+        d.note(f"chat left on a deleted version now on: {conversations[chat]['agent']}")
+
+
 SCENARIOS: dict[str, Callable[["Driver"], Awaitable[None]]] = {
+    "s0": s0_boot,
     "s1": s1_reply,
     "s2": s2_tool,
     "s3": s3_approvals,
@@ -286,8 +299,9 @@ SCENARIOS: dict[str, Callable[["Driver"], Awaitable[None]]] = {
 class Driver:
     """Talks to AUG and the fakes, and turns what came back into transcript lines."""
 
-    def __init__(self, client: httpx.AsyncClient, id_field: str) -> None:
+    def __init__(self, client: httpx.AsyncClient, id_field: str, agent: str) -> None:
         self._client = client
+        self._agent = agent
         self._id_field = id_field
         self._message_ids = iter(range(1, 10**6))
         self.lines: list[str] = []
@@ -419,7 +433,7 @@ class Driver:
         """Stream a REST turn, answering each approval_requested frame with *approve*,
         and fetching each file frame's url when *download*."""
         self.lines.append(f"> rest: {message}")
-        body: dict[str, Any] = {"message": message, self._id_field: context, "agent": "scripted"}
+        body: dict[str, Any] = {"message": message, self._id_field: context, "agent": self._agent}
         if attachments:
             body["attachments"] = [{"file_id": f} for f in attachments]
         urls: list[str] = []
@@ -641,13 +655,23 @@ def _normalise(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def seed(data_dir: Path) -> None:
-    """Fresh data dir: the test DM and the REST threads use the scripted agent."""
+def seed(data_dir: Path, agent: str) -> None:
+    """Fresh data dir: the test DM and the REST threads use *agent*; one more chat is
+    left on an agent version that no longer exists."""
     if data_dir.exists():
         shutil.rmtree(data_dir)
     data_dir.mkdir(parents=True)
-    conversations = {f"tg-{USER_ID}": {"agent": "scripted"}}
+    conversations = {
+        f"tg-{USER_ID}": {"agent": agent},
+        _LEGACY_CHAT: {"agent": "v11_kimi"},
+        _LEGACY_GLM_CHAT: {"agent": "v12_glm5"},
+    }
     (data_dir / "settings.json").write_text(json.dumps({"conversations": conversations}, indent=2))
+    # The dreams count as run, so none starts at boot behind the scenarios' back.
+    ran = "2999-01-01T00:00:00+00:00"
+    (data_dir / "state.json").write_text(
+        json.dumps({"jobs": {"dream_light": ran, "dream_deep": ran}})
+    )
     fixtures = data_dir / "fixtures"
     fixtures.mkdir()
     (fixtures / "chart.png").write_bytes(_image((640, 480), "PNG"))
@@ -655,11 +679,11 @@ def seed(data_dir: Path) -> None:
     (fixtures / "clip.mp3").write_bytes(b"ID3 fake audio")
 
 
-async def run(out: Path, only: list[str] | None, id_field: str) -> int:
+async def run(out: Path, only: list[str] | None, id_field: str, agent: str) -> int:
     async with httpx.AsyncClient(timeout=30) as client:
         await _wait_healthy(client)
         await client.post(f"{FAKES}/control/reset", json={"scripts": SCRIPTS})
-        driver = Driver(client, id_field)
+        driver = Driver(client, id_field, agent)
         for name, scenario in SCENARIOS.items():
             if only and name not in only:
                 continue
@@ -693,18 +717,20 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     seed_parser = sub.add_parser("seed")
     seed_parser.add_argument("data_dir", type=Path)
+    seed_parser.add_argument("--agent", default="scripted")
     run_parser = sub.add_parser("run")
     run_parser.add_argument("--out", type=Path, required=True)
     run_parser.add_argument("--only", default="")
     run_parser.add_argument(
         "--id-field", default="context_id", help="REST request field naming the chat"
     )
+    run_parser.add_argument("--agent", default="scripted")
     args = parser.parse_args()
     if args.command == "seed":
-        seed(args.data_dir)
+        seed(args.data_dir, args.agent)
         return 0
     only = [s for s in args.only.split(",") if s] or None
-    return asyncio.run(run(args.out, only, args.id_field))
+    return asyncio.run(run(args.out, only, args.id_field, args.agent))
 
 
 if __name__ == "__main__":

@@ -22,8 +22,9 @@ aug/
 │   │   ├── prompts.py          ← Every LLM-facing string; build_session_prompt() assembles a session's system prompt
 │   │   ├── workspace.py        ← Workspace layout + startup migration; session_prompt() reads it into a prompt
 │   │   ├── workspace_template/ ← AGENTS.md a fresh install starts with
-│   │   ├── memory.py           ← Memory file init, append_note(), light + deep consolidation (the dream), scheduler
-│   │   ├── registry.py         ← Agent registry + get_harness(): one harness per agent version
+│   │   ├── memory.py           ← Memory file init, append_note(), light + deep consolidation (the dream)
+│   │   ├── jobs.py             ← Background jobs: JOBS (which job, when, on which profile) + job_runner
+│   │   ├── registry.py         ← Profiles (v13, v13_glm) + get_harness(); moves chats off deleted versions
 │   │   ├── harness/            ← Harness ABC + types (Message, TurnContext, TurnEnded…) + LangGraphHarness
 │   │   ├── run.py              ← run_registry: per-context run lock, routing lock, LangGraph AgentRuns
 │   │   ├── dispatch.py         ← fire_task / fire_push / broadcast — pushes run through the harness
@@ -126,21 +127,26 @@ behaviour change". Scripts and step formats: top of `scripts/fakes.py`.
 
 ## Adding a new agent
 
-1. Create `aug/core/agents/<name>_agent.py` subclassing `BaseAgent` or `ChatAgent`.
-2. Register an instance in `aug/core/registry.py`.
+1. Create `aug/core/agents/<name>_agent.py` subclassing `BaseAgent` or `ChatAgent`, or
+   reuse `AugAgent`.
+2. Register it in `aug/core/registry.py`: a profile that takes MCP tools goes in
+   `_build_profiles()`, next to `v13` and `v13_glm`; its `oneshot()` models per tier go
+   in `_TIER_MODELS`.
 
 ```python
-# aug/core/registry.py
-_REGISTRY: dict[str, BaseAgent] = {
-    "default": TimeAwareChatAgent(
-        model="gpt-4o",
-        system_prompt="You are ...",
-        tools=[brave_search],
-        temperature=0.8,
-    ),
-    "my_agent": ChatAgent(model="gpt-4o-mini", system_prompt="..."),
-}
+# aug/core/registry.py, _build_profiles()
+"v13": AugAgent(
+    model=_KIMI,
+    tools=[*_TOOLS, *_MCP_MANAGEMENT_TOOLS, make_run_subagent_tool(...), *mcp_tools],
+    temperature=0.0,
+    recursion_limit=100,
+    compaction_model=_KIMI,
+    ...
+),
 ```
+
+A deleted version needs no cleanup: at startup `migrate_conversations()` moves every
+chat set to it onto `v13` (`v13_glm` for a glm version).
 
 `ChatAgent` accepts: `model`, `system_prompt`, `tools`, `temperature`, `max_tokens`,
 `max_retries`, `timeout`, `seed`.
@@ -214,9 +220,9 @@ keyed by a conversation ID:
 ```json
 {
   "conversations": {
-    "tg-82810876":            { "agent": "v11_kimi" },
-    "tg--1003820312204-topic-7": { "agent": "v9_claude" },
-    "rest-my-thread":         { "agent": "v9_claude" }
+    "tg-82810876":            { "agent": "v13" },
+    "tg--1003820312204-topic-7": { "agent": "v13_glm" },
+    "rest-my-thread":         { "agent": "v13" }
   }
 }
 ```
@@ -263,7 +269,7 @@ only when there is a clear, immediate reason.
 - **uv only** — no `requirements.txt`.
 - **Turns go through the harness** — interfaces, pushes and jobs call `get_harness(version).run()` and render its events; they never touch LangGraph (graph state, `Command`, checkpoints). `run()` never raises: errors arrive as `TurnEnded.error` (a `HarnessError` kind), and their user text lives in `HARNESS_ERROR_MESSAGES` in `prompts.py`.
 - **One turn per context at a time** — whoever runs a turn holds `run_registry.run_lock(context_id)` for all of it (interfaces, approval resumes, `/compact`, `fire_push`).
-- **Agent versions are immutable** — never modify the tools or behaviour of an existing agent version. Add a new version instead (`v3_claude`, `v4_claude`, etc.).
+- **Background jobs** — a job is an async function that takes a harness, registered in `_JOB_FUNCTIONS` in `aug/core/jobs.py`; the one `JOBS` list says when it runs and on which profile, so it runs once however many versions are live. Model work goes through `harness.oneshot(prompt, tier)`: ask for a tier (`ModelTier.STRONG` / `FAST`), never a model. Run one by hand with `job_runner.run(name)`.
 
 ## Code style
 

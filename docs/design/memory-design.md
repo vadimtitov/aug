@@ -122,7 +122,9 @@ identity. Append-only.
 ## Consolidation
 
 Human memory consolidates in stages: fast tagging of salience during experience, slow
-pattern extraction offline. Two consolidation passes mirror this.
+pattern extraction offline. Two consolidation passes mirror this. Both are jobs
+(`aug/core/jobs.py`) on the `v13` profile, calling its `oneshot()` at the FAST tier;
+a run missed while AUG was down happens at the next startup.
 
 ### Light consolidation — nightly at 03:00 UTC
 

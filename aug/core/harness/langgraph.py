@@ -8,13 +8,20 @@ kinds.  Interfaces only ever see harness events from here.
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import aclosing, suppress
 
 import openai
 import psycopg
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AnyMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import GraphRecursionError
@@ -63,9 +70,18 @@ ATTENDED_MAX_TOOL_ROUNDS = 100
 class LangGraphHarness(Harness):
     """One agent version's compiled graph, sharing the app's checkpointer."""
 
-    def __init__(self, agent: BaseAgent, checkpointer: BaseCheckpointSaver) -> None:
+    def __init__(
+        self,
+        agent: BaseAgent,
+        checkpointer: BaseCheckpointSaver,
+        *,
+        models: Mapping[ModelTier, str] | None = None,
+    ) -> None:
+        """*models* maps each tier to the model oneshot() calls; a tier it leaves out
+        uses the agent's own model."""
         self.agent = agent
         self._checkpointer = checkpointer
+        self._models = dict(models or {})
         self._opened: dict[str, AgentRun] = {}
 
     def _run(
@@ -111,11 +127,21 @@ class LangGraphHarness(Harness):
             return stored
         return await asyncio.to_thread(self.agent.new_session_prompt, interface)
 
-    async def oneshot(self, prompt: str, tier: ModelTier = ModelTier.STRONG) -> str:
-        if not self.agent.model_name:
-            raise ValueError(f"Agent '{type(self.agent).__name__}' has no model for oneshot()")
-        response = await build_chat_model(self.agent.model_name, temperature=0.0).ainvoke(prompt)
+    async def oneshot(
+        self, prompt: str, tier: ModelTier = ModelTier.STRONG, *, system: str = ""
+    ) -> str:
+        model = self.model_for(tier)
+        messages: list[BaseMessage] = [SystemMessage(content=system)] if system else []
+        messages.append(HumanMessage(content=prompt))
+        response = await build_chat_model(model, temperature=0.0).ainvoke(messages)
         return response.text
+
+    def model_for(self, tier: ModelTier) -> str:
+        """The model oneshot() calls for *tier*."""
+        model = self._models.get(tier) or self.agent.model_name
+        if not model:
+            raise ValueError(f"Agent '{type(self.agent).__name__}' has no model for oneshot()")
+        return model
 
     def _open_turn(self, context_id: str, turn: TurnContext) -> None:
         existing = run_registry.get(context_id)

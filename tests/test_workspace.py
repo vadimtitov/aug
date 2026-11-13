@@ -2,9 +2,7 @@
 
 import shutil
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -240,16 +238,14 @@ async def test_session_prompt_previews_a_session_not_started_yet(workspace: Path
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def _no_state_writes():
-    with patch("aug.core.memory.save_state"):
-        yield
+class _Dream:
+    """A harness whose oneshot() always answers *text*."""
 
+    def __init__(self, text: str) -> None:
+        self.text = text
 
-def _dream_llm(text: str) -> MagicMock:
-    llm = MagicMock()
-    llm.ainvoke = AsyncMock(return_value=MagicMock(content=text))
-    return llm
+    async def oneshot(self, prompt, tier=None, *, system=""):
+        return self.text
 
 
 async def test_the_light_dream_writes_memory_and_its_index_only(workspace: Path) -> None:
@@ -258,8 +254,7 @@ async def test_the_light_dream_writes_memory_and_its_index_only(workspace: Path)
     agents_before = (workspace / "AGENTS.md").read_text()
     reply = "<user>Has a bike.</user><memory_index>- user.md: bike, London</memory_index>"
 
-    with patch("aug.core.memory.build_chat_model", return_value=_dream_llm(reply)):
-        await run_light_consolidation()
+    await run_light_consolidation(_Dream(reply))
 
     assert (workspace / "memory" / "user.md").read_text() == "Has a bike.\n"
     assert (workspace / "memory" / "MEMORY.md").read_text() == "- user.md: bike, London\n"
@@ -276,8 +271,7 @@ async def test_the_deep_dream_writes_context_and_a_capped_index(workspace: Path)
         f"<memory_index>{long_index}</memory_index><new_reflection>r</new_reflection>"
     )
 
-    with patch("aug.core.memory.build_chat_model", return_value=_dream_llm(reply)):
-        await run_deep_consolidation()
+    await run_deep_consolidation(_Dream(reply))
 
     assert "PR 4" in (workspace / "memory" / "context.md").read_text()
     index = (workspace / "memory" / "MEMORY.md").read_text()
@@ -290,8 +284,7 @@ async def test_an_omitted_index_is_left_alone(workspace: Path) -> None:
     append_note("x")
     before = (workspace / "memory" / "MEMORY.md").read_text()
 
-    with patch("aug.core.memory.build_chat_model", return_value=_dream_llm("<user>u</user>")):
-        await run_light_consolidation()
+    await run_light_consolidation(_Dream("<user>u</user>"))
 
     assert (workspace / "memory" / "MEMORY.md").read_text() == before
 
