@@ -32,13 +32,10 @@ from mcp.client.stdio import get_default_environment
 from mcp.shared.exceptions import McpError
 from mcp.types import CONNECTION_CLOSED
 
-from aug.utils.data import PLAYWRIGHT_DIR
 from aug.utils.file_settings import McpServerConfig, load_settings
 from aug.utils.state import McpOperation, load_state, update_state
 
 logger = logging.getLogger(__name__)
-
-_PLAYWRIGHT_OUTPUT_ENV = "PLAYWRIGHT_MCP_OUTPUT_DIR"
 
 _PER_SERVER_TIMEOUT = 30.0
 _OVERALL_TIMEOUT = 60.0
@@ -584,7 +581,7 @@ async def _open_session(cfg: McpServerConfig) -> AsyncIterator[ClientSession]:
         # static (literal, non-secret) values on top, then resolved hushed
         # secrets last — so an explicitly bound credential always wins over
         # both the inherited environment and a registry-declared default.
-        resolved_env = await _stdio_env(cfg)
+        resolved_env = await _resolve_stdio_env(cfg.env_static, cfg.env)
         pump = _StderrPump(cfg.name, resolved_env.values())
         params = StdioServerParameters(command=cfg.command, args=cfg.args, env=resolved_env)
         try:
@@ -603,22 +600,6 @@ async def _open_session(cfg: McpServerConfig) -> AsyncIterator[ClientSession]:
         }
         async with create_session(connection) as session:
             yield session
-
-
-async def _stdio_env(cfg: McpServerConfig) -> dict[str, str]:
-    """The environment *cfg*'s process starts with.  The Playwright server always saves
-    into the workspace folder the system prompt names, so what the browser saves can be
-    sent on with respond_with_file, whatever its config says."""
-    env = await _resolve_stdio_env(cfg.env_static, cfg.env)
-    if _is_playwright(cfg):
-        PLAYWRIGHT_DIR.mkdir(parents=True, exist_ok=True)
-        env[_PLAYWRIGHT_OUTPUT_ENV] = str(PLAYWRIGHT_DIR)
-    return env
-
-
-def _is_playwright(cfg: McpServerConfig) -> bool:
-    """True for the Playwright MCP server (``npx @playwright/mcp@<version>``)."""
-    return any(arg.split("@")[1:2] == ["playwright/mcp"] for arg in cfg.args)
 
 
 async def _resolve_stdio_env(static: dict[str, str], declared: dict[str, str]) -> dict[str, str]:

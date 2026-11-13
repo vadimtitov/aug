@@ -1,9 +1,8 @@
 """Agent registry: one entry per profile (agent version).
 
 ``v13`` (kimi-k3) and ``v13_glm`` (glm-5.3) are built by ``_build_profiles()``, since
-their tool lists include whichever MCP servers connected at startup.  Browsing comes
-from the Playwright MCP server; the ``browser`` tool's code stays but no profile
-exposes it.
+their tool lists include whichever MCP servers connected at startup.  The ``browser``
+tool's code stays but no profile exposes it.
 """
 
 import logging
