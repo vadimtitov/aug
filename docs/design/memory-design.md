@@ -171,7 +171,7 @@ consolidation. Also appends the reflection to `reflections.md`.
 
 ## The `note` tool
 
-The single write mechanism during a conversation. Used liberally — the threshold is low.
+The single write mechanism during a conversation.
 If a fact, preference, correction, pattern, or operational detail might be useful to
 remember next time, it gets noted.
 

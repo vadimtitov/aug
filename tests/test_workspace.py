@@ -84,9 +84,8 @@ def test_the_old_self_md_becomes_the_persona(workspace: Path) -> None:
     init_workspace()
 
     agents = (workspace / "AGENTS.md").read_text()
-    assert agents.startswith("# AUG\n\nI am AUG, Vadim's druzhban.\n\n## Approach")
+    assert agents.startswith("# AUG\n\nI am AUG, Vadim's druzhban.\n\n## Replies")
     assert "brilliant friend" not in agents  # the template's persona is replaced
-    assert "Take notes liberally" in agents  # the rest of the template is kept
     assert "An empty reply is fine" in agents
 
 

@@ -7,11 +7,8 @@ from aug.core.memory import append_note
 
 @tool
 def note(content: str) -> str:
-    """Save a note for later memory consolidation.
-
-    For anything that might be useful to remember in a future conversation:
-    facts about the user, preferences, operational details, decisions made,
-    things learned, patterns noticed, corrections given.
+    """Save a note for later memory consolidation: something worth remembering in a
+    future conversation.
 
     Keep each note brief and self-contained. A separate process folds notes
     into persistent memory each night; they reach your prompt from the next
