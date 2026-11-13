@@ -32,6 +32,7 @@ from aug.core.harness.types import StatusUpdate
 from aug.core.llm import build_chat_model
 from aug.core.prompts import COMPACTION_LOOP_GUARD, COMPACTION_PROMPT
 from aug.core.tools.context import current_tool_context
+from aug.utils.media import IMAGE_MARKER, IMAGE_TOKENS
 
 if TYPE_CHECKING:
     from aug.core.agents.base_agent import BaseAgent
@@ -40,12 +41,14 @@ logger = logging.getLogger(__name__)
 
 
 def count_tokens(messages: list[AnyMessage]) -> int:
-    """Estimate token count using a chars/4 heuristic.
+    """Estimate token count using a chars/4 heuristic, plus IMAGE_TOKENS per image.
 
     Accurate enough for threshold detection — we don't need precision, just
-    a cheap signal that the context window is getting full.
+    a cheap signal that the context window is getting full.  Images are counted as
+    what they cost once expanded, not as their few-character markers.
     """
-    return sum(len(str(m.content)) for m in messages) // 4
+    text = "".join(str(m.content) for m in messages)
+    return len(text) // 4 + IMAGE_TOKENS * len(IMAGE_MARKER.findall(text))
 
 
 async def compact_messages(

@@ -11,20 +11,22 @@ from langchain_core.tools import tool
 from openai import AsyncOpenAI
 
 from aug.config import get_settings
-from aug.core.tools.output import ImageAttachment, ToolOutput
+from aug.core.tools.blocked_paths import path_block_reason
+from aug.core.tools.context import current_tool_context
 from aug.utils.file_settings import load_settings
+from aug.utils.storage import file_store
 
 logger = logging.getLogger(__name__)
 
 ImageSize = Literal["1024x1024", "1536x1024", "1024x1536", "auto"]
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def generate_image(
     prompt: str,
     size: ImageSize = "1024x1024",
     n: int = 1,
-) -> tuple[str, ToolOutput]:
+) -> str:
     """Generate one or more images from a text description and send them to the user.
 
     Use this when the user asks to create, draw, generate, or visualise something.
@@ -52,51 +54,42 @@ async def generate_image(
         )
     except Exception as e:
         logger.exception("generate_image failed")
-        return f"Image generation failed: {e}", ToolOutput(text=f"Image generation failed: {e}")
+        return f"Image generation failed: {e}"
 
-    attachments = []
-    for item in response.data:
+    images: list[bytes] = []
+    for item in response.data or []:
         if item.b64_json:
-            attachments.append(
-                ImageAttachment(data=base64.b64decode(item.b64_json), mime_type="image/png")
-            )
+            images.append(base64.b64decode(item.b64_json))
         elif item.url:
             try:
-                async with httpx.AsyncClient(timeout=30.0) as http:
-                    img_response = await http.get(item.url)
-                    img_response.raise_for_status()
-                attachments.append(
-                    ImageAttachment(data=img_response.content, mime_type="image/png")
-                )
+                images.append(await _download(item.url))
             except Exception as e:
                 logger.exception("generate_image download failed")
-                return f"Image generated but download failed: {e}", ToolOutput(
-                    text=f"Image generated but download failed: {e}"
-                )
+                return f"Image generated but download failed: {e}"
 
-    if not attachments:
-        return "Image generation did not return any data.", ToolOutput(
-            text="Image generation did not return any data."
-        )
+    if not images:
+        return "Image generation did not return any data."
 
-    output = ToolOutput(
-        text=f"Generated {len(attachments)} image(s) for: {prompt}",
-        attachments=attachments,
+    paths = [await _send_image(data, f"generated-{i + 1}.png") for i, data in enumerate(images)]
+    sent = "sent them to the user" if current_tool_context() else "did NOT send them (no chat)"
+    return (
+        f"Generated {len(images)} image(s) for prompt {prompt!r} and {sent}. "
+        f"Saved at: {', '.join(paths)}"
     )
-    return f"Generated {len(attachments)} image(s) for prompt: {prompt!r}", output
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def edit_image(
     source_path: str,
     prompt: str,
     size: ImageSize = "1024x1024",
-) -> tuple[str, ToolOutput]:
-    """Edit or transform an existing image based on a text instruction.
+) -> str:
+    """Edit or transform an existing image based on a text instruction, and send the
+    result to the user.
 
     Use this when the user wants to modify, restyle, or transform an image they
-    have already sent. The source image must have been saved to disk (i.e. you
-    know its path from a prior [[img:...]] reference).
+    have already sent (its path is in the "[Image from user: …]" note) or one you
+    generated earlier.
 
     Args:
         source_path: Absolute path to the source image on disk.
@@ -105,9 +98,10 @@ async def edit_image(
                      Default: "1024x1024".
     """
     resolved = Path(source_path).resolve()
+    if reason := path_block_reason(resolved):
+        return f"Image NOT edited. {reason}"
     if not resolved.exists():
-        msg = f"Source image not found at path: {source_path}"
-        return msg, ToolOutput(text=msg)
+        return f"Source image not found at path: {source_path}"
 
     settings = get_settings()
     client = AsyncOpenAI(api_key=settings.LLM_API_KEY, base_url=settings.LLM_BASE_URL)
@@ -129,32 +123,39 @@ async def edit_image(
         )
     except Exception as e:
         logger.exception("edit_image failed")
-        return f"Image editing failed: {e}", ToolOutput(text=f"Image editing failed: {e}")
+        return f"Image editing failed: {e}"
 
     item = response.data[0] if response.data else None
     if item is None:
-        msg = "Image editing did not return a result."
-        return msg, ToolOutput(text=msg)
+        return "Image editing did not return a result."
 
     if item.b64_json:
         image_data = base64.b64decode(item.b64_json)
     elif item.url:
         try:
-            async with httpx.AsyncClient(timeout=30.0) as http:
-                img_response = await http.get(item.url)
-                img_response.raise_for_status()
-            image_data = img_response.content
+            image_data = await _download(item.url)
         except Exception as e:
             logger.exception("edit_image download failed")
-            return f"Image edited but download failed: {e}", ToolOutput(
-                text=f"Image edited but download failed: {e}"
-            )
+            return f"Image edited but download failed: {e}"
     else:
-        msg = "Image editing returned no URL or data."
-        return msg, ToolOutput(text=msg)
+        return "Image editing returned no URL or data."
 
-    output = ToolOutput(
-        text=f"Edited image for: {prompt}",
-        attachments=[ImageAttachment(data=image_data, mime_type="image/png")],
-    )
-    return f"Edited image using prompt: {prompt!r}", output
+    path = await _send_image(image_data, f"{resolved.stem}-edited.png")
+    sent = "sent it to the user" if current_tool_context() else "did NOT send it (no chat)"
+    return f"Edited the image using prompt {prompt!r} and {sent}. Saved at: {path}"
+
+
+async def _send_image(data: bytes, filename: str) -> str:
+    """Store *data* in the outbox and send it to the user; its stored path."""
+    stored = await file_store.save_outbound(data, filename, "image/png")
+    ctx = current_tool_context()
+    if ctx is not None:
+        await ctx.send_file(stored)
+    return str(stored.path)
+
+
+async def _download(url: str) -> bytes:
+    async with httpx.AsyncClient(timeout=30.0) as http:
+        response = await http.get(url)
+        response.raise_for_status()
+    return response.content

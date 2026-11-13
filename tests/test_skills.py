@@ -279,50 +279,47 @@ def test_build_skills_prompt_mixed():
 # ---------------------------------------------------------------------------
 
 
-def test_save_skill_creates_file(tmp_path):
+async def test_save_skill_creates_file(tmp_path):
     from aug.core.tools.skills import save_skill
 
     with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        save_skill.func(name="test-skill", description="A test.", body="Do this.")
+        await save_skill.coroutine(name="test-skill", description="A test.", body="Do this.")
 
     skill_md = tmp_path / "test-skill" / "SKILL.md"
     assert skill_md.exists()
     assert "test-skill" in skill_md.read_text()
 
 
-def test_save_skill_returns_file_attachment(tmp_path):
-    from aug.core.tools.output import FileAttachment, ToolOutput
+async def test_save_skill_sends_skill_md(tmp_path, sent_files):
     from aug.core.tools.skills import save_skill
 
-    with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        text, output = save_skill.func(name="test-skill", description="A test.", body="Do this.")
+    with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path / "skills"):
+        text = await save_skill.coroutine(name="test-skill", description="A test.", body="Do this.")
 
-    assert isinstance(output, ToolOutput)
-    assert len(output.attachments) == 1
-    attachment = output.attachments[0]
-    assert isinstance(attachment, FileAttachment)
-    assert attachment.filename == "SKILL.md"
-    assert b"test-skill" in attachment.data
-    assert b"Do this." in attachment.data
+    assert len(sent_files) == 1
+    assert sent_files[0].filename == "SKILL.md"
+    sent = sent_files[0].path.read_bytes()
+    assert b"test-skill" in sent
+    assert b"Do this." in sent
     assert "test-skill" in text
 
 
-def test_save_skill_invalid_name(tmp_path):
+async def test_save_skill_invalid_name(tmp_path):
     from aug.core.tools.skills import save_skill
 
     with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        text, _ = save_skill.func(name="Bad_Name", description="test", body="body")
+        text = await save_skill.coroutine(name="Bad_Name", description="test", body="body")
 
     assert "Bad_Name" not in [p.name for p in tmp_path.iterdir()]
     assert "name" in text.lower() or "invalid" in text.lower() or "lowercase" in text.lower()
 
 
-def test_save_skill_always_on_size_enforcement(tmp_path):
+async def test_save_skill_always_on_size_enforcement(tmp_path):
     from aug.core.tools.skills import save_skill
 
     oversized_body = "x" * (ALWAYS_ON_MAX_CHARS + 1)
     with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        text, _ = save_skill.func(
+        text = await save_skill.coroutine(
             name="big-skill", description="test", body=oversized_body, always_on=True
         )
 
@@ -331,30 +328,32 @@ def test_save_skill_always_on_size_enforcement(tmp_path):
     assert not (tmp_path / "big-skill").exists()
 
 
-def test_save_skill_always_on_within_limit(tmp_path):
+async def test_save_skill_always_on_within_limit(tmp_path):
     from aug.core.tools.skills import save_skill
 
     body = "x" * ALWAYS_ON_MAX_CHARS
     with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        save_skill.func(name="small-skill", description="test", body=body, always_on=True)
+        await save_skill.coroutine(
+            name="small-skill", description="test", body=body, always_on=True
+        )
 
     assert (tmp_path / "small-skill" / "SKILL.md").exists()
     assert "always_on" in (tmp_path / "small-skill" / "SKILL.md").read_text()
 
 
-def test_save_skill_overwrites_existing(tmp_path):
-    from aug.core.tools.output import ToolOutput
+async def test_save_skill_overwrites_existing(tmp_path, sent_files):
     from aug.core.tools.skills import save_skill
 
-    with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        save_skill.func(name="test-skill", description="v1", body="old body")
-        _, output = save_skill.func(name="test-skill", description="v2", body="new body")
+    with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path / "skills"):
+        await save_skill.coroutine(name="test-skill", description="v1", body="old body")
+        await save_skill.coroutine(name="test-skill", description="v2", body="new body")
 
-    content = (tmp_path / "test-skill" / "SKILL.md").read_text()
+    content = (tmp_path / "skills" / "test-skill" / "SKILL.md").read_text()
     assert "new body" in content
     assert "old body" not in content
-    assert isinstance(output, ToolOutput)
-    assert b"new body" in output.attachments[0].data
+    # Each send is a snapshot: the first still holds what was sent then.
+    assert b"old body" in sent_files[0].path.read_bytes()
+    assert b"new body" in sent_files[1].path.read_bytes()
 
 
 # ---------------------------------------------------------------------------
@@ -362,46 +361,40 @@ def test_save_skill_overwrites_existing(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_write_skill_file_creates_script(tmp_path):
-    from aug.core.tools.output import FileAttachment, ToolOutput
+async def test_write_skill_file_creates_script(tmp_path, sent_files):
     from aug.core.tools.skills import save_skill, write_skill_file
 
-    with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        save_skill.func(name="test-skill", description="test", body="body")
-        text, output = write_skill_file.func(
+    with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path / "skills"):
+        await save_skill.coroutine(name="test-skill", description="test", body="body")
+        text = await write_skill_file.coroutine(
             skill_name="test-skill", path="scripts/run.sh", content="echo hello"
         )
 
-    script = tmp_path / "test-skill" / "scripts" / "run.sh"
-    assert script.exists()
+    script = tmp_path / "skills" / "test-skill" / "scripts" / "run.sh"
     assert script.read_text() == "echo hello"
-    assert isinstance(output, ToolOutput)
-    assert len(output.attachments) == 1
-    attachment = output.attachments[0]
-    assert isinstance(attachment, FileAttachment)
-    assert attachment.filename == "run.sh"
-    assert attachment.data == b"echo hello"
+    assert [f.filename for f in sent_files] == ["SKILL.md", "run.sh"]
+    assert sent_files[1].path.read_bytes() == b"echo hello"
     assert "test-skill" in text
 
 
-def test_write_skill_file_rejects_skill_md(tmp_path):
+async def test_write_skill_file_rejects_skill_md(tmp_path):
     from aug.core.tools.skills import save_skill, write_skill_file
 
     with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        save_skill.func(name="test-skill", description="test", body="body")
-        text, _ = write_skill_file.func(
+        await save_skill.coroutine(name="test-skill", description="test", body="body")
+        text = await write_skill_file.coroutine(
             skill_name="test-skill", path="SKILL.md", content="overwrite"
         )
 
     assert "save_skill" in text
 
 
-def test_write_skill_file_rejects_path_traversal(tmp_path):
+async def test_write_skill_file_rejects_path_traversal(tmp_path):
     from aug.core.tools.skills import save_skill, write_skill_file
 
     with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        save_skill.func(name="test-skill", description="test", body="body")
-        text, _ = write_skill_file.func(
+        await save_skill.coroutine(name="test-skill", description="test", body="body")
+        text = await write_skill_file.coroutine(
             skill_name="test-skill", path="../other-skill/SKILL.md", content="evil"
         )
 
@@ -409,18 +402,18 @@ def test_write_skill_file_rejects_path_traversal(tmp_path):
     assert not (tmp_path / "other-skill").exists()
 
 
-def test_write_skill_file_skill_not_found(tmp_path):
+async def test_write_skill_file_skill_not_found(tmp_path):
     from aug.core.tools.skills import write_skill_file
 
     with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        text, _ = write_skill_file.func(
+        text = await write_skill_file.coroutine(
             skill_name="nonexistent", path="scripts/run.sh", content="echo hi"
         )
 
     assert "not found" in text
 
 
-def test_write_skill_file_with_dependencies_injects_and_installs(tmp_path):
+async def test_write_skill_file_with_dependencies_injects_and_installs(tmp_path):
     from aug.core.tools.skills import save_skill, write_skill_file
 
     with (
@@ -428,8 +421,8 @@ def test_write_skill_file_with_dependencies_injects_and_installs(tmp_path):
         patch("aug.core.skill_deps.subprocess.run") as mock_run,
     ):
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        save_skill.func(name="dep-skill", description="test", body="body")
-        text, _ = write_skill_file.func(
+        await save_skill.coroutine(name="dep-skill", description="test", body="body")
+        text = await write_skill_file.coroutine(
             skill_name="dep-skill",
             path="scripts/x.py",
             content="import httpx\n",
@@ -445,7 +438,7 @@ def test_write_skill_file_with_dependencies_injects_and_installs(tmp_path):
     mock_run.assert_called_once()
 
 
-def test_write_skill_file_reports_dependency_install_failure(tmp_path):
+async def test_write_skill_file_reports_dependency_install_failure(tmp_path):
     from aug.core.tools.skills import save_skill, write_skill_file
 
     with (
@@ -453,8 +446,8 @@ def test_write_skill_file_reports_dependency_install_failure(tmp_path):
         patch("aug.core.skill_deps.subprocess.run") as mock_run,
     ):
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="no match for 'nope'")
-        save_skill.func(name="dep-skill", description="test", body="body")
-        text, _ = write_skill_file.func(
+        await save_skill.coroutine(name="dep-skill", description="test", body="body")
+        text = await write_skill_file.coroutine(
             skill_name="dep-skill",
             path="scripts/x.py",
             content="import nope\n",
@@ -467,15 +460,15 @@ def test_write_skill_file_reports_dependency_install_failure(tmp_path):
     assert "no match for 'nope'" in text
 
 
-def test_write_skill_file_rejects_handwritten_pep723_block(tmp_path):
+async def test_write_skill_file_rejects_handwritten_pep723_block(tmp_path):
     # Hand-writing the PEP 723 block instead of using `dependencies` is rejected, steering
     # the agent to the one supported path.
     from aug.core.tools.skills import save_skill, write_skill_file
 
     content = '# /// script\n# dependencies = ["httpx"]\n# ///\nimport httpx\n'
     with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        save_skill.func(name="dep-skill", description="test", body="body")
-        text, _ = write_skill_file.func(
+        await save_skill.coroutine(name="dep-skill", description="test", body="body")
+        text = await write_skill_file.coroutine(
             skill_name="dep-skill", path="scripts/x.py", content=content
         )
 
@@ -483,12 +476,12 @@ def test_write_skill_file_rejects_handwritten_pep723_block(tmp_path):
     assert not (tmp_path / "dep-skill" / "scripts" / "x.py").exists()
 
 
-def test_write_skill_file_rejects_dependencies_for_non_python(tmp_path):
+async def test_write_skill_file_rejects_dependencies_for_non_python(tmp_path):
     from aug.core.tools.skills import save_skill, write_skill_file
 
     with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        save_skill.func(name="dep-skill", description="test", body="body")
-        text, _ = write_skill_file.func(
+        await save_skill.coroutine(name="dep-skill", description="test", body="body")
+        text = await write_skill_file.coroutine(
             skill_name="dep-skill",
             path="scripts/run.sh",
             content="echo hi",
@@ -504,17 +497,19 @@ def test_write_skill_file_rejects_dependencies_for_non_python(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_get_skill_returns_content(tmp_path):
+async def test_get_skill_returns_content(tmp_path):
     from aug.core.tools.skills import get_skill, save_skill
 
     with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        save_skill.invoke({"name": "my-skill", "description": "test", "body": "Follow this."})
+        await save_skill.ainvoke(
+            {"name": "my-skill", "description": "test", "body": "Follow this."}
+        )
         result = get_skill.invoke({"name": "my-skill"})
 
     assert "Follow this." in result
 
 
-def test_get_skill_surfaces_bundled_script_dependencies(tmp_path):
+async def test_get_skill_surfaces_bundled_script_dependencies(tmp_path):
     from aug.core.tools.skills import get_skill, save_skill, write_skill_file
 
     with (
@@ -522,8 +517,8 @@ def test_get_skill_surfaces_bundled_script_dependencies(tmp_path):
         patch("aug.core.skill_deps.subprocess.run") as mock_run,
     ):
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        save_skill.func(name="my-skill", description="test", body="Follow this.")
-        write_skill_file.func(
+        await save_skill.coroutine(name="my-skill", description="test", body="Follow this.")
+        await write_skill_file.coroutine(
             skill_name="my-skill",
             path="scripts/x.py",
             content="import httpx\n",
@@ -536,7 +531,7 @@ def test_get_skill_surfaces_bundled_script_dependencies(tmp_path):
     assert "httpx>=0.27" in result
 
 
-def test_get_skill_not_found(tmp_path):
+async def test_get_skill_not_found(tmp_path):
     from aug.core.tools.skills import get_skill
 
     with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
@@ -550,23 +545,23 @@ def test_get_skill_not_found(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_delete_skill_removes_directory(tmp_path):
+async def test_delete_skill_removes_directory(tmp_path):
     from aug.core.tools.skills import delete_skill, save_skill
 
     with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        save_skill.invoke({"name": "test-skill", "description": "test", "body": "body"})
+        await save_skill.ainvoke({"name": "test-skill", "description": "test", "body": "body"})
         result = delete_skill.invoke({"skill_name": "test-skill"})
 
     assert not (tmp_path / "test-skill").exists()
     assert "deleted" in result.lower()
 
 
-def test_delete_skill_removes_single_file(tmp_path):
+async def test_delete_skill_removes_single_file(tmp_path):
     from aug.core.tools.skills import delete_skill, save_skill, write_skill_file
 
     with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        save_skill.invoke({"name": "test-skill", "description": "test", "body": "body"})
-        write_skill_file.invoke(
+        await save_skill.ainvoke({"name": "test-skill", "description": "test", "body": "body"})
+        await write_skill_file.ainvoke(
             {"skill_name": "test-skill", "path": "scripts/run.sh", "content": "echo hi"}
         )
         result = delete_skill.invoke({"skill_name": "test-skill", "path": "scripts/run.sh"})
@@ -576,7 +571,7 @@ def test_delete_skill_removes_single_file(tmp_path):
     assert "Deleted" in result
 
 
-def test_delete_skill_not_found(tmp_path):
+async def test_delete_skill_not_found(tmp_path):
     from aug.core.tools.skills import delete_skill
 
     with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
@@ -585,21 +580,21 @@ def test_delete_skill_not_found(tmp_path):
     assert "not found" in result
 
 
-def test_delete_skill_file_path_traversal(tmp_path):
+async def test_delete_skill_file_path_traversal(tmp_path):
     from aug.core.tools.skills import delete_skill, save_skill
 
     with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        save_skill.invoke({"name": "test-skill", "description": "test", "body": "body"})
+        await save_skill.ainvoke({"name": "test-skill", "description": "test", "body": "body"})
         result = delete_skill.invoke({"skill_name": "test-skill", "path": "../other/SKILL.md"})
 
     assert "escapes" in result
 
 
-def test_delete_skill_prevents_skill_md_deletion(tmp_path):
+async def test_delete_skill_prevents_skill_md_deletion(tmp_path):
     from aug.core.tools.skills import delete_skill, save_skill
 
     with patch("aug.core.tools.skills.SKILLS_DIR", tmp_path):
-        save_skill.invoke({"name": "test-skill", "description": "test", "body": "body"})
+        await save_skill.ainvoke({"name": "test-skill", "description": "test", "body": "body"})
         result = delete_skill.invoke({"skill_name": "test-skill", "path": "SKILL.md"})
 
     assert (tmp_path / "test-skill" / "SKILL.md").exists()

@@ -9,8 +9,15 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 
-from aug.core.agents.chat_agent import AugAgent, TimeAwareChatAgent, _expand_images
+from aug.core.agents.chat_agent import (
+    MAX_INLINE_IMAGES,
+    AugAgent,
+    TimeAwareChatAgent,
+    _expand_images,
+)
+from aug.core.compaction import count_tokens
 from aug.core.state import AgentState
+from aug.utils.media import IMAGE_TOKENS
 
 _IMAGE_BLOCK = {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,abc123"}}
 _TEXT_BLOCK = {"type": "text", "text": "What do you see?"}
@@ -92,14 +99,21 @@ def test_aug_agent_preprocess_stamps_plain_text(aug_agent):
 # ---------------------------------------------------------------------------
 
 
+def _stored(tmp_path: Path, data: bytes, name: str = "photo.jpg") -> str:
+    """An image file inside the test's file store (see the conftest fixture)."""
+    path = tmp_path / "files" / "inbox" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return str(path)
+
+
 @pytest.mark.asyncio
 async def test_expand_images_inlines_marker_in_last_human_message(tmp_path):
-    img_path = str(tmp_path / "photo.jpg")
-    Path(img_path).write_bytes(b"imgdata")
+    img_path = _stored(tmp_path, b"imgdata")
     marker = f"[[img:{img_path}|image/jpeg]]"
 
     messages = [HumanMessage(content=marker)]
-    result = await _expand_images(messages)
+    result = await _expand_images(messages, vision=True)
 
     last = result[-1]
     assert isinstance(last.content, list)
@@ -112,11 +126,10 @@ async def test_expand_images_inlines_marker_in_last_human_message(tmp_path):
 
 @pytest.mark.asyncio
 async def test_expand_images_preserves_caption_text(tmp_path):
-    img_path = str(tmp_path / "photo.jpg")
-    Path(img_path).write_bytes(b"x")
+    img_path = _stored(tmp_path, b"x")
     content = f"[[img:{img_path}|image/jpeg]]\n\nWhat do you see?"
 
-    result = await _expand_images([HumanMessage(content=content)])
+    result = await _expand_images([HumanMessage(content=content)], vision=True)
 
     last = result[-1]
     text_blocks = [b for b in last.content if b.get("type") == "text"]
@@ -124,42 +137,102 @@ async def test_expand_images_preserves_caption_text(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_expand_images_does_not_expand_historical_messages(tmp_path):
-    img_path = str(tmp_path / "photo.jpg")
-    Path(img_path).write_bytes(b"x")
+async def test_expand_images_expands_every_message_the_same_way_each_call(tmp_path):
+    """History keeps its images: expanding all markers identically on every call keeps
+    the prompt prefix byte-stable, so the cache holds across turns."""
+    img_path = _stored(tmp_path, b"x")
     marker = f"[[img:{img_path}|image/jpeg]]"
+    first_turn = [HumanMessage(content=marker, id="h1"), AIMessage(content="I see a photo.")]
+    second_turn = [*first_turn, HumanMessage(content="follow up", id="h2")]
 
-    messages = [
-        HumanMessage(content=marker),  # historical
-        AIMessage(content="I see a photo."),
-        HumanMessage(content="follow up"),  # current (no marker)
-    ]
-    result = await _expand_images(messages)
+    before = await _expand_images(first_turn, vision=True)
+    after = await _expand_images(second_turn, vision=True)
 
-    # Historical message must remain unchanged
-    assert result[0].content == marker
-    # Current message has no marker, no change
-    assert result[2].content == "follow up"
+    assert before[0].content == after[0].content
+    assert any(b.get("type") == "image_url" for b in after[0].content)
+    assert after[2].content == "follow up"
+    assert first_turn[0].content == marker  # the stored history is untouched
 
 
 @pytest.mark.asyncio
-async def test_expand_images_file_not_found_falls_back_to_text(tmp_path):
-    missing = str(tmp_path / "gone.jpg")
-    marker = f"[[img:{missing}|image/jpeg]]"
+async def test_expand_images_hints_the_path_next_to_the_image(tmp_path):
+    img_path = _stored(tmp_path, b"x")
 
-    result = await _expand_images([HumanMessage(content=marker)])
+    result = await _expand_images(
+        [HumanMessage(content=f"[[img:{img_path}|image/jpeg]]")], vision=True
+    )
 
-    last = result[-1]
-    assert isinstance(last.content, list)
-    assert not any(b.get("type") == "image_url" for b in last.content)
-    assert any("not found" in b.get("text", "").lower() for b in last.content)
+    texts = [b["text"] for b in result[0].content if b.get("type") == "text"]
+    assert f"[Image from user: {img_path}]" in texts
+
+
+@pytest.mark.asyncio
+async def test_expand_images_without_vision_gives_only_the_hint(tmp_path):
+    img_path = _stored(tmp_path, b"x")
+
+    result = await _expand_images(
+        [HumanMessage(content=f"[[img:{img_path}|image/jpeg]]")], vision=False
+    )
+
+    assert result[0].content == [{"type": "text", "text": f"[Image from user: {img_path}]"}]
+
+
+@pytest.mark.asyncio
+async def test_expand_images_missing_file_gives_only_the_hint(tmp_path):
+    missing = str(tmp_path / "files" / "gone.jpg")
+
+    result = await _expand_images(
+        [HumanMessage(content=f"[[img:{missing}|image/jpeg]]")], vision=True
+    )
+
+    assert result[0].content == [{"type": "text", "text": f"[Image from user: {missing}]"}]
+
+
+@pytest.mark.asyncio
+async def test_expand_images_never_reads_outside_the_file_store(tmp_path):
+    """A marker typed into a message (or left by an old upload) must not make AUG read
+    that file and send it to the model."""
+    secret = tmp_path / "id_ed25519"
+    secret.write_bytes(b"PRIVATE KEY")
+
+    result = await _expand_images(
+        [HumanMessage(content=f"[[img:{secret}|image/png]]")], vision=True
+    )
+
+    assert not any(b.get("type") == "image_url" for b in result[0].content)
+
+
+@pytest.mark.asyncio
+async def test_expand_images_only_inlines_types_models_accept(tmp_path):
+    heic = _stored(tmp_path, b"heic bytes", name="old.heic")
+
+    result = await _expand_images([HumanMessage(content=f"[[img:{heic}|image/heic]]")], vision=True)
+
+    assert result[0].content == [{"type": "text", "text": f"[Image from user: {heic}]"}]
+
+
+@pytest.mark.asyncio
+async def test_expand_images_caps_images_per_request_dropping_the_oldest(tmp_path):
+    paths = [_stored(tmp_path, b"x", name=f"{i}.jpg") for i in range(MAX_INLINE_IMAGES + 2)]
+    messages = [HumanMessage(content=f"[[img:{p}|image/jpeg]]") for p in paths]
+
+    result = await _expand_images(messages, vision=True)
+
+    inlined = [any(b.get("type") == "image_url" for b in m.content) for m in result]
+    assert inlined == [False, False] + [True] * MAX_INLINE_IMAGES
+
+
+def test_images_count_as_what_they_cost_once_expanded():
+    marker = HumanMessage(content="[[img:/x/a.jpg|image/jpeg]]")
+
+    assert count_tokens([marker]) >= IMAGE_TOKENS
 
 
 @pytest.mark.asyncio
 async def test_expand_images_no_marker_returns_unchanged():
     messages = [HumanMessage(content="plain text")]
-    result = await _expand_images(messages)
-    assert result is messages  # same object, no copy made
+    result = await _expand_images(messages, vision=True)
+    assert result == messages
 
 
 # ---------------------------------------------------------------------------

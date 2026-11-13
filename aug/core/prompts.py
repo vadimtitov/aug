@@ -280,6 +280,8 @@ INTERFACE_PROMPTS: dict[str, InterfacePrompts] = {
             respond_with_file), do NOT reference them in your text using markdown
             syntax like ![...](...) or [filename](path) — they are delivered as
             Telegram attachments automatically. Just write your comment as plain text.
+            respond_with_file is the only way a file reaches the user: a file you
+            write with run_bash stays on disk until you send it.
 
             Tables are not supported. Use labeled lists instead:
 
@@ -483,6 +485,20 @@ LOCATION_SHARE_TEMPLATE = (
 # Used when the interface supplies no name for the sharer.
 LOCATION_SHARE_UNKNOWN_SENDER = "User"
 
+# A voice note's transcript; the audio file itself follows as its own file part.
+VOICE_TRANSCRIPT_TEMPLATE = "[Voice message, already transcribed]\n{transcript}"
+# Rendered with every file the user sends, so the agent can hand its path to tools.
+# An image the model can see gets the hint next to the image itself.
+USER_IMAGE_HINT = "[Image from user: {path}]"
+USER_FILE_HINT = "[File from user: {filename} ({media_type}) at {path}]"
+# A file that failed to download (the rest of the message still arrives).
+USER_FILE_FAILED = "[The user sent {filename}, but it could not be received.]"
+# A file Telegram would not let the bot download (its getFile limit is 20 MB).
+USER_FILE_TOO_LARGE = (
+    "[The user sent {filename}, but it is over Telegram's 20 MB limit for bots, "
+    "so it could not be received.]"
+)
+
 # install_mcp_server's approval preview and "still missing secrets" follow-up
 # (aug/core/tools/mcp.py's _render_plan) — the full install plan an approval
 # decision binds to, including exactly which credential backs each input.
@@ -508,6 +524,15 @@ You are describing an image to a language model that cannot see it.
 Answer the following question about the image as specifically and concisely as possible.
 Include any details directly relevant to the question. Do not add conversational filler.\
 """
+
+# describe_image's result when the vision model fails.  Without the last sentence a
+# model tends to "look" at the image some other way (pixel statistics via run_bash),
+# burning many tool rounds for nothing.
+IMAGE_DESCRIPTION_FAILED = (
+    "Image description FAILED: {error}. You cannot see this image right now. Do not "
+    "try to analyse it another way (no run_bash, no OCR, no pixel inspection): tell "
+    "the user you couldn't look at the image and continue with the rest of the request."
+)
 
 IMAGE_DESCRIPTION_SYSTEM_NOTE = """\
 <image_handling>

@@ -1,58 +1,65 @@
-"""Tool for sending a response as a file to the user."""
+"""The one way a file reaches the user: send a file that is already on disk."""
 
 import logging
 from pathlib import Path
 
 from langchain_core.tools import tool
 
-from aug.core.tools.output import FileAttachment, ToolOutput
+from aug.core.tools.blocked_paths import path_block_reason
+from aug.core.tools.context import current_tool_context
+from aug.utils.media import guess_media_type
+from aug.utils.storage import StoredFile, file_store
 
 logger = logging.getLogger(__name__)
 
-_OUTPUT_DIR = Path("/app/data/respond_with_file")
+# Telegram's limit for files a bot uploads.
+MAX_FILE_BYTES = 50 * 1024 * 1024
 
 
-@tool(response_format="content_and_artifact")
-def respond_with_file(
-    filename: str,
-    content: str = "",
-    filepath: str = "",
-) -> tuple[str, ToolOutput]:
-    """Send a file to the user. Use when a response is better consumed as a file —
-    long text, structured data, a generated document, a PDF, etc.
+@tool
+async def respond_with_file(path: str, caption: str = "") -> str:
+    """Send a file on disk to the user: a photo, a PDF, a CSV, a generated document,
+    an audio clip. Images, audio and video are shown in the chat as media; anything
+    else arrives as a downloadable file.
 
-    Provide either:
-    - content: raw text to write into a new file (requires filename with extension).
-    - filepath: absolute path to an existing file inside the container (e.g. a file
-      written by run_bash). The filename parameter is used as the download name.
+    To send text you have written, save it to a file first (e.g. with run_bash), then
+    pass its path here.
 
     Args:
-        filename: Download filename including extension (e.g. "report.pdf", "jobs.csv").
-        content: Text content to send as a file. Use when generating content directly.
-        filepath: Absolute path to an existing file to send (e.g. "/tmp/report.pdf").
+        path: Absolute path to the file, e.g. one written by run_bash or a file the
+            user sent earlier.
+        caption: Optional short text shown with the file.
     """
-    if not content and not filepath:
-        return "Error: provide either content or filepath.", ToolOutput(
-            text="Error: provide either content or filepath."
+    file = Path(path).resolve()  # what is checked is what gets copied, links resolved
+    if reason := path_block_reason(file):
+        return f"File NOT sent. {reason}"
+    if not file.is_file():
+        return f"File NOT sent: there is no file at {path}."
+    size = file.stat().st_size
+    if size == 0:
+        return f"File NOT sent: {path} is empty."
+    if size > MAX_FILE_BYTES:
+        return (
+            f"File NOT sent: {path} is {size / 1024 / 1024:.1f} MB, over the "
+            f"{MAX_FILE_BYTES // 1024 // 1024} MB limit. Compress or split it first."
         )
+    if current_tool_context() is None:
+        return "File NOT sent: there is no conversation to send it to."
 
-    if filepath:
-        path = Path(filepath)
-        if not path.exists():
-            return f"Error: file not found at {filepath}.", ToolOutput(
-                text=f"Error: file not found at {filepath}."
-            )
-        data = path.read_bytes()
-        logger.info("respond_with_file sending %s as %s (%d bytes)", filepath, filename, len(data))
-    else:
-        _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        path = _OUTPUT_DIR / filename
-        path.write_text(content, encoding="utf-8")
-        data = content.encode("utf-8")
-        logger.info("respond_with_file saved %s (%d bytes)", path, len(data))
+    stored = await send_path(file, caption=caption)
+    logger.info("respond_with_file sent %s as %s (%d bytes)", path, stored.id, size)
+    return f"Sent {file.name} to the user ({stored.media_type}, {size} bytes)."
 
-    output = ToolOutput(
-        text=f"Sent as file: {filename}",
-        attachments=[FileAttachment(data=data, filename=filename)],
-    )
-    return f"File '{filename}' sent to the user.", output
+
+async def send_path(file: Path, filename: str = "", caption: str = "") -> StoredFile:
+    """Snapshot *file* into the outbox and send it to the user from the running tool.
+
+    For AUG's own tools, which have already decided the file may go out.  Outside a
+    turn the snapshot is still made, and nothing is sent.
+    """
+    filename = filename or file.name
+    stored = await file_store.snapshot_outbound(file, filename, guess_media_type(filename))
+    ctx = current_tool_context()
+    if ctx is not None:
+        await ctx.send_file(stored, caption)
+    return stored

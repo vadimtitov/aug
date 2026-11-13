@@ -11,6 +11,7 @@ from aug.api.security import require_api_key
 from aug.core.harness import ApprovalDecision, pending_approvals
 from aug.core.registry import list_agents
 from aug.utils.logging import set_context_id
+from aug.utils.storage import file_store
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,15 @@ def _validate_agent(agent: str) -> None:
         )
 
 
+def _validate_attachments(body: ChatRequest) -> None:
+    missing = [a.file_id for a in body.attachments if file_store.get(a.file_id) is None]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Unknown attachment file_id(s): {missing}. Upload with POST /files/upload.",
+        )
+
+
 @router.post("/invoke", response_model=ChatResponse)
 async def invoke(body: ChatRequest, request: Request) -> ChatResponse:
     """Run the agent and return the full response as JSON."""
@@ -36,13 +46,15 @@ async def invoke(body: ChatRequest, request: Request) -> ChatResponse:
     interface = _get_interface(request)
     agent = body.agent or interface.get_agent_version(body.context_id)
     _validate_agent(agent)
+    _validate_attachments(body)
     logger.info("invoke thread=%s agent=%s", body.context_id, agent)
-    text = await interface.invoke(body, agent)
+    text, files = await interface.invoke(body, agent)
     return ChatResponse(
         context_id=body.context_id,
         agent=agent,
         response=text,
         tool_calls=[],
+        files=files,
     )
 
 
@@ -53,6 +65,7 @@ async def stream(body: ChatRequest, request: Request) -> StreamingResponse:
     interface = _get_interface(request)
     agent = body.agent or interface.get_agent_version(body.context_id)
     _validate_agent(agent)
+    _validate_attachments(body)
     return StreamingResponse(
         interface.stream_sse(body, agent),
         media_type="text/event-stream",

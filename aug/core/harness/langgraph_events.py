@@ -16,7 +16,6 @@ from langchain_core.callbacks.manager import adispatch_custom_event
 from langchain_core.runnables.schema import StreamEvent
 
 from aug.core.harness.types import AgentEvent, StatusUpdate, TextDelta, ToolEnded, ToolStarted
-from aug.core.tools.output import ToolOutput
 
 _AUG_EVENT = "aug_event"
 
@@ -42,13 +41,10 @@ def parse_event(event: StreamEvent) -> AgentEvent | None:
         )
     if kind == "on_tool_end":
         raw: Any = event["data"].get("output")
-        artifact = getattr(raw, "artifact", None)
-        if isinstance(artifact, ToolOutput):
-            output: ToolOutput | str | None = artifact
-        elif isinstance(raw, (ToolOutput, str)) or raw is None:
+        if raw is None or isinstance(raw, str):
             output = raw
         else:
-            output = str(raw)
+            output = str(getattr(raw, "content", raw))
         return ToolEnded(
             id=event["run_id"],
             name=event["name"],

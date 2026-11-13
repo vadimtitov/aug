@@ -1,64 +1,161 @@
-"""File storage abstraction.
+"""The workspace's file store: every file the user sends and every file AUG sends back.
 
-The ``FileStorage`` base class defines the interface; ``LocalFileStorage``
-provides a simple on-disk implementation suitable for development and
-single-node deployments.  Swap in an S3 implementation without touching any
-router code.
+    files/inbox/YYYY-MM/<id>-<name>    what the user sent (images already normalised)
+    files/outbox/YYYY-MM/<id>-<name>   a snapshot of each file sent to the user
+    files/index/<id>.json              metadata, so a file can be found by its id
+
+Files are never deleted here and the folder survives /clear, so a path the agent saw
+in an earlier turn still opens.  They are written read-only: an image in the history
+is re-read on every model call, and editing it in place would change a turn that has
+already happened (and the cached prompt with it).  Use the module-level ``file_store``
+singleton.
 """
 
+import asyncio
+import hashlib
+import json
 import logging
-from abc import ABC, abstractmethod
+import re
+import shutil
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
+from uuid import uuid4
 
-from aug.api.schemas.files import FileMetadata
+from aug.utils.data import FILES_DIR
+from aug.utils.media import MODEL_IMAGE_TYPES, extension_for, normalise_image
 
 logger = logging.getLogger(__name__)
 
+Box = Literal["inbox", "outbox"]
 
-class FileStorage(ABC):
-    """Abstract file storage backend."""
-
-    @abstractmethod
-    async def save(self, *, file_id: str, filename: str, data: bytes) -> None:
-        """Persist *data* under *file_id*."""
-
-    @abstractmethod
-    async def get_metadata(self, file_id: str) -> FileMetadata | None:
-        """Return metadata for *file_id*, or ``None`` if not found."""
-
-    @abstractmethod
-    async def read(self, file_id: str) -> bytes | None:
-        """Return raw bytes for *file_id*, or ``None`` if not found."""
+_ID = re.compile(r"^[0-9a-f]{16}$")
 
 
-class LocalFileStorage(FileStorage):
-    """Store files as flat files inside a local directory.
+@dataclass(frozen=True)
+class StoredFile:
+    id: str
+    path: Path
+    media_type: str
+    filename: str  # the name to show and download it as
+    size: int
+    sha256: str
+    box: Box
+    created_at: datetime
 
-    ``_meta`` is an in-memory index; in production back it with a DB table.
-    """
 
-    def __init__(self, base_dir: str | Path = "/tmp/aug_files") -> None:
-        self._base = Path(base_dir)
-        self._base.mkdir(parents=True, exist_ok=True)
-        self._meta: dict[str, FileMetadata] = {}
+class FileStore:
+    def __init__(self, root: Path = FILES_DIR) -> None:
+        self.root = root
 
-    async def save(self, *, file_id: str, filename: str, data: bytes) -> None:
-        dest = self._base / file_id
-        dest.write_bytes(data)
-        self._meta[file_id] = FileMetadata(
-            file_id=file_id,
+    async def save_inbound(
+        self, data: bytes | bytearray, filename: str, media_type: str
+    ) -> StoredFile:
+        """Store a file the user sent.  Images are normalised first (see aug.utils.media),
+        and a re-encoded image gets a .jpg name to match."""
+        if media_type.startswith("image/"):
+            normalised, new_type = await asyncio.to_thread(normalise_image, data, media_type)
+            if new_type != media_type and new_type in MODEL_IMAGE_TYPES:
+                filename = f"{Path(filename).stem or 'image'}{extension_for(new_type)}"
+            data, media_type = normalised, new_type
+        return await asyncio.to_thread(self._write, "inbox", data, filename, media_type)
+
+    async def save_outbound(self, data: bytes, filename: str, media_type: str) -> StoredFile:
+        """Store a file AUG made (a generated image) before it is sent."""
+        return await asyncio.to_thread(self._write, "outbox", data, filename, media_type)
+
+    async def snapshot_outbound(self, source: Path, filename: str, media_type: str) -> StoredFile:
+        """Copy *source* into the outbox, so what was sent stays as it was sent."""
+        return await asyncio.to_thread(self._copy, source, filename, media_type)
+
+    def get(self, file_id: str) -> StoredFile | None:
+        """The file stored under *file_id*, or None if there is none (or it is gone)."""
+        if not _ID.match(file_id):
+            return None
+        try:
+            raw = json.loads((self.root / "index" / f"{file_id}.json").read_text())
+            stored = StoredFile(
+                id=raw["id"],
+                path=Path(raw["path"]),
+                media_type=raw["media_type"],
+                filename=raw["filename"],
+                size=raw["size"],
+                sha256=raw["sha256"],
+                box=raw["box"],
+                created_at=datetime.fromisoformat(raw["created_at"]),
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            return None  # missing, or a record that is not one of ours
+        # The index is a plain file the agent could write to: never follow it out of here.
+        inside = stored.path.resolve().is_relative_to(self.root.resolve())
+        return stored if inside and stored.path.is_file() else None
+
+    def _write(
+        self, box: Box, data: bytes | bytearray, filename: str, media_type: str
+    ) -> StoredFile:
+        file_id, path = self._new_path(box, filename)
+        path.write_bytes(data)
+        path.chmod(0o444)
+        return self._index(file_id, path, filename, media_type, box)
+
+    def _copy(self, source: Path, filename: str, media_type: str) -> StoredFile:
+        file_id, path = self._new_path("outbox", filename)
+        shutil.copyfile(source, path)
+        path.chmod(0o444)
+        return self._index(file_id, path, filename, media_type, "outbox")
+
+    def _new_path(self, box: Box, filename: str) -> tuple[str, Path]:
+        file_id = uuid4().hex[:16]
+        folder = self.root / box / datetime.now(tz=UTC).strftime("%Y-%m")
+        folder.mkdir(parents=True, exist_ok=True)
+        return file_id, folder / f"{file_id}-{safe_filename(filename)}"
+
+    def _index(
+        self, file_id: str, path: Path, filename: str, media_type: str, box: Box
+    ) -> StoredFile:
+        stored = StoredFile(
+            id=file_id,
+            path=path,
+            media_type=media_type,
             filename=filename,
-            size_bytes=len(data),
+            size=path.stat().st_size,
+            sha256=file_sha256(path),
+            box=box,
             created_at=datetime.now(tz=UTC),
         )
-        logger.debug("stored file_id=%s path=%s", file_id, dest)
+        index = self.root / "index"
+        index.mkdir(parents=True, exist_ok=True)
+        record = {
+            "id": stored.id,
+            "path": str(stored.path),
+            "media_type": stored.media_type,
+            "filename": stored.filename,
+            "size": stored.size,
+            "sha256": stored.sha256,
+            "box": stored.box,
+            "created_at": stored.created_at.isoformat(),
+        }
+        (index / f"{file_id}.json").write_text(json.dumps(record))
+        logger.info(
+            "file_stored id=%s box=%s type=%s bytes=%d", file_id, box, media_type, stored.size
+        )
+        return stored
 
-    async def get_metadata(self, file_id: str) -> FileMetadata | None:
-        return self._meta.get(file_id)
 
-    async def read(self, file_id: str) -> bytes | None:
-        path = self._base / file_id
-        if not path.exists():
-            return None
-        return path.read_bytes()
+file_store = FileStore()
+
+
+def safe_filename(filename: str) -> str:
+    """*filename* without directories, with only safe characters, at most 200 long."""
+    name = Path(filename).name
+    safe = re.sub(r"[^\w.\-]", "_", name)
+    return safe[:200] if safe.strip("._") else "file"
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()

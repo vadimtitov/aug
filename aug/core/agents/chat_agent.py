@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import logging
-import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,11 +12,18 @@ from langchain_core.tools import BaseTool
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.compaction import compact_messages, count_tokens
 from aug.core.llm import build_chat_model
-from aug.core.prompts import IMAGE_DESCRIPTION_SYSTEM_NOTE, INTERFACE_PROMPTS, build_system_prompt
+from aug.core.prompts import (
+    IMAGE_DESCRIPTION_SYSTEM_NOTE,
+    INTERFACE_PROMPTS,
+    USER_IMAGE_HINT,
+    build_system_prompt,
+)
 from aug.core.reflexes import Reflex
 from aug.core.state import AgentState, AgentStateUpdate
 from aug.core.tools.describe_image import make_describe_image_tool
 from aug.utils.logging import log_token_usage
+from aug.utils.media import IMAGE_MARKER, MODEL_IMAGE_TYPES
+from aug.utils.storage import file_store
 
 logger = logging.getLogger(__name__)
 
@@ -102,8 +108,7 @@ class ChatAgent(BaseAgent):
             )
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
-        if not self._vision_description_model:
-            messages = await _expand_images(messages)
+        messages = await _expand_images(messages, vision=not self._vision_description_model)
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
         response: AIMessage = await self._llm.ainvoke(messages)
         log_token_usage(response)
@@ -219,8 +224,7 @@ class AugAgent(BaseAgent):
             )
         if state.system_prompt:
             messages = [SystemMessage(content=state.system_prompt), *messages]
-        if not self._vision_description_model:
-            messages = await _expand_images(messages)
+        messages = await _expand_images(messages, vision=not self._vision_description_model)
         logger.debug("llm_call model=%s messages=%d", self._model_name, len(messages))
         response: AIMessage = await self._llm.ainvoke(messages)
         log_token_usage(response)
@@ -234,45 +238,65 @@ def _stamp(content: str | list, now: str) -> str | list:
     return [{"type": "text", "text": f"[{now}]"}, *content]
 
 
-_IMG_TAG = re.compile(r"\[\[img:([^|]+)\|([^\]]+)\]\]")
+# Requests carry at most this many images (Anthropic refuses more than 100); older ones
+# drop to their hint.  Compaction usually trims the history well before that.
+MAX_INLINE_IMAGES = 50
 
 
-async def _expand_images(messages: list[AnyMessage]) -> list[AnyMessage]:
-    """Re-inline [[img:path|mime]] markers in the last HumanMessage as image_url blocks.
+async def _expand_images(messages: list[AnyMessage], *, vision: bool) -> list[AnyMessage]:
+    """Expand the [[img:path|mime]] markers in every user message for the model call.
 
-    Markers in historical messages are left as plain text so the LLM understands
-    an image was present without re-sending the binary data on every turn.
+    With *vision* each marker becomes the image itself plus a hint with its path;
+    without, only the hint (the agent then has describe_image).  History keeps the
+    markers, and every call expands all of them the same way, re-reading each image
+    from its path, so the prompt prefix stays byte-identical and cached from turn to
+    turn.
+
+    Only an image AUG stored itself is inlined: one in the workspace file store, of a
+    type models accept.  Anything else a marker names (an old upload, a path typed into
+    a message) gets just the hint, so one bad image can't fail every later call.
     """
-    last_human_idx = max(
-        (i for i, m in enumerate(messages) if isinstance(m, HumanMessage)),
-        default=None,
+    total = sum(
+        len(IMAGE_MARKER.findall(_text(m.content))) for m in messages if isinstance(m, HumanMessage)
     )
-    if last_human_idx is None:
-        return messages
-    msg = messages[last_human_idx]
-    blocks = await _inline_image_markers(msg.content)
-    if blocks is None:
-        return messages
+    # Past the cap each new image moves the cutoff and so changes the cached prefix;
+    # compaction normally folds the history long before it holds that many.
+    budget = _ImageBudget(skip=max(0, total - MAX_INLINE_IMAGES) if vision else total)
     result = list(messages)
-    result[last_human_idx] = HumanMessage(content=blocks, id=msg.id)
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, HumanMessage):
+            continue
+        blocks = await _inline_image_markers(msg.content, budget)
+        if blocks is not None:
+            result[i] = HumanMessage(content=blocks, id=msg.id)
     return result
 
 
-async def _inline_image_markers(content: str | list) -> list | None:
-    """Expand [[img:path|mime]] markers into image_url blocks.
+class _ImageBudget:
+    """Which markers become images: all but the oldest *skip*."""
 
-    Returns None when no markers are found (caller can skip the copy).
-    """
+    def __init__(self, skip: int) -> None:
+        self._skip = skip
+
+    def take(self) -> bool:
+        if self._skip > 0:
+            self._skip -= 1
+            return False
+        return True
+
+
+async def _inline_image_markers(content: str | list, budget: _ImageBudget) -> list | None:
+    """*content* with its markers expanded, or None when it has none."""
     if isinstance(content, str):
-        if not _IMG_TAG.search(content):
+        if not IMAGE_MARKER.search(content):
             return None
-        return await _markers_to_blocks(content)
+        return await _markers_to_blocks(content, budget)
     if isinstance(content, list):
         expanded = []
         changed = False
         for block in content:
-            if block.get("type") == "text" and _IMG_TAG.search(block["text"]):
-                expanded.extend(await _markers_to_blocks(block["text"]))
+            if block.get("type") == "text" and IMAGE_MARKER.search(block["text"]):
+                expanded.extend(await _markers_to_blocks(block["text"], budget))
                 changed = True
             else:
                 expanded.append(block)
@@ -280,29 +304,45 @@ async def _inline_image_markers(content: str | list) -> list | None:
     return None
 
 
-async def _markers_to_blocks(text: str) -> list:
+async def _markers_to_blocks(text: str, budget: _ImageBudget) -> list:
     """Split a string containing [[img:path|mime]] markers into content blocks."""
     blocks = []
     pos = 0
-    for m in _IMG_TAG.finditer(text):
+    for m in IMAGE_MARKER.finditer(text):
         before = text[pos : m.start()].strip()
         if before:
             blocks.append({"type": "text", "text": before})
         path, mime_type = m.group(1), m.group(2)
-        try:
-            data = await asyncio.to_thread(Path(path).read_bytes)
-            encoded = base64.b64encode(data).decode()
-            blocks.append(
-                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded}"}}
-            )
-            blocks.append({"type": "text", "text": f"[Image: {path}]"})
-        except FileNotFoundError:
-            blocks.append({"type": "text", "text": f"[Image not found: {path}]"})
+        if budget.take() and mime_type in MODEL_IMAGE_TYPES:
+            data = await asyncio.to_thread(_read_stored_image, Path(path))
+            if data is not None:
+                encoded = base64.b64encode(data).decode()
+                blocks.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
+                    }
+                )
+        blocks.append({"type": "text", "text": USER_IMAGE_HINT.format(path=path)})
         pos = m.end()
     after = text[pos:].strip()
     if after:
         blocks.append({"type": "text", "text": after})
     return blocks
+
+
+def _read_stored_image(path: Path) -> bytes | None:
+    """The bytes of *path* if it is a file in the workspace file store, else None."""
+    resolved = path.resolve()
+    if not resolved.is_relative_to(file_store.root.resolve()) or not resolved.is_file():
+        return None
+    return resolved.read_bytes()
+
+
+def _text(content: str | list) -> str:
+    if isinstance(content, str):
+        return content
+    return " ".join(b.get("text", "") for b in content if isinstance(b, dict))
 
 
 def _drop_orphaned_tool_calls(messages: list[AnyMessage]) -> list[AnyMessage]:

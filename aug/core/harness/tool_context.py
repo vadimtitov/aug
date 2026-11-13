@@ -1,8 +1,9 @@
 """What a tool gets from the harness running it: who it runs for, and a way to talk back.
 
-A tool reports progress with ``ctx.emit()`` and asks for approval with
-``await ctx.request_approval()``; the approval is awaited inside the tool, so the turn
-never pauses.  Every harness builds a ToolContext per turn and hands it to its tools.
+A tool reports progress with ``ctx.emit()``, sends the user a file with
+``ctx.send_file()`` and asks for approval with ``await ctx.request_approval()``; the
+approval is awaited inside the tool, so the turn never pauses.  Every harness builds a
+ToolContext per turn and hands it to its tools.
 """
 
 import asyncio
@@ -17,8 +18,10 @@ from aug.core.harness.types import (
     ApprovalRequest,
     ApprovalRequested,
     ApprovalResolved,
+    FileEmitted,
     TurnContext,
 )
+from aug.utils.storage import StoredFile
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +108,18 @@ class ToolContext:
         """Add *event* to the turn's stream, under the tool call that emits it."""
         if self._emit is not None:
             await self._emit(event)
+
+    async def send_file(self, stored: StoredFile, caption: str = "") -> None:
+        """Send *stored* (already in the outbox) to the user, under the calling tool."""
+        await self.emit(
+            FileEmitted(
+                file_id=stored.id,
+                path=stored.path,
+                media_type=stored.media_type,
+                filename=stored.filename,
+                caption=caption,
+            )
+        )
 
     async def request_approval(self, request: ApprovalRequest) -> ApprovalDecision:
         """Ask the user to approve *request* and wait for the answer.

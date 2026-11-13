@@ -6,13 +6,17 @@ that cannot process image inputs directly.
 
 import asyncio
 import base64
+import logging
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool, tool
 
 from aug.core.llm import build_chat_model
-from aug.core.prompts import IMAGE_DESCRIPTION_PROMPT
+from aug.core.prompts import IMAGE_DESCRIPTION_FAILED, IMAGE_DESCRIPTION_PROMPT
+from aug.core.tools.blocked_paths import path_block_reason
+
+logger = logging.getLogger(__name__)
 
 
 def make_describe_image_tool(model: str) -> BaseTool:
@@ -25,13 +29,15 @@ def make_describe_image_tool(model: str) -> BaseTool:
 
         Use this tool to understand what an image contains so you can respond
         naturally to the user — do NOT relay the description back verbatim.
-        Pass the image path exactly as it appears in the [[img:path|mime]] marker
-        and a specific question about what you need to know.
+        Pass the image path exactly as it appears in the "[Image from user: <path>]"
+        note and a specific question about what you need to know.
 
         Args:
             path: Absolute path to the image file on disk.
             question: Specific question about the image to answer.
         """
+        if reason := path_block_reason(Path(path)):
+            return f"Image NOT described. {reason}"
         try:
             data = await _read_image(path)
         except FileNotFoundError:
@@ -54,7 +60,8 @@ def make_describe_image_tool(model: str) -> BaseTool:
             response = await _llm.ainvoke(messages, config={"callbacks": []})
             return str(response.content)
         except Exception as exc:
-            return f"Error describing image: {exc}"
+            logger.warning("describe_image failed model=%s: %s", model, exc)
+            return IMAGE_DESCRIPTION_FAILED.format(error=type(exc).__name__)
 
     return describe_image
 

@@ -16,8 +16,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Literal
 
-from aug.core.tools.output import ToolOutput
-
 
 @dataclass(frozen=True)
 class Sender:
@@ -150,8 +148,23 @@ class ToolProgress:
 class ToolEnded:
     id: str
     name: str
-    output: ToolOutput | str | None
+    output: str | None  # what the model reads; files go out as FileEmitted instead
     error: bool = False  # also True when the tool's approval was not granted
+    parent_id: str | None = None
+
+
+@dataclass(frozen=True)
+class FileEmitted:
+    """A file for the user, already stored in the outbox (see aug.utils.storage).
+
+    file_id: the outbox id; REST serves the bytes at ``GET /files/{file_id}/content``.
+    """
+
+    file_id: str
+    path: Path
+    media_type: str
+    filename: str
+    caption: str = ""
     parent_id: str | None = None
 
 
@@ -187,6 +200,7 @@ AgentEvent = (
     | ToolStarted
     | ToolProgress
     | ToolEnded
+    | FileEmitted
     | StatusUpdate
     | ApprovalRequested
     | ApprovalResolved

@@ -15,6 +15,7 @@ from dataclasses import replace
 from aug.core.harness.types import (
     ApprovalRequested,
     ApprovalResolved,
+    FileEmitted,
     FilePart,
     HarnessError,
     HarnessEvent,
@@ -29,7 +30,7 @@ from aug.core.harness.types import (
     UnsolicitedSink,
 )
 from aug.core.prompts import HARNESS_ERROR_MESSAGES, HARNESS_RETRY_AT_SUFFIX
-from aug.core.transcript import Transcript
+from aug.core.transcript import Transcript, file_record
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,11 @@ class Harness(ABC):
                 attended=turn.attended,
                 user_id=message.sender.user_id,
                 text=message.text,
-                files=[str(p.path) for p in message.parts if isinstance(p, FilePart)],
+                files=[
+                    await file_record(p.path, p.media_type, p.filename)
+                    for p in message.parts
+                    if isinstance(p, FilePart)
+                ],
             )
             try:
                 async with aclosing(inner) as events:
@@ -153,6 +158,12 @@ class Harness(ABC):
                                     not_granted.add(parent_id)
                                 await transcript.append(
                                     "approval_resolved", context_id, decision=decision.value
+                                )
+                            case FileEmitted(path=path, media_type=media_type, filename=name):
+                                await transcript.append(
+                                    "file_sent",
+                                    context_id,
+                                    **await file_record(path, media_type, name),
                                 )
                             case ToolEnded(id=tool_id, name=name) if tool_id in not_granted:
                                 event = replace(event, error=True)

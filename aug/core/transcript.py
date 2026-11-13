@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from aug.utils.data import DATA_DIR
+from aug.utils.storage import file_sha256
 
 TRANSCRIPTS_DIR = DATA_DIR / "transcripts"
 
@@ -46,3 +47,18 @@ class Transcript:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
+
+
+async def file_record(path: Path, media_type: str, filename: str) -> dict[str, Any]:
+    """How a file appears in the transcript: never its bytes."""
+    try:
+        size, sha256 = await asyncio.to_thread(lambda: (path.stat().st_size, file_sha256(path)))
+    except OSError:
+        size, sha256 = None, None
+    return {
+        "path": str(path),
+        "media_type": media_type,
+        "filename": filename,
+        "size": size,
+        "sha256": sha256,
+    }

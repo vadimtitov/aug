@@ -196,6 +196,9 @@ async def test_version_end_to_end_through_settings_file(telegram_interface, tmp_
         update.message.voice = None
         update.message.photo = []
         update.message.audio = None
+        update.message.video = None
+        update.message.video_note = None
+        update.message.animation = None
         update.message.sticker = None
         update.message.document = None
         update.message.location = None

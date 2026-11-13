@@ -3,17 +3,11 @@
 import asyncio
 import logging
 import os
-import re
 import signal
 
 from langchain_core.tools import tool
 
-from aug.utils.data import DATA_DIR
-from aug.utils.file_settings import load_settings
-
-# SSH private keys must never be readable by the agent, regardless of
-# user-configured blacklist entries.
-_KEYS_DIR = str(DATA_DIR / "keys")
+from aug.core.tools.blocked_paths import command_block_reason
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +52,7 @@ async def run_bash(command: str) -> str:
     Args:
         command: Shell command to run.
     """
-    if error := _check_blacklist(command):
+    if error := command_block_reason(command):
         return error
 
     logger.info("run_bash cmd=%.120r", command)
@@ -93,19 +87,6 @@ async def run_bash(command: str) -> str:
         logger.debug("run_bash exit_code=0")
     output = (out + err).strip()
     return output or "(no output)"
-
-
-def _check_blacklist(command: str) -> str | None:
-    """Return an error string if the command matches a blacklist pattern, else None."""
-    if _KEYS_DIR in command:
-        logger.warning("run_bash blocked keys dir access: %s", command)
-        return f"Command blocked: access to {_KEYS_DIR} is not permitted."
-    patterns = load_settings().tools.bash.blacklist
-    for pattern in patterns:
-        if re.search(pattern, command):
-            logger.warning("run_bash blocked by blacklist pattern %r: %s", pattern, command)
-            return f"Command blocked by blacklist pattern: {pattern}"
-    return None
 
 
 def _kill_group(proc: asyncio.subprocess.Process) -> None:

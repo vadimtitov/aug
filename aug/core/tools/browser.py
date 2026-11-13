@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import logging
-import mimetypes
 import os
 from pathlib import Path
 from typing import Annotated
@@ -31,9 +30,10 @@ from aug.core.prompts import (
 )
 from aug.core.run import AGENT_RUN_CONFIG_KEY, MessageContent
 from aug.core.tools.context import current_tool_context
-from aug.core.tools.output import Attachment, FileAttachment, ImageAttachment, ToolOutput
+from aug.core.tools.respond_with_file import send_path
 from aug.utils.cdp import resolve_cdp_url
 from aug.utils.file_settings import load_settings
+from aug.utils.storage import file_store
 
 logger = logging.getLogger(__name__)
 
@@ -80,12 +80,12 @@ _CAPTCHA_EXTRACT_JS = """
 """
 
 
-@tool(response_format="content_and_artifact")
+@tool
 async def browser(
     task: str,
     secrets: dict[str, str] | None = None,
     config: Annotated[RunnableConfig, InjectedToolArg] = None,
-) -> tuple[str, ToolOutput | None]:
+) -> str:
     """Control a web browser to complete a task.
 
     Can navigate websites, click buttons, fill forms, log in, and extract
@@ -115,7 +115,7 @@ async def browser(
     """
     cdp_url = get_settings().BROWSER_CDP_URL
     if not cdp_url:
-        return "Browser tool is not available — BROWSER_CDP_URL is not configured.", None
+        return "Browser tool is not available — BROWSER_CDP_URL is not configured."
 
     sensitive_data = _resolve_secrets(secrets)
     run = (config or {}).get("configurable", {}).get(AGENT_RUN_CONFIG_KEY)
@@ -168,18 +168,27 @@ async def browser(
             after = set(downloads_dir.iterdir()) if downloads_dir.exists() else set()
             new_files = [p for p in (after - before) if p.is_file()]
             logger.info("browser new files: %s", new_files)
-            attachments: list[Attachment] = [_path_to_attachment(str(p)) for p in new_files]
+            for path in new_files:
+                await send_path(path)
             screenshots = history.screenshots(n_last=1, return_none_if_not_screenshot=False)
             logger.info("browser screenshots: %d", len(screenshots))
             if screenshots:
-                attachments.append(
-                    ImageAttachment(data=base64.b64decode(screenshots[-1]), mime_type="image/png")
+                stored = await file_store.save_outbound(
+                    base64.b64decode(screenshots[-1]), "screenshot.png", "image/png"
                 )
-            output = ToolOutput(text=history.final_result(), attachments=attachments)
-            return str(output), output
+                if ctx is not None:
+                    await ctx.send_file(stored)
+            sent = len(new_files) + bool(screenshots)
+            if not sent:
+                note = ""
+            elif ctx is None:
+                note = f"\n\n({sent} file(s) saved but NOT sent: there is no chat.)"
+            else:
+                note = f"\n\n({sent} file(s) already sent to the user.)"
+            return f"{history.final_result()}{note}"
 
         if run and run.user_requested_stop.is_set():
-            return _stopped_summary(agent), None
+            return _stopped_summary(agent)
 
         errors = history.errors() if history.has_errors() else []
         error_summary = "; ".join(str(e) for e in errors[-3:]) if errors else "unknown reason"
@@ -187,10 +196,10 @@ async def browser(
             f"Browser task did NOT complete successfully after {history.number_of_steps()} steps. "
             f"Errors: {error_summary}. Do NOT assume success — tell the user it failed and why."
         )
-        return msg, None
+        return msg
     except Exception as e:
         logger.exception("browser tool failed")
-        return f"Browser task failed: {e}", None
+        return f"Browser task failed: {e}"
     finally:
         await b.stop()
 
@@ -237,15 +246,6 @@ def _resolve_secrets(secrets: dict[str, str] | None) -> dict[str, str]:
         else:
             logger.warning("browser secrets: env var %r not found", env_var)
     return resolved
-
-
-def _path_to_attachment(path: str) -> Attachment:
-    data = Path(path).read_bytes()
-    mime, _ = mimetypes.guess_type(path)
-    mime = mime or "application/octet-stream"
-    if mime.startswith("image/"):
-        return ImageAttachment(data=data, mime_type=mime)
-    return FileAttachment(data=data, filename=Path(path).name)
 
 
 def _format_injected_messages(messages: list[MessageContent]) -> str:
