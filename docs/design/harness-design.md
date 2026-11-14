@@ -141,7 +141,7 @@ the CLI comes inside it, so both move together.
 - **Login.** A one-year `claude setup-token` token, the `CLAUDE_CODE_OAUTH_TOKEN`
   secret in hushed. It never refreshes, so it can't die on a failed refresh, and any
   number of processes share it. `/claude_login` in Telegram renews it
-  (`aug/core/claude_login.py`): AUG runs `setup-token` in a pseudo-terminal
+  (`aug/core/harness/claude_code_login.py`): AUG runs `setup-token` in a pseudo-terminal
   (`aug/utils/claude_setup_token.py`), sends the sign-in link as a button, and takes
   the code the sign-in page shows from the next message, which is deleted at once and
   never reaches the agent. When the login was issued is kept in `state.json`: it is

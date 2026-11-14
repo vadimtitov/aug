@@ -21,7 +21,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import CommandHandler, ContextTypes, MessageHandler, filters
 
 from aug.api.interfaces.telegram.utils import restricted
-from aug.core.claude_login import LoginAttempt, login_status, start_login
+from aug.core.harness.claude_code_login import LoginAttempt, login_status, start_login
 from aug.utils.claude_setup_token import SetupTokenError, looks_like_code
 from aug.utils.hushed import HushedError
 
