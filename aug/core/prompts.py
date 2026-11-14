@@ -475,6 +475,7 @@ HARNESS_ERROR_MESSAGES = {
     "context_full": "Context window is full. Use /clear to start a fresh conversation.",
     "rate_limited": "The model is rate-limited right now. Please try again in a minute.",
     "auth": "The model provider rejected AUG's credentials. Check the model login or API key.",
+    "login": "The Claude login is missing, expired or revoked. Send /claude_login to sign in.",
     "unavailable": (
         "The model or a service AUG depends on is unavailable right now. "
         "Please try again in a moment."

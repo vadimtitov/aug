@@ -138,7 +138,16 @@ the CLI comes inside it, so both move together.
   Read, Write and Edit, and rewrites every shell command to run through hushed, as
   `run_bash` does. The CLI starts through `claude_cli.sh`, which keeps only the
   allowlisted environment variables (`_ENV_KEEP`): AUG's own secrets never reach it.
-  The login is the `CLAUDE_CODE_OAUTH_TOKEN` secret in hushed (`claude setup-token`).
+- **Login.** A one-year `claude setup-token` token, the `CLAUDE_CODE_OAUTH_TOKEN`
+  secret in hushed. It never refreshes, so it can't die on a failed refresh, and any
+  number of processes share it. `/claude_login` in Telegram renews it
+  (`aug/core/claude_login.py`): AUG runs `setup-token` in a pseudo-terminal
+  (`aug/utils/claude_setup_token.py`), sends the sign-in link as a button, and takes
+  the code the sign-in page shows from the next message, which is deleted at once and
+  never reaches the agent. When the login was issued is kept in `state.json`: it is
+  part of the fingerprint, so each process restarts with the new token at its next
+  turn. An expired or revoked login is the `login` error kind, whose message names
+  `/claude_login`.
 - **Turns.** One reader per process maps the SDK's messages onto harness events. A
   turn ends at its result followed by the CLI going idle, so a message injected late
   still belongs to it. When background work finishes after the turn, the CLI starts a
@@ -147,7 +156,7 @@ the CLI comes inside it, so both move together.
   run lock. Claude's cron is off: scheduling stays with `create_task` and
   `set_reminder`.
 - **Errors.** Assistant errors, rate-limit events and error results map onto
-  `HarnessError` kinds; a rejected rate limit carries its reset time, and a warning
+  `HarnessError` kinds (`authentication_failed` and 401/403 are `login`); a rejected rate limit carries its reset time, and a warning
   becomes a status line.
 - **`oneshot()`** is a bare query from a neutral folder: no tools, no settings, one turn.
 

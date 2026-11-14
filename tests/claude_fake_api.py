@@ -2,17 +2,29 @@
 
 The CLI accepts ``ANTHROPIC_BASE_URL``; this server answers every ``/v1/messages`` call
 with whatever ``respond(request)`` returns: a list of content blocks (text and tool_use),
-streamed back the way the API streams them.  Every request is kept in ``requests``.
+streamed back the way the API streams them, or an ``ApiError``.  Every request is kept in
+``requests``.
 """
 
 import json
 import socketserver
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-Respond = Callable[[dict[str, Any]], list[dict[str, Any]]]
+
+@dataclass(frozen=True)
+class ApiError:
+    """An error response, as the API sends one."""
+
+    status: int
+    type: str
+    message: str
+
+
+Respond = Callable[[dict[str, Any]], "list[dict[str, Any]] | ApiError"]
 
 
 class FakeAnthropicAPI:
@@ -29,9 +41,15 @@ class FakeAnthropicAPI:
                 body = json.loads(self.rfile.read(int(self.headers["content-length"])) or b"{}")
                 api.requests.append(body)
                 blocks = api.respond(body)
-                data = _sse(body.get("model", ""), blocks)
-                self.send_response(200)
-                self.send_header("content-type", "text/event-stream")
+                if isinstance(blocks, ApiError):
+                    error = {"type": blocks.type, "message": blocks.message}
+                    data = json.dumps({"type": "error", "error": error}).encode()
+                    status, content_type = blocks.status, "application/json"
+                else:
+                    data = _sse(body.get("model", ""), blocks)
+                    status, content_type = 200, "text/event-stream"
+                self.send_response(status)
+                self.send_header("content-type", content_type)
                 self.send_header("content-length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)

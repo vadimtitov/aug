@@ -62,6 +62,7 @@ from aug.utils.data import DATA_DIR, SKILLS_DIR, WORKSPACE_DIR
 from aug.utils.hushed import HushedError, read_secret
 from aug.utils.media import MODEL_IMAGE_TYPES
 from aug.utils.skills import load_skills
+from aug.utils.state import load_state
 
 logger = logging.getLogger(__name__)
 _cli_logger = logging.getLogger("aug.claude_cli")
@@ -78,7 +79,7 @@ TOKEN_SECRET = "CLAUDE_CODE_OAUTH_TOKEN"
 # The plugin name the workspace's skills load under: ``aug:<skill>``.
 PLUGIN_NAME = "aug"
 
-_BUNDLED_CLI = Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude"
+BUNDLED_CLI = Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude"
 _CLI_WRAPPER = Path(__file__).parent / "claude_cli.sh"
 # What reaches the CLI's environment; everything else of AUG's is cut (claude_cli.sh).
 _ENV_KEEP = (
@@ -404,6 +405,8 @@ class ClaudeCodeHarness(Harness):
             "always_loaded": sorted(self.profile.always_loaded),
             "env": _CLI_ENV,
             "settings": _CLI_SETTINGS,
+            # A new login (/claude_login) restarts the process with the new token.
+            "login": load_state().claude_login.issued_at,
         }
         return hashlib.sha256(json.dumps(setup, sort_keys=True).encode()).hexdigest()
 
@@ -411,7 +414,7 @@ class ClaudeCodeHarness(Harness):
         env = {
             **_CLI_ENV,
             "CLAUDE_CONFIG_DIR": str(self._config_dir),
-            "AUG_CLAUDE_CLI": str(_BUNDLED_CLI),
+            "AUG_CLAUDE_CLI": str(BUNDLED_CLI),
             "AUG_CLAUDE_ENV_KEEP": " ".join(_ENV_KEEP),
         }
         try:

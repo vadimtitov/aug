@@ -153,6 +153,12 @@ class McpState(BaseModel):
     install_plans: dict[str, McpInstallPlan] = {}
 
 
+class ClaudeLoginState(BaseModel):
+    """The Claude login made through /claude_login; the token itself is in hushed."""
+
+    issued_at: str = ""  # ISO timestamp; empty when no login was made through AUG
+
+
 class AppState(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -163,6 +169,7 @@ class AppState(BaseModel):
     # by every frontend rather than living under any one of them.
     locations: dict[str, ConversationLocationState] = {}
     mcp: McpState = McpState()
+    claude_login: ClaudeLoginState = ClaudeLoginState()
 
     @model_validator(mode="before")
     @classmethod

@@ -652,7 +652,8 @@ async def test_cancel_interrupts_and_ends_cancelled(harness, fake_client):
 @pytest.mark.parametrize(
     "error, kind",
     [
-        ("authentication_failed", "auth"),
+        ("authentication_failed", "login"),
+        ("billing_error", "auth"),
         ("rate_limit", "rate_limited"),
         ("server_error", "unavailable"),
         ("unknown", "internal"),
