@@ -21,14 +21,15 @@ from aug.core.harness import (
     TurnContext,
     TurnEnded,
 )
-from aug.core.harness import claude_code as cc
-from aug.core.harness.claude_code import ClaudeCodeHarness, ClaudeCodeProfile
+from aug.core.harness.base import error_text
+from aug.core.harness.claude_code import harness as cc
+from aug.core.harness.claude_code.harness import ClaudeCodeHarness, ClaudeCodeProfile
 from aug.core.run import run_registry
 from aug.core.tools.context import current_tool_context
 from aug.utils.hushed import HushedError
-from tests.claude_fake_api import FakeAnthropicAPI, last_user_content, text, tool_use
+from tests.claude_fake_api import ApiError, FakeAnthropicAPI, last_user_content, text, tool_use
 
-pytestmark = pytest.mark.skipif(not cc._BUNDLED_CLI.exists(), reason="no bundled Claude CLI")
+pytestmark = pytest.mark.skipif(not cc.BUNDLED_CLI.exists(), reason="no bundled Claude CLI")
 
 ADDR = Address(interface="rest_api", conversation_id="chat", chat_id="chat")
 
@@ -46,7 +47,7 @@ async def stamp() -> str:
     return "stamped"
 
 
-def _respond(request: dict[str, Any]) -> list[dict[str, Any]]:
+def _respond(request: dict[str, Any]) -> list[dict[str, Any]] | ApiError:
     """The scripted model: a marker in the user's text picks what it does; a tool result
     is reported back as text."""
     content = last_user_content(request)
@@ -64,6 +65,8 @@ def _respond(request: dict[str, Any]) -> list[dict[str, Any]]:
         if "mcp__aug__echo" in names:
             return [tool_use("t-echo", "mcp__aug__echo", {"value": "x"})]
         return [tool_use("t-search", "ToolSearch", {"query": "select:mcp__aug__echo"})]
+    if "MARK:logged-out" in said:
+        return ApiError(401, "authentication_error", "OAuth access token has been revoked.")
     if "MARK:stamp" in said:
         return [tool_use("t-stamp", "mcp__aug_core__stamp", {})]
     if "MARK:bash" in said:
@@ -99,7 +102,7 @@ def harness(workspace, tmp_path, monkeypatch, api):
     monkeypatch.setattr("aug.core.transcript.TRANSCRIPTS_DIR", tmp_path / "transcripts")
     # No hushed here: the rewrite is marked instead, so the test sees it happen.
     monkeypatch.setattr(
-        "aug.core.harness.claude_code_tools.hushed_command", lambda c: f"echo REWRITTEN; {c}"
+        "aug.core.harness.claude_code.tools.hushed_command", lambda c: f"echo REWRITTEN; {c}"
     )
 
     def no_token(name: str) -> str:
@@ -202,3 +205,14 @@ async def test_a_new_harness_resumes_the_session(harness, tmp_path, api):
         for b in (m["content"] if isinstance(m["content"], list) else [])
     ]
     assert any("first message" in s for s in said)
+
+
+async def test_a_revoked_login_tells_the_user_to_sign_in(harness, monkeypatch):
+    # Signed in with a setup token, as AUG is (an API key gets retried for minutes).
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    monkeypatch.setattr(cc, "read_secret", lambda name: "sk-ant-oat01-revoked")
+    (events,) = await _in(harness, "MARK:logged-out")
+    ended = events[-1]
+    assert isinstance(ended, TurnEnded) and ended.error is not None
+    assert ended.error.kind == "login"
+    assert "/claude_login" in error_text(ended.error)

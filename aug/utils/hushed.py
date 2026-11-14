@@ -50,6 +50,27 @@ async def list_secret_names() -> set[str]:
     return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
+def write_secret(name: str, value: str) -> None:
+    """Store *value* in hushed under *name*, replacing any value it had.
+
+    Raises:
+        HushedError: the name is invalid or hushed failed.
+    """
+    if not _ENV_VAR_NAME_RE.match(name):
+        raise HushedError(f"invalid secret name {name!r} — must be a valid env var name")
+    try:
+        result = subprocess.run(
+            ["hushed", "add", name, value], capture_output=True, text=True, timeout=_LIST_TIMEOUT
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # Not the exception itself: its text holds the command line, value included.
+        raise HushedError(f"failed to store secret {name!r}: {type(exc).__name__}") from None
+    if result.returncode != 0:
+        raise HushedError(
+            f"hushed failed storing {name!r}: {result.stderr.strip()[:_MAX_ERROR_LEN]}"
+        )
+
+
 def read_secret(name: str) -> str:
     """Fetch one secret's value from hushed via a private inherited pipe, since
     `hushed run` redacts secret values from stdout. The reader is a tiny Python

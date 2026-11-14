@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from aug.core.harness.langgraph import LangGraphHarness
+from aug.core.harness.langgraph.harness import LangGraphHarness
 from aug.core.reflexes import Reflex, ReflexOutput, run_reflexes
 
 # ---------------------------------------------------------------------------

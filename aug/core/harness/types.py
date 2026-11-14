@@ -72,7 +72,10 @@ class ModelTier(Enum):
     FAST = "fast"
 
 
-ErrorKind = Literal["context_full", "rate_limited", "auth", "unavailable", "step_limit", "internal"]
+ErrorKind = Literal[
+    "context_full", "rate_limited", "auth", "login", "unavailable", "step_limit", "internal"
+]
+# login: the model login itself is missing, expired or revoked; signing in again fixes it.
 
 
 @dataclass(frozen=True)

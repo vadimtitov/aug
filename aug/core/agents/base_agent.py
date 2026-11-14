@@ -15,7 +15,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.types import StateSnapshot
 
-from aug.core.harness.langgraph_events import parse_event
+from aug.core.harness.langgraph.events import parse_event
 from aug.core.harness.tool_context import TOOL_CONTEXT_CONFIG_KEY, ToolContext
 from aug.core.harness.types import AgentEvent
 from aug.core.reflexes import Reflex

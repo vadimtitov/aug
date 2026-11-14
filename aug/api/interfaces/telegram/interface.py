@@ -62,6 +62,7 @@ from aug.api.interfaces.base import (
     TextContent,
     store_file,
 )
+from aug.api.interfaces.telegram.claude_login import _ClaudeLoginMixin
 from aug.api.interfaces.telegram.ssh import _SshMixin
 from aug.api.interfaces.telegram.utils import (
     escape,
@@ -217,7 +218,7 @@ _SECRET_NAME, _SECRET_VALUE = range(2)
 _no_draft_chats: set[int] = set()
 
 
-class TelegramInterface(_SshMixin, BaseInterface[Update]):
+class TelegramInterface(_SshMixin, _ClaudeLoginMixin, BaseInterface[Update]):
     _debounce_window = 0.1  # 100ms — collects rapid-fire forwarded messages into one run
 
     def __init__(self) -> None:
@@ -949,6 +950,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
         )
         bot_app.add_handler(CommandHandler("approvals", self._handle_approvals))
         self.build_ssh_handlers(bot_app)
+        self.build_claude_login_handlers(bot_app)
         bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text))
         bot_app.add_handler(MessageHandler(filters.VOICE, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.AUDIO, self._handle_input))
@@ -987,6 +989,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
                 ("version", "Switch agent version"),
                 ("skills", "Inspect skill files"),
                 ("secret", "Store a secret"),
+                ("claude_login", "Sign in to Claude for the Claude agents"),
                 ("prompt", "Export current system prompt as a file"),
                 ("consolidate", "Run memory consolidation now"),
                 ("consolidate_deep", "Run deep (weekly) memory consolidation now"),
@@ -1006,6 +1009,7 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
             return
         await self._bot_app.updater.stop()
         await self._bot_app.stop()
+        await self.end_claude_logins()  # after stop(): no handler can start one now
         await self._bot_app.shutdown()
         logger.info("Telegram bot stopped.")
 
@@ -1015,6 +1019,8 @@ class TelegramInterface(_SshMixin, BaseInterface[Update]):
 
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not update.message.text:
+            return
+        if await self.decline_stray_login_code(update.message):
             return
         await self.run(update)
 

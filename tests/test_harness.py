@@ -46,13 +46,13 @@ from aug.core.harness import (
     error_text,
     pending_approvals,
 )
-from aug.core.harness.langgraph import (
+from aug.core.harness.langgraph.events import parse_event
+from aug.core.harness.langgraph.harness import (
     ATTENDED_MAX_TOOL_ROUNDS,
     UNATTENDED_MAX_TOOL_ROUNDS,
     LangGraphHarness,
     _harness_error,
 )
-from aug.core.harness.langgraph_events import parse_event
 from aug.core.prompts import (
     HARNESS_ERROR_MESSAGES,
     HARNESS_STEP_LIMIT_NOTE,
@@ -635,7 +635,7 @@ async def test_oneshot_calls_the_agent_model() -> None:
     model = MagicMock()
     model.ainvoke = AsyncMock(return_value=AIMessage(content="answer"))
 
-    with patch("aug.core.harness.langgraph.build_chat_model", return_value=model) as build:
+    with patch("aug.core.harness.langgraph.harness.build_chat_model", return_value=model) as build:
         assert await harness.oneshot("question") == "answer"
 
     build.assert_called_once_with("some-model", temperature=0.0)
@@ -648,7 +648,7 @@ async def test_oneshot_calls_the_model_of_the_tier_asked_for() -> None:
     model = MagicMock()
     model.ainvoke = AsyncMock(return_value=AIMessage(content="answer"))
 
-    with patch("aug.core.harness.langgraph.build_chat_model", return_value=model) as build:
+    with patch("aug.core.harness.langgraph.harness.build_chat_model", return_value=model) as build:
         await harness.oneshot("question", ModelTier.FAST, system="be brief")
         await harness.oneshot("question")  # STRONG, not mapped: the agent's own model
 

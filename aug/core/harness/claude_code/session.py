@@ -33,7 +33,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import TERMINAL_TASK_STATUSES
 
-from aug.core.harness.claude_code_tools import ToolCalls, canonical_name
+from aug.core.harness.claude_code.tools import ToolCalls, canonical_name
 from aug.core.harness.tool_context import ToolContext
 from aug.core.harness.types import (
     Address,
@@ -417,7 +417,9 @@ def _assistant_error(message: AssistantMessage) -> HarnessError:
     text = " ".join(b.text for b in message.content if isinstance(b, TextBlock)).lower()
     logger.warning("claude assistant error %s: %.200s", message.error, text)
     match message.error:
-        case "authentication_failed" | "billing_error":
+        case "authentication_failed":
+            return HarnessError(kind="login")
+        case "billing_error":
             return HarnessError(kind="auth")
         case "rate_limit":
             return HarnessError(kind="rate_limited")
@@ -441,7 +443,7 @@ def _result_error(message: ResultMessage) -> HarnessError:
     if status == 429:
         return HarnessError(kind="rate_limited")
     if status in (401, 403):
-        return HarnessError(kind="auth")
+        return HarnessError(kind="login")
     if status is not None and status >= 500:
         return HarnessError(kind="unavailable")
     return HarnessError(kind="internal")

@@ -8,7 +8,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from aug.core.agents.chat_agent import AugAgent
 from aug.core.harness import Address, Message, Sender, TextPart, TurnContext, TurnEnded
-from aug.core.harness.langgraph import LangGraphHarness
+from aug.core.harness.langgraph.harness import LangGraphHarness
 from aug.core.memory import (
     MEMORY_INDEX_MAX_CHARS,
     append_note,

@@ -16,8 +16,8 @@ from aug.core.agents.base_agent import BaseAgent
 from aug.core.agents.chat_agent import AugAgent
 from aug.core.agents.fake_agent import FakeAgent
 from aug.core.harness.base import Harness
-from aug.core.harness.claude_code import ClaudeCodeHarness, ClaudeCodeProfile
-from aug.core.harness.langgraph import LangGraphHarness
+from aug.core.harness.claude_code.harness import ClaudeCodeHarness, ClaudeCodeProfile
+from aug.core.harness.langgraph.harness import LangGraphHarness
 from aug.core.harness.types import ModelTier
 from aug.core.tools.brave_search import brave_search
 from aug.core.tools.fetch_page import fetch_page

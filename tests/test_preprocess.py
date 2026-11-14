@@ -13,7 +13,7 @@ from PIL import Image
 from aug.api.interfaces import base
 from aug.api.interfaces.base import FileContent, IncomingMessage, LocationContent, TextContent
 from aug.core.harness import FilePart, TextPart
-from aug.core.harness.langgraph import _render
+from aug.core.harness.langgraph.harness import _render
 from aug.utils.storage import safe_filename
 
 

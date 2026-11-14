@@ -48,9 +48,9 @@ from aug.core.harness import (
     TurnEnded,
     TurnStarted,
 )
-from aug.core.harness import claude_code as cc
-from aug.core.harness.claude_code import ClaudeCodeHarness, ClaudeCodeProfile
-from aug.core.harness.claude_code_tools import (
+from aug.core.harness.claude_code import harness as cc
+from aug.core.harness.claude_code.harness import ClaudeCodeHarness, ClaudeCodeProfile
+from aug.core.harness.claude_code.tools import (
     ToolCalls,
     _adapt,
     canonical_name,
@@ -123,7 +123,7 @@ class FakeClient:
 def fake_client(monkeypatch):
     FakeClient.instances = []
     FakeClient.on_query = None
-    monkeypatch.setattr("aug.core.harness.claude_code_session.ClaudeSDKClient", FakeClient)
+    monkeypatch.setattr("aug.core.harness.claude_code.session.ClaudeSDKClient", FakeClient)
     return FakeClient
 
 
@@ -331,7 +331,7 @@ async def test_the_session_starts_with_aug_prompt_skills_and_no_filesystem_setti
     assert options.allowed_tools == ["Bash", "Read", "mcp__aug_core", "mcp__aug"]
     assert options.tools == ["Bash", "Read"]
     assert options.session_id is not None and options.resume is None
-    assert Path(options.cli_path).name == "claude_cli.sh"
+    assert Path(options.cli_path).name == "cli.sh"
     plugin = Path(options.plugins[0]["path"])
     assert (plugin / ".claude-plugin" / "plugin.json").exists()
     assert sorted(p.name for p in plugin.iterdir()) == [".claude-plugin", "skills"]
@@ -652,7 +652,8 @@ async def test_cancel_interrupts_and_ends_cancelled(harness, fake_client):
 @pytest.mark.parametrize(
     "error, kind",
     [
-        ("authentication_failed", "auth"),
+        ("authentication_failed", "login"),
+        ("billing_error", "auth"),
         ("rate_limit", "rate_limited"),
         ("server_error", "unavailable"),
         ("unknown", "internal"),
