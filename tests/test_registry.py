@@ -8,7 +8,7 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
 
 from aug.core.agents.chat_agent import AugAgent
-from aug.core.harness.claude_code import ClaudeCodeHarness
+from aug.core.harness.claude_code.harness import ClaudeCodeHarness
 from aug.core.harness.types import ModelTier
 from aug.core.registry import (
     base_tool_names,

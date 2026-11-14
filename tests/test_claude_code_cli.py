@@ -21,9 +21,9 @@ from aug.core.harness import (
     TurnContext,
     TurnEnded,
 )
-from aug.core.harness import claude_code as cc
 from aug.core.harness.base import error_text
-from aug.core.harness.claude_code import ClaudeCodeHarness, ClaudeCodeProfile
+from aug.core.harness.claude_code import harness as cc
+from aug.core.harness.claude_code.harness import ClaudeCodeHarness, ClaudeCodeProfile
 from aug.core.run import run_registry
 from aug.core.tools.context import current_tool_context
 from aug.utils.hushed import HushedError
@@ -102,7 +102,7 @@ def harness(workspace, tmp_path, monkeypatch, api):
     monkeypatch.setattr("aug.core.transcript.TRANSCRIPTS_DIR", tmp_path / "transcripts")
     # No hushed here: the rewrite is marked instead, so the test sees it happen.
     monkeypatch.setattr(
-        "aug.core.harness.claude_code_tools.hushed_command", lambda c: f"echo REWRITTEN; {c}"
+        "aug.core.harness.claude_code.tools.hushed_command", lambda c: f"echo REWRITTEN; {c}"
     )
 
     def no_token(name: str) -> str:

@@ -11,7 +11,7 @@ from telegram.ext import filters
 
 from aug.api.interfaces import base
 from aug.api.interfaces.base import IncomingMessage, LocationContent
-from aug.core.harness.langgraph import LangGraphHarness, _render
+from aug.core.harness.langgraph.harness import LangGraphHarness, _render
 from aug.core.run import AgentRun, run_registry
 from aug.utils.state import AppState, ConversationLocationState, LiveLocationState
 

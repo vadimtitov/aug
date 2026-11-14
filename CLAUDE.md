@@ -25,7 +25,9 @@ aug/
 │   │   ├── memory.py           ← Memory file init, append_note(), light + deep consolidation (the dream)
 │   │   ├── jobs.py             ← Background jobs: JOBS (which job, when, on which profile) + job_runner
 │   │   ├── registry.py         ← Profiles (v13_kimi, v13_glm, v14_claude_code) + get_harness(); moves chats off deleted versions
-│   │   ├── harness/            ← Harness ABC + types (Message, TurnContext, TurnEnded…), LangGraphHarness, ClaudeCodeHarness
+│   │   ├── harness/            ← Harness ABC + types (Message, TurnContext, TurnEnded…), ToolContext
+│   │   │   ├── langgraph/      ← LangGraphHarness + LangGraph stream-event translation
+│   │   │   └── claude_code/    ← ClaudeCodeHarness: SDK session reader, MCP bridge + guard, CLI wrapper, login
 │   │   ├── run.py              ← run_registry: per-context run lock, routing lock, LangGraph AgentRuns
 │   │   ├── dispatch.py         ← fire_task / fire_push / broadcast — pushes run through the harness
 │   │   ├── transcript.py       ← AUG's own append-only turn log, data/transcripts/<conversation>.jsonl

@@ -42,7 +42,7 @@ from aug.core.harness import (
     TurnEnded,
     error_text,
 )
-from aug.core.harness.langgraph import LangGraphHarness
+from aug.core.harness.langgraph.harness import LangGraphHarness
 from aug.core.prompts import UNATTENDED_TIMED_OUT_MESSAGE
 from aug.core.registry import get_harness
 from aug.core.run import run_registry

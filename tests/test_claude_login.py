@@ -12,11 +12,11 @@ import pytest
 from aug.api.interfaces.telegram.claude_login import _AwaitingCode
 from aug.api.interfaces.telegram.interface import TelegramInterface
 from aug.core.harness import HarnessError
-from aug.core.harness import claude_code as cc
-from aug.core.harness import claude_code_login as claude_login
 from aug.core.harness.base import error_text
-from aug.core.harness.claude_code_login import login_status, start_login
-from aug.core.harness.claude_code_session import _result_error
+from aug.core.harness.claude_code import harness as cc
+from aug.core.harness.claude_code import login as claude_login
+from aug.core.harness.claude_code.login import login_status, start_login
+from aug.core.harness.claude_code.session import _result_error
 from aug.utils.claude_setup_token import SetupToken, SetupTokenError, looks_like_code
 from aug.utils.state import update_state
 

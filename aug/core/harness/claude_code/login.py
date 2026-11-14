@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from aug.core.harness.claude_code import BUNDLED_CLI, TOKEN_SECRET
+from aug.core.harness.claude_code.harness import BUNDLED_CLI, TOKEN_SECRET
 from aug.utils.claude_setup_token import SetupToken
 from aug.utils.hushed import write_secret
 from aug.utils.state import load_state, update_state

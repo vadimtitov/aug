@@ -33,8 +33,8 @@ from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 from langchain_core.tools import BaseTool
 
 from aug.core.harness.base import Harness
-from aug.core.harness.claude_code_session import ChatSession, Content
-from aug.core.harness.claude_code_tools import (
+from aug.core.harness.claude_code.session import ChatSession, Content
+from aug.core.harness.claude_code.tools import (
     AUG_SERVERS,
     ToolCalls,
     aug_mcp_servers,
@@ -80,8 +80,8 @@ TOKEN_SECRET = "CLAUDE_CODE_OAUTH_TOKEN"
 PLUGIN_NAME = "aug"
 
 BUNDLED_CLI = Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude"
-_CLI_WRAPPER = Path(__file__).parent / "claude_cli.sh"
-# What reaches the CLI's environment; everything else of AUG's is cut (claude_cli.sh).
+_CLI_WRAPPER = Path(__file__).parent / "cli.sh"
+# What reaches the CLI's environment; everything else of AUG's is cut (cli.sh).
 _ENV_KEEP = (
     "HOME",
     "PATH",

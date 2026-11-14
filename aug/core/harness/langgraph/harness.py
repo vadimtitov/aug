@@ -30,7 +30,7 @@ from langgraph.types import Command
 from aug.core.agents.base_agent import BaseAgent
 from aug.core.compaction import compact_thread
 from aug.core.harness.base import Harness
-from aug.core.harness.langgraph_events import dispatch
+from aug.core.harness.langgraph.events import dispatch
 from aug.core.harness.tool_context import TOOL_CONTEXT_CONFIG_KEY, ToolContext
 from aug.core.harness.types import (
     FilePart,

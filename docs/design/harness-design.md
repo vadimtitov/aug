@@ -100,7 +100,7 @@ sent to the user, and `index/<id>.json` with its metadata.
   queue a new one". An interface starts its turn under it and holds it until
   `TurnStarted`, so a message arriving in between is injected, not queued behind.
 
-## Claude Code (`aug/core/harness/claude_code*.py`)
+## Claude Code (`aug/core/harness/claude_code/`)
 
 `ClaudeCodeHarness` runs a `ClaudeCodeProfile` (model, effort, Claude's built-in tools,
 AUG's tools, oneshot models) on the Claude Agent SDK. `claude-agent-sdk` is pinned, and
@@ -136,12 +136,12 @@ the CLI comes inside it, so both move together.
   is refused. Approvals stay on AUG's tools that ask for them.
 - **Guard.** A PreToolUse hook refuses the blocked paths (`blocked_paths`) in Bash,
   Read, Write and Edit, and rewrites every shell command to run through hushed, as
-  `run_bash` does. The CLI starts through `claude_cli.sh`, which keeps only the
+  `run_bash` does. The CLI starts through `cli.sh`, which keeps only the
   allowlisted environment variables (`_ENV_KEEP`): AUG's own secrets never reach it.
 - **Login.** A one-year `claude setup-token` token, the `CLAUDE_CODE_OAUTH_TOKEN`
   secret in hushed. It never refreshes, so it can't die on a failed refresh, and any
   number of processes share it. `/claude_login` in Telegram renews it
-  (`aug/core/harness/claude_code_login.py`): AUG runs `setup-token` in a pseudo-terminal
+  (`aug/core/harness/claude_code/login.py`): AUG runs `setup-token` in a pseudo-terminal
   (`aug/utils/claude_setup_token.py`), sends the sign-in link as a button, and takes
   the code the sign-in page shows from the next message, which is deleted at once and
   never reaches the agent. When the login was issued is kept in `state.json`: it is

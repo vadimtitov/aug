@@ -33,7 +33,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import TERMINAL_TASK_STATUSES
 
-from aug.core.harness.claude_code_tools import ToolCalls, canonical_name
+from aug.core.harness.claude_code.tools import ToolCalls, canonical_name
 from aug.core.harness.tool_context import ToolContext
 from aug.core.harness.types import (
     Address,
