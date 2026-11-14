@@ -321,3 +321,71 @@ def test_rest_conversation_id_is_namespaced(rest_iface):
     """REST keys must not collide with Telegram keys for the same string."""
     assert rest_iface.conversation_id("tg-123-0") == "rest-tg-123-0"
     assert rest_iface.parent_conversation_id("rest-anything") is None
+
+
+# ---------------------------------------------------------------------------
+# deliver_unsolicited: a turn a harness started by itself
+# ---------------------------------------------------------------------------
+
+
+async def _events(*events):
+    for event in events:
+        yield event
+
+
+@pytest.mark.asyncio
+async def test_unsolicited_turn_is_sent_to_its_interface_under_the_run_lock():
+    from aug.core.dispatch import deliver_unsolicited
+    from aug.core.harness import Address, TurnEnded
+    from aug.core.run import run_registry
+
+    held = []
+    iface = MagicMock()
+
+    async def send(context_id, stream):
+        held.append(run_registry.run_lock(context_id).locked())
+        held.append([e async for e in stream])
+
+    iface.send_proactive_stream = send
+    iface.send_proactive = AsyncMock()
+    app = MagicMock()
+    app.state.interfaces = {"telegram": iface}
+    reply_to = Address(interface="telegram", conversation_id="tg-1", chat_id="1")
+    with patch("aug.core.dispatch.get_app", return_value=app):
+        await deliver_unsolicited(reply_to, "tg-1-0", _events(TextDelta(text="done"), TurnEnded()))
+
+    assert held[0] is True
+    assert [type(e).__name__ for e in held[1]] == ["TextDelta", "TurnEnded"]
+    iface.send_proactive.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unsolicited_turn_error_is_reported_and_no_interface_is_drained():
+    from aug.core.dispatch import deliver_unsolicited
+    from aug.core.harness import Address, HarnessError, TurnEnded
+
+    iface = MagicMock()
+    iface.send_proactive_stream = _send_drained
+    iface.send_proactive = AsyncMock()
+    app = MagicMock()
+    app.state.interfaces = {"telegram": iface}
+    failed = TurnEnded(error=HarnessError(kind="rate_limited"))
+    with patch("aug.core.dispatch.get_app", return_value=app):
+        await deliver_unsolicited(
+            Address(interface="telegram", conversation_id="c"), "tg-1-0", _events(failed)
+        )
+        iface.send_proactive.assert_awaited_once()
+
+        drained = []
+
+        async def tracked():
+            drained.append(True)
+            yield TurnEnded()
+
+        await deliver_unsolicited(Address(interface="matrix", conversation_id="c"), "x", tracked())
+    assert drained == [True]
+
+
+async def _send_drained(context_id, stream):
+    async for _ in stream:
+        pass

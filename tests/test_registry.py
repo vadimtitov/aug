@@ -1,4 +1,4 @@
-"""The registry: the v13_kimi profiles, their tools, tiers, and the move off deleted versions."""
+"""The registry: the profiles, their tools, tiers, and the move off deleted versions."""
 
 import inspect
 from unittest.mock import patch
@@ -8,6 +8,7 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
 
 from aug.core.agents.chat_agent import AugAgent
+from aug.core.harness.claude_code import ClaudeCodeHarness
 from aug.core.harness.types import ModelTier
 from aug.core.registry import (
     base_tool_names,
@@ -37,7 +38,7 @@ def _no_mcp_tools():
 
 
 def test_only_the_current_profiles_are_registered():
-    assert list_agents() == ["fake", *PROFILES]
+    assert list_agents() == ["fake", *PROFILES, "v14_claude_code"]
 
 
 def test_profile_models():
@@ -174,3 +175,27 @@ def _subagent_of(agent: AugAgent) -> AugAgent:
     """The subagent behind *agent*'s run_subagent tool."""
     run_subagent = next(t for t in agent.tools if t.name == "run_subagent")
     return inspect.getclosurevars(run_subagent.coroutine).nonlocals["subagent"]
+
+
+def test_the_claude_code_profile_runs_on_claude_code_with_its_own_tools():
+    configure_harnesses(MemorySaver())
+    harness = get_harness("v14_claude_code")
+    profile = get_agent("v14_claude_code")
+
+    assert isinstance(harness, ClaudeCodeHarness)
+    assert profile.model == "claude-opus-5-5" and profile.effort == "high"
+    names = {t.name for t in profile.tools}
+    # Claude has its own shell, fetch, search and skill loading.
+    assert not names & {"run_bash", "fetch_page", "brave_search", "get_skill", "browser"}
+    assert {"respond_with_file", "generate_image", "save_skill", "install_mcp_server"} <= names
+    blocked = {"CronCreate", "ScheduleWakeup", "RemoteTrigger", "SendMessage", "ListAgents"}
+    assert not blocked & set(profile.builtin_tools)
+
+
+def test_mcp_tools_reach_the_same_claude_code_harness():
+    configure_harnesses(MemorySaver())
+    harness = get_harness("v14_claude_code")
+    configure_mcp_tools([_fake_mcp_tool])
+
+    assert get_harness("v14_claude_code") is harness  # its warm processes stay owned
+    assert "_fake_mcp_tool" in {t.name for t in harness.profile.tools}

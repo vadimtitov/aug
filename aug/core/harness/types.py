@@ -228,5 +228,6 @@ class TurnEnded:
 
 HarnessEvent = AgentEvent | TurnStarted | TurnEnded
 
-# Receives a turn the harness started by itself (Claude Code finishing background work).
-UnsolicitedSink = Callable[[str, AsyncIterator[HarnessEvent]], Awaitable[None]]
+# Receives a turn the harness started by itself (Claude Code finishing background work):
+# where its reply goes, its context_id, and its events.
+UnsolicitedSink = Callable[[Address, str, AsyncIterator[HarnessEvent]], Awaitable[None]]

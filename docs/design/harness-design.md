@@ -1,8 +1,8 @@
 # Harness design
 
 AUG's interfaces (Telegram, REST, pushes, jobs) talk to one contract, `Harness`, and
-never to the thing that runs a turn. Today the only harness is `LangGraphHarness`; a
-Claude Code harness is planned on the same contract.
+never to the thing that runs a turn. Two harnesses implement it: `LangGraphHarness`
+(`v13_kimi`, `v13_glm`) and `ClaudeCodeHarness` (`v14_claude_code`, see below).
 
 ## The contract (`aug/core/harness/`)
 
@@ -99,6 +99,57 @@ sent to the user, and `index/<id>.json` with its metadata.
 - `routing_lock(context_id)`: short. Serialises "inject into the turn in flight, or
   queue a new one". An interface starts its turn under it and holds it until
   `TurnStarted`, so a message arriving in between is injected, not queued behind.
+
+## Claude Code (`aug/core/harness/claude_code*.py`)
+
+`ClaudeCodeHarness` runs a `ClaudeCodeProfile` (model, effort, Claude's built-in tools,
+AUG's tools, oneshot models) on the Claude Agent SDK. `claude-agent-sdk` is pinned, and
+the CLI comes inside it, so both move together.
+
+- **Processes.** Each chat gets its own CLI process (`ChatSession`), opened on first use
+  and kept warm. The evictor closes idle ones after an hour (the prompt cache's
+  lifetime) and keeps at most 8 idle; a process with a turn in flight or background
+  work running is never closed. A closed session resumes from Claude's own session file
+  on the next message.
+- **Records.** `/app/data/claude/aug-sessions/` keeps one record per `context_id`: the
+  Claude session id, the address, and the prompt and skills the session started with.
+  A resumed session gets them back unchanged, so `/prompt` and the cache hold across
+  restarts. `CLAUDE_CONFIG_DIR` is `/app/data/claude`, so Claude's session files survive
+  a redeploy.
+- **Setup changes.** Each process is fingerprinted (prompt, skills, model, effort,
+  tools, CLI settings). When the fingerprint changes (an MCP server added, say), the
+  next turn restarts the process and resumes.
+- **Prompt.** Claude Code's own prompt plus AUG's session prompt (`append`), without
+  the skills index. `setting_sources=[]`: nothing loads from `~/.claude` or the
+  workspace's `.claude/`. The workspace loads as a local plugin named `aug`, and the
+  session's skills are passed explicitly (`aug:<name>`), which also hides the CLI's own
+  bundled skills.
+- **Tools.** AUG's tools (the MCP manager's included) reach Claude through one
+  in-process MCP server, `aug`; each call runs the LangChain tool with the turn's
+  `ToolContext`, so tools don't know which harness runs them. Events use canonical
+  names (`mcp__aug__` stripped). Claude's own tools are an allowlist
+  (`_CLAUDE_BUILTIN_TOOLS`) and run without approval (`permission_mode="dontAsk"`):
+  anything not listed, including a tool a new CLI adds, is refused. Approvals stay on
+  AUG's tools that ask for them.
+- **Guard.** A PreToolUse hook refuses the blocked paths (`blocked_paths`) in Bash,
+  Read, Write and Edit, and rewrites every shell command to run through hushed, as
+  `run_bash` does. The CLI starts through `claude_cli.sh`, which keeps only the
+  allowlisted environment variables (`_ENV_KEEP`): AUG's own secrets never reach it.
+  The login is the `CLAUDE_CODE_OAUTH_TOKEN` secret in hushed (`claude setup-token`).
+- **Turns.** One reader per process maps the SDK's messages onto harness events. A
+  turn ends at its result followed by the CLI going idle, so a message injected late
+  still belongs to it. When background work finishes after the turn, the CLI starts a
+  turn by itself; it is delivered through `running(on_unsolicited)` to
+  `dispatch.deliver_unsolicited`, which sends it like an agent push under the chat's
+  run lock. Claude's cron is off: scheduling stays with `create_task` and
+  `set_reminder`.
+- **Errors.** Assistant errors, rate-limit events and error results map onto
+  `HarnessError` kinds; a rejected rate limit carries its reset time, and a warning
+  becomes a status line.
+- **`oneshot()`** is a bare query from a neutral folder: no tools, no settings, one turn.
+
+Tests: `tests/test_claude_code.py` scripts the SDK's messages; `tests/test_claude_code_cli.py`
+runs the real CLI against a fake Messages API (`tests/claude_fake_api.py`), free.
 
 ## Names
 

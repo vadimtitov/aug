@@ -1,6 +1,7 @@
 """Agent registry: one entry per profile (agent version).
 
-``v13_kimi`` (kimi-k3) and ``v13_glm`` (glm-5.3) are built by ``_build_profiles()``, since
+``v13_kimi`` (kimi-k3) and ``v13_glm`` (glm-5.3) run on LangGraph; ``v14_claude_code``
+(Claude Opus 5.5) runs on Claude Code.  All are built by ``_build_profiles()``, since
 their tool lists include whichever MCP servers connected at startup.  The ``browser``
 tool's code stays but no profile exposes it.
 """
@@ -15,6 +16,7 @@ from aug.core.agents.base_agent import BaseAgent
 from aug.core.agents.chat_agent import AugAgent
 from aug.core.agents.fake_agent import FakeAgent
 from aug.core.harness.base import Harness
+from aug.core.harness.claude_code import ClaudeCodeHarness, ClaudeCodeProfile
 from aug.core.harness.langgraph import LangGraphHarness
 from aug.core.harness.types import ModelTier
 from aug.core.tools.brave_search import brave_search
@@ -54,6 +56,9 @@ _FAST = "accounts/fireworks/models/glm-5p3-flash"
 # Describes images for v13_glm, whose model has no vision (describe_image).
 _VISION_DESCRIPTION_MODEL = _KIMI
 
+_CLAUDE_STRONG = "claude-opus-5-5"
+_CLAUDE_FAST = "claude-haiku-5-5"
+
 # Profiles a chat on a deleted agent version is moved to: glm versions to v13_glm,
 # every other one to v13_kimi.
 DEFAULT_PROFILE = "v13_kimi"
@@ -90,6 +95,26 @@ _TOOLS = [
     download_ssh_file,
     upload_ssh_file,
 ]
+# Claude Code's profile: AUG's tools except those Claude has its own of (run_bash: Bash,
+# fetch_page: WebFetch, brave_search: WebSearch, get_skill: Skill).
+_CLAUDE_TOOLS = [t for t in _TOOLS if t not in (run_bash, fetch_page, brave_search, get_skill)]
+# Claude's own tools a profile may use.  Anything else, including a tool a new CLI
+# version adds, stays blocked: Claude's cron and wake-ups (scheduling is AUG's), remote
+# triggers, peer messaging (it could carry text between chats), worktrees.
+_CLAUDE_BUILTIN_TOOLS = (
+    "Bash",
+    "Read",
+    "Write",
+    "Edit",
+    "WebSearch",
+    "WebFetch",
+    "Task",
+    "TaskStop",
+    "Monitor",
+    "Skill",
+    "ToolSearch",
+)
+
 _MCP_MANAGEMENT_TOOLS = [
     search_mcp_servers,
     install_mcp_server,
@@ -171,7 +196,10 @@ def migrate_conversations() -> list[str]:
     return moved
 
 
-_REGISTRY: dict[str, BaseAgent] = {
+# A profile: a LangGraph agent, or a Claude Code profile.
+Profile = BaseAgent | ClaudeCodeProfile
+
+_REGISTRY: dict[str, Profile] = {
     "fake": FakeAgent(),
 }
 
@@ -181,8 +209,8 @@ def list_agents() -> list[str]:
     return list(_REGISTRY.keys())
 
 
-def get_agent(name: str) -> BaseAgent:
-    """Return the agent for *name*.
+def get_agent(name: str) -> Profile:
+    """Return the profile for *name*.
 
     Raises:
         ValueError: if *name* is not in the registry.
@@ -217,12 +245,14 @@ class _Harnesses:
     """One harness per agent version, built on first use.
 
     Keyed by the agent object too: configure_mcp_tools() rebuilds the profiles, and a
-    harness must never keep running the version it replaced.
+    LangGraph harness must never keep running the version it replaced.  A Claude Code
+    harness is kept and given the new profile instead, so its warm processes are never
+    orphaned.
     """
 
     def __init__(self) -> None:
         self._checkpointer: BaseCheckpointSaver | None = None
-        self._built: dict[str, tuple[BaseAgent, Harness]] = {}
+        self._built: dict[str, tuple[Profile, Harness]] = {}
 
     def configure(self, checkpointer: BaseCheckpointSaver) -> None:
         self._checkpointer = checkpointer
@@ -233,9 +263,20 @@ class _Harnesses:
         built = self._built.get(name)
         if built is not None and built[0] is agent:
             return built[1]
-        if self._checkpointer is None:
+        harness: Harness
+        if isinstance(agent, ClaudeCodeProfile) and built is not None:
+            # The same harness takes the new profile: it was entered into running()
+            # and holds warm processes, which restart on their next turn if the
+            # tools changed.
+            harness = built[1]
+            assert isinstance(harness, ClaudeCodeHarness)
+            harness.profile = agent
+        elif isinstance(agent, ClaudeCodeProfile):
+            harness = ClaudeCodeHarness(agent)
+        elif self._checkpointer is None:
             raise RuntimeError("configure_harnesses() has not run yet")
-        harness = LangGraphHarness(agent, self._checkpointer, models=_TIER_MODELS.get(name))
+        else:
+            harness = LangGraphHarness(agent, self._checkpointer, models=_TIER_MODELS.get(name))
         self._built[name] = (agent, harness)
         return harness
 
@@ -243,7 +284,7 @@ class _Harnesses:
 _harnesses = _Harnesses()
 
 
-def _build_profiles(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:
+def _build_profiles(mcp_tools: list[BaseTool]) -> dict[str, Profile]:
     # Dev only: the scenario stack runs its scripts on the real profiles too.
     dev_tools = SCRIPTED_TOOLS if get_settings().SCRIPTED_AGENT else []
     return {
@@ -279,6 +320,13 @@ def _build_profiles(mcp_tools: list[BaseTool]) -> dict[str, AugAgent]:
             compaction_threshold=0.8,
             context_window=200_000,
             max_summary_tokens=2000,
+        ),
+        "v14_claude_code": ClaudeCodeProfile(
+            model=_CLAUDE_STRONG,
+            effort="high",
+            builtin_tools=_CLAUDE_BUILTIN_TOOLS,
+            tools=[*_CLAUDE_TOOLS, *_MCP_MANAGEMENT_TOOLS, *mcp_tools, *dev_tools],
+            models={ModelTier.STRONG: _CLAUDE_STRONG, ModelTier.FAST: _CLAUDE_FAST},
         ),
     }
 

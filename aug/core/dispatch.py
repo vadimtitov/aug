@@ -21,6 +21,7 @@ unattended turn (``TurnContext.attended=False``), which the harness caps at a fe
 """
 
 import asyncio
+import contextlib
 import logging
 import re
 import uuid
@@ -219,16 +220,44 @@ async def fire_push(
         await iface.send_proactive(actual_context_id, error_text(ended.error))
 
 
-async def deliver_unsolicited(context_id: str, events: AsyncIterator[HarnessEvent]) -> None:
-    """Receive a turn a harness started by itself (the ``running()`` sink).
+async def deliver_unsolicited(
+    reply_to: Address, context_id: str, events: AsyncIterator[HarnessEvent]
+) -> None:
+    """Deliver a turn a harness started by itself (the ``running()`` sink): Claude Code
+    finishing background work after its turn ended.
 
-    LangGraph never starts one; the Claude Code harness will (background work that
-    finishes after its turn) and routes it here.  Until then there is nothing to
-    deliver to, so such a turn is drained and logged rather than lost silently.
+    Sent like an agent push, under the chat's run lock; an error is reported to the
+    user.  With no interface to send to, the turn is drained and logged, never left
+    hanging.
     """
-    async for _ in events:
-        pass
-    logger.warning("unsolicited turn dropped context=%s: no delivery route yet", context_id)
+    app = get_app()
+    iface = getattr(app.state, "interfaces", {}).get(reply_to.interface) if app else None
+    if iface is None:
+        async for _ in events:
+            pass
+        logger.warning("unsolicited turn dropped context=%s: no interface", context_id)
+        return
+    ended: TurnEnded | None = None
+
+    async def tracked() -> AsyncIterator[HarnessEvent]:
+        nonlocal ended
+        async for event in events:
+            if isinstance(event, TurnEnded):
+                ended = event
+            yield event
+
+    logger.info("unsolicited turn context=%s interface=%s", context_id, reply_to.interface)
+    async with run_registry.run_lock(context_id):
+        try:
+            await iface.send_proactive_stream(context_id, tracked())
+        except Exception:
+            logger.exception("unsolicited turn delivery failed context=%s", context_id)
+            with contextlib.suppress(Exception):
+                async for _ in events:
+                    pass
+            return
+    if ended is not None and ended.error is not None:
+        await iface.send_proactive(context_id, error_text(ended.error))
 
 
 async def broadcast(app: FastAPI, message: str) -> int:

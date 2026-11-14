@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import shlex
 import signal
 
 from langchain_core.tools import tool
@@ -61,14 +62,7 @@ async def run_bash(command: str) -> str:
     # and everything it started, not just the hushed wrapper.  No timeout: long
     # commands are fine, and /stop is how they end early.
     proc = await asyncio.create_subprocess_exec(
-        "hushed",
-        "run",
-        "--",
-        "bash",
-        "-c",
-        _WRAPPER,
-        "bash",
-        command,
+        *hushed_argv(command),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
@@ -87,6 +81,16 @@ async def run_bash(command: str) -> str:
         logger.debug("run_bash exit_code=0")
     output = (out + err).strip()
     return output or "(no output)"
+
+
+def hushed_argv(command: str) -> list[str]:
+    """The argv that runs *command* with the user's secrets injected and redacted."""
+    return ["hushed", "run", "--", "bash", "-c", _WRAPPER, "bash", command]
+
+
+def hushed_command(command: str) -> str:
+    """*command* rewritten as one shell line that runs it through hushed_argv()."""
+    return shlex.join(hushed_argv(command))
 
 
 def _kill_group(proc: asyncio.subprocess.Process) -> None:

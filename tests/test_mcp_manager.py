@@ -62,9 +62,7 @@ def _fake_run_writes(value: bytes):
 
 
 def test_read_hushed_secret_success():
-    with patch(
-        "aug.utils.hushed.subprocess.run", side_effect=_fake_run_writes(b"super-secret")
-    ):
+    with patch("aug.utils.hushed.subprocess.run", side_effect=_fake_run_writes(b"super-secret")):
         value = _read_hushed_secret("MY_TOKEN")
     assert value == "super-secret"
 

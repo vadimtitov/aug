@@ -30,7 +30,7 @@ and kept across /clear:
 - {memory}: your long-term memory, markdown files rewritten each night from your notes. \
 MEMORY.md (below) says what each file holds; read a file with a shell command when it \
 could help. Only the nightly process writes here: to keep something, use the note tool.
-- {skills}: your skills, one folder each (index below).
+- {skills}: your skills, one folder each{skills_note}.
 - {files}/inbox: every file the user sent you. {files}/outbox: a copy of every file you \
 sent.
 
@@ -41,6 +41,11 @@ shell and the gateway adds the account's token.
 
 This prompt is fixed for the session: edits to these files show from the next session \
 (after /clear)."""
+
+# How the environment text points at the skills: an index in the prompt, or the
+# harness's own skill listing (Claude Code loads the folder as a plugin).
+SKILLS_NOTE_INDEXED = " (index below)"
+SKILLS_NOTE_NATIVE = " (loaded as your skills)"
 
 SKILLS_INDEX_HEADER = "Available skills — call get_skill(name) to load full instructions:"
 # get_skill's first line: paths in a skill's instructions are relative to its folder.
@@ -64,6 +69,7 @@ def build_session_prompt(
     memory_index: str,
     skills: list[tuple[str, str]],
     describes_images: bool = False,
+    skills_index: bool = True,
 ) -> str:
     """A session's system prompt, built once when the session starts.  In order:
     environment facts, AGENTS.md, interface rules, the MEMORY.md snapshot, the skills
@@ -74,6 +80,7 @@ def build_session_prompt(
         "memory": f"{workspace}/memory",
         "skills": f"{workspace}/skills",
         "files": f"{workspace}/files",
+        "skills_note": SKILLS_NOTE_INDEXED if skills_index else SKILLS_NOTE_NATIVE,
     }
     prompts = INTERFACE_PROMPTS.get(interface)
     interface_text = (
@@ -83,7 +90,7 @@ def build_session_prompt(
     )
     skills_text = (
         SKILLS_INDEX_HEADER + "\n" + "\n".join(f"- {name}: {desc}" for name, desc in skills)
-        if skills
+        if skills and skills_index
         else ""
     )
     parts = [
@@ -338,7 +345,7 @@ INTERFACE_PROMPTS: dict[str, InterfacePrompts] = {
             syntax like ![...](...) or [filename](path) — they are delivered as
             Telegram attachments automatically. Just write your comment as plain text.
             respond_with_file is the only way a file reaches the user: a file you
-            write with run_bash stays on disk until you send it.
+            write stays on disk until you send it.
 
             Tables are not supported. Use labeled lists instead:
 
@@ -535,6 +542,18 @@ LOCATION_SHARE_UNKNOWN_SENDER = "User"
 VOICE_TRANSCRIPT_TEMPLATE = "[Voice message, already transcribed]\n{transcript}"
 # Rendered with every file the user sends, so the agent can hand its path to tools.
 # An image the model can see gets the hint next to the image itself.
+# What a tool that printed or returned nothing gives the model.
+TOOL_NO_OUTPUT = "(no output)"
+# Claude Code: an AUG tool that raised, as its result.
+CLAUDE_TOOL_ERROR_RESULT = "Tool error: {error}"
+# Claude Code: shown when a usage window is close to its limit.
+CLAUDE_RATE_LIMIT_WARNING = "Claude usage is at {percent}% of the {window} limit."
+# Claude Code: the transcript's text for a turn Claude started by itself (background
+# work finishing after its turn ended).
+CLAUDE_BACKGROUND_TURN = "(background work finished)"
+# Claude Code: the status line for a /compact that finished.
+CLAUDE_COMPACTED_STATUS = "Conversation compacted."
+
 USER_IMAGE_HINT = "[Image from user: {path}]"
 # Stands in for an image a tool returned, for a model that cannot take images.
 TOOL_IMAGE_OMITTED = "[The tool returned an image here; this model cannot view images.]"
