@@ -79,6 +79,8 @@ class FakeClient:
 
     instances: list["FakeClient"] = []
     on_query: Callable[["FakeClient", list[dict]], None] | None = None
+    context_usage: dict | None = None  # what get_context_usage() answers; None: it fails
+    reports = 0  # get_context_usage() calls
 
     def __init__(self, options: Any) -> None:
         self.options = options
@@ -104,6 +106,12 @@ class FakeClient:
         if FakeClient.on_query is not None:
             FakeClient.on_query(self, messages)
 
+    async def get_context_usage(self) -> dict:
+        FakeClient.reports += 1
+        if FakeClient.context_usage is None:
+            raise RuntimeError("no context usage scripted")
+        return FakeClient.context_usage
+
     async def interrupt(self) -> None:
         self.interrupted = True
         self.send(_result(terminal_reason="aborted_tools"), _state("idle"))
@@ -123,6 +131,8 @@ class FakeClient:
 def fake_client(monkeypatch):
     FakeClient.instances = []
     FakeClient.on_query = None
+    FakeClient.context_usage = None
+    FakeClient.reports = 0
     monkeypatch.setattr("aug.core.harness.claude_code.session.ClaudeSDKClient", FakeClient)
     return FakeClient
 
@@ -855,3 +865,195 @@ async def _tool_names(server: Any) -> list[str]:
     handler = server["instance"].request_handlers[ListToolsRequest]
     result = await handler(ListToolsRequest(method="tools/list"))
     return [t.name for t in result.root.tools]
+
+
+# -- session status ------------------------------------------------------------------
+
+_USAGE = {"input_tokens": 2, "cache_read_input_tokens": 30_000, "output_tokens": 500}
+_MODEL_USAGE = {
+    "claude-haiku-5-5": {"contextWindow": 1_000_000},  # the CLI's own helper calls
+    "claude-opus-5-5": {"contextWindow": 200_000},
+}
+_LIVE = {
+    "totalTokens": 41_000,
+    "maxTokens": 180_000,
+    "rawMaxTokens": 200_000,
+    "isAutoCompactEnabled": True,
+    "categories": [
+        {"name": "System prompt", "tokens": 6_000, "color": ""},
+        {"name": "MCP tools", "tokens": 9_000, "color": ""},
+        {"name": "MCP tools", "tokens": 4_000, "color": "", "isDeferred": True},
+        {"name": "Messages", "tokens": 26_000, "color": ""},
+        {"name": "Free space", "tokens": 139_000, "color": ""},
+        {"name": "Autocompact buffer", "tokens": 20_000, "color": ""},
+    ],
+}
+
+
+def _used(*extra: Any, parent: str | None = None) -> Callable[[FakeClient, list[dict]], None]:
+    """A reply whose model call leaves 30,502 tokens in the context."""
+
+    def answer(client: FakeClient, messages: list[dict]) -> None:
+        call = AssistantMessage(
+            content=[TextBlock(text="ok")],
+            model="claude-opus-5-5-20261101",
+            message_id="m1",
+            usage=_USAGE,
+            parent_tool_use_id=parent,
+        )
+        client.send(
+            _state("running"),
+            _init(),
+            call,
+            *extra,
+            _result(model_usage=_MODEL_USAGE),
+            _state("idle"),
+        )
+
+    return answer
+
+
+async def test_a_new_process_reports_its_context_once_then_counts_it_for_free(harness, fake_client):
+    fake_client.on_query = _used()
+    fake_client.context_usage = _LIVE
+    first = (await _turn(harness))[-1].context
+    second = (await _turn(harness))[-1].context
+    assert first.used == 41_000 and first.breakdown  # the CLI's report
+    # From the turn's own model call, keeping where the CLI said it compacts.
+    assert (second.used, second.window, second.compacts_at) == (30_502, 200_000, 180_000)
+    assert fake_client.reports == 1
+
+
+async def test_a_failed_report_falls_back_to_the_model_calls_count_and_is_not_retried(
+    harness, fake_client
+):
+    fake_client.on_query = _used()
+    for _ in range(3):
+        ended = (await _turn(harness))[-1]
+        assert (ended.context.used, ended.context.window) == (30_502, 200_000)
+    assert fake_client.reports == 1
+
+
+async def test_a_subagents_model_call_is_not_the_chats_context(harness, fake_client):
+    fake_client.on_query = _used()
+    await _turn(harness)
+    fake_client.on_query = _used(parent="tool-1")  # only a subagent's call this turn
+    assert (await _turn(harness))[-1].context.used == 30_502  # the chat's, from before
+
+
+async def test_after_a_compaction_the_cli_reports_again(harness, fake_client):
+    fake_client.on_query = _used()
+    await _turn(harness)
+    fake_client.on_query = _used(SystemMessage(subtype="compact_boundary", data={}))
+    fake_client.context_usage = _LIVE
+    assert (await _turn(harness))[-1].context.used == 41_000
+    assert fake_client.reports == 2
+
+
+async def test_an_unknown_window_never_costs_a_report_per_turn(harness, fake_client, caplog):
+    def answer(client: FakeClient, messages: list[dict]) -> None:
+        call = AssistantMessage(
+            content=[TextBlock(text="ok")], model="claude-x", message_id="m1", usage=_USAGE
+        )
+        client.send(_state("running"), call, _result(model_usage=_MODEL_USAGE), _state("idle"))
+
+    fake_client.on_query = answer
+    for _ in range(3):
+        assert (await _turn(harness))[-1].context is None
+    assert fake_client.reports == 1
+    assert sum("context window unknown" in r.message for r in caplog.records) == 1
+
+
+async def test_compaction_forgets_the_stored_context(harness, fake_client, tmp_path):
+    fake_client.on_query = _used()
+    await _turn(harness)
+    fake_client.on_query = _reply("compacted")
+    assert await harness.compact("ctx")
+    assert (await _harness(tmp_path).session_status("ctx")).context is None
+
+
+async def test_status_asks_the_live_process_for_the_breakdown(harness, fake_client):
+    fake_client.on_query = _used()
+    await _turn(harness)
+    fake_client.context_usage = _LIVE
+    status = await harness.session_status("ctx")
+    assert status.model == "claude-opus-5-5"
+    assert status.context.used == 41_000 and status.context.window == 200_000
+    assert status.context.compacts_at == 180_000
+    # Deferred tools and free space hold no context.
+    assert status.context.breakdown == (
+        ("messages", 26_000),
+        ("mcp tools", 9_000),
+        ("system prompt", 6_000),
+    )
+
+
+async def test_status_of_a_closed_process_is_what_it_last_reported(harness, fake_client, tmp_path):
+    fake_client.on_query = _used()
+    await _turn(harness)
+    fresh = _harness(tmp_path)  # a restart: no process, only the session record
+    status = await fresh.session_status("ctx")
+    assert status.context is not None and status.context.used == 30_502
+
+
+async def test_status_before_any_turn_has_no_context(harness):
+    status = await harness.session_status("ctx")
+    assert status.context is None and status.model == "claude-opus-5-5"
+
+
+async def test_status_carries_every_usage_window_the_cli_reported(harness, fake_client):
+    future = int(datetime(2099, 1, 1, tzinfo=UTC).timestamp())
+    past = int(datetime(2020, 1, 1, tzinfo=UTC).timestamp())
+    info = RateLimitInfo(
+        status="allowed",
+        raw={
+            "unifiedWindows": {
+                "five_hour": {"utilization": 0.22, "resetsAt": future},
+                "seven_day": {"utilization": 0.77, "resetsAt": future},
+                "seven_day_opus": {"utilization": 0.5, "resetsAt": past},  # reset since
+            }
+        },
+    )
+    fake_client.on_query = _used(RateLimitEvent(rate_limit_info=info, uuid="u", session_id=SESSION))
+    await _turn(harness)
+    limits = (await harness.session_status("ctx")).limits
+    assert [(lim.window, lim.utilization) for lim in limits] == [
+        ("five_hour", 0.22),
+        ("seven_day", 0.77),
+    ]
+    assert limits[0].resets_at == datetime(2099, 1, 1, tzinfo=UTC)
+
+
+async def test_a_lone_rate_limit_event_is_its_own_window(harness, fake_client):
+    info = RateLimitInfo(status="allowed_warning", utilization=0.9, rate_limit_type="five_hour")
+    fake_client.on_query = _used(RateLimitEvent(rate_limit_info=info, uuid="u", session_id=SESSION))
+    await _turn(harness)
+    (limit,) = (await harness.session_status("ctx")).limits
+    assert (limit.window, limit.utilization, limit.resets_at) == ("five_hour", 0.9, None)
+
+
+async def test_status_counts_background_tasks(harness, fake_client):
+    fake_client.on_query = _used(_task_started("t1"))
+    await _turn(harness)
+    assert (await harness.session_status("ctx")).background_tasks == 1
+
+
+async def test_a_message_the_cli_made_up_leaves_the_context_alone(harness, fake_client):
+    synthetic = AssistantMessage(
+        content=[TextBlock(text="API Error")],
+        model="<synthetic>",
+        message_id="m2",
+        usage={"input_tokens": 0, "output_tokens": 0},
+    )
+    fake_client.on_query = _used(synthetic)
+    assert (await _turn(harness))[-1].context.used == 30_502
+
+
+async def test_the_final_output_count_of_the_last_call_is_the_context(harness, fake_client):
+    final = StreamEvent(
+        uuid="u",
+        session_id=SESSION,
+        event={"type": "message_delta", "usage": {"output_tokens": 1_500}},
+    )
+    fake_client.on_query = _used(final)
+    assert (await _turn(harness))[-1].context.used == 30_002 + 1_500

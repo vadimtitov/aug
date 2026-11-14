@@ -64,6 +64,7 @@ from aug.api.interfaces.base import (
 )
 from aug.api.interfaces.telegram.claude_login import _ClaudeLoginMixin
 from aug.api.interfaces.telegram.ssh import _SshMixin
+from aug.api.interfaces.telegram.status import _StatusMixin
 from aug.api.interfaces.telegram.utils import (
     escape,
     get_context_id,
@@ -218,7 +219,7 @@ _SECRET_NAME, _SECRET_VALUE = range(2)
 _no_draft_chats: set[int] = set()
 
 
-class TelegramInterface(_SshMixin, _ClaudeLoginMixin, BaseInterface[Update]):
+class TelegramInterface(_SshMixin, _ClaudeLoginMixin, _StatusMixin, BaseInterface[Update]):
     _debounce_window = 0.1  # 100ms — collects rapid-fire forwarded messages into one run
 
     def __init__(self) -> None:
@@ -933,7 +934,6 @@ class TelegramInterface(_SshMixin, _ClaudeLoginMixin, BaseInterface[Update]):
         bot_app.add_handler(CommandHandler("version", self._handle_version))
         bot_app.add_handler(CommandHandler("skills", self._handle_skills))
         bot_app.add_handler(CommandHandler("prompt", self._handle_prompt))
-        bot_app.add_handler(CommandHandler("compact", self._handle_compact))
         bot_app.add_handler(CommandHandler("consolidate", self._handle_consolidate))
         bot_app.add_handler(CommandHandler("consolidate_deep", self._handle_consolidate_deep))
         bot_app.add_handler(
@@ -950,6 +950,7 @@ class TelegramInterface(_SshMixin, _ClaudeLoginMixin, BaseInterface[Update]):
         )
         bot_app.add_handler(CommandHandler("approvals", self._handle_approvals))
         self.build_ssh_handlers(bot_app)
+        self.build_status_handlers(bot_app)
         self.build_claude_login_handlers(bot_app)
         bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text))
         bot_app.add_handler(MessageHandler(filters.VOICE, self._handle_input))
@@ -985,6 +986,7 @@ class TelegramInterface(_SshMixin, _ClaudeLoginMixin, BaseInterface[Update]):
             [
                 ("clear", "Start a new conversation"),
                 ("stop", "Stop the current run"),
+                ("status", "Show the session: model, context, usage limits"),
                 ("compact", "Summarise conversation history to free up context"),
                 ("version", "Switch agent version"),
                 ("skills", "Inspect skill files"),
@@ -1260,27 +1262,6 @@ class TelegramInterface(_SshMixin, _ClaudeLoginMixin, BaseInterface[Update]):
 
         self.set_location_throttle(context_id, seconds)
         await reply(f"Live location throttle set to {seconds}s.")
-
-    @restricted
-    async def _handle_compact(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        chat_id = update.effective_chat.id  # type: ignore[union-attr]
-        topic_id = update.effective_message.message_thread_id  # type: ignore[union-attr]
-        context_id = get_context_id(chat_id, topic_id)
-        await update.message.reply_text("🗜 Compacting conversation…")  # type: ignore[union-attr]
-        try:
-            agent_version = self.get_agent_version(context_id)
-            if agent_version not in list_agents():
-                await update.message.reply_text(  # type: ignore[union-attr]
-                    "No agent selected. Use /version to pick one first."
-                )
-                return
-            ran = await self._execute_compact(context_id, agent_version)
-            await update.message.reply_text("✅ Done." if ran else "Nothing to compact.")  # type: ignore[union-attr]
-        except ValueError as e:
-            await update.message.reply_text(str(e))  # type: ignore[union-attr]
-        except Exception:
-            logger.exception("Manual compaction failed")
-            await update.message.reply_text("Compaction failed — check logs.")  # type: ignore[union-attr]
 
     @restricted
     async def _handle_consolidate(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

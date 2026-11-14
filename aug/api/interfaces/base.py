@@ -30,12 +30,14 @@ from aug.config import get_settings
 from aug.core.harness import (
     Address,
     ApprovalDecision,
+    ContextUsage,
     FilePart,
     Harness,
     HarnessError,
     HarnessEvent,
     Message,
     Sender,
+    SessionStatus,
     TextDelta,
     TextPart,
     TurnContext,
@@ -45,6 +47,8 @@ from aug.core.harness import (
 )
 from aug.core.prompts import (
     APPROVAL_PENDING_COMPACT_MESSAGE,
+    CONTEXT_COMPACTS_AT_SUFFIX,
+    CONTEXT_FULL_WARNING,
     HARNESS_STOPPED_MESSAGE,
     LOCATION_SHARE_TEMPLATE,
     LOCATION_SHARE_UNKNOWN_SENDER,
@@ -58,6 +62,10 @@ from aug.utils.state import ConversationLocationState, LiveLocationState, load_s
 from aug.utils.storage import file_store
 
 logger = logging.getLogger(__name__)
+
+# How far towards full (or towards where it compacts itself) a context may get before
+# the user is told; each level is announced once, on the way up.
+CONTEXT_WARNING_LEVELS = (0.7, 0.9)
 
 
 # ---------------------------------------------------------------------------
@@ -161,10 +169,14 @@ class BaseInterface[ContextT](ABC):
     # Subclasses may override to buffer rapid-fire messages before starting a run.
     # 0.0 = disabled (start immediately).
     _debounce_window: float = 0.0
+    # Whether to tell the user in the chat when the context crosses a warning level.
+    # An interface whose clients read the context themselves turns it off.
+    _warns_context: bool = True
 
     def __init__(self) -> None:
         self._debounce_buf: dict[str, list[tuple[IncomingMessage, Message]]] = {}
         self._debounce_tasks: dict[str, asyncio.Task[None]] = {}
+        self._context_warned: dict[str, float] = {}  # context_id → last level announced
 
     @abstractmethod
     async def receive_message(self, context: ContextT) -> IncomingMessage | None:
@@ -283,6 +295,12 @@ class BaseInterface[ContextT](ABC):
         None when its agent version is not registered."""
         harness = _harness_for(self.get_agent_version(context_id))
         return await harness.session_prompt(context_id, interface) if harness else None
+
+    async def session_status(self, context_id: str) -> SessionStatus | None:
+        """What the selected agent's harness knows about *context_id*'s session; None
+        when no agent is selected."""
+        harness = _harness_for(self.get_agent_version(context_id))
+        return await harness.session_status(context_id) if harness is not None else None
 
     def set_agent_version(self, context_id: str, agent: str) -> None:
         """Select *agent* for *context_id*'s conversation, leaving other conversations alone."""
@@ -513,7 +531,18 @@ class BaseInterface[ContextT](ABC):
             await self._send_quietly(error_text(ended.error), context)
         elif ended is not None and ended.cancelled:
             await self._send_quietly(HARNESS_STOPPED_MESSAGE, context)
+        if self._warns_context and ended is not None and ended.context is not None:
+            await self._warn_context(context_id, ended.context, context)
         return ended
+
+    async def _warn_context(self, context_id: str, usage: ContextUsage, context: ContextT) -> None:
+        """Tell the user once the context crosses a warning level.  A level dropped
+        below (after a compaction) is announced again when crossed again."""
+        level = _context_level(usage)
+        warned = self._context_warned.get(context_id, 0.0)
+        self._context_warned[context_id] = level
+        if level > warned:
+            await self._send_quietly(_context_warning(usage), context)
 
     async def _send_quietly(self, text: str, context: ContextT) -> None:
         try:
@@ -573,6 +602,23 @@ def _harness_for(agent_version: str) -> Harness | None:
         return get_harness(agent_version)
     except ValueError:
         return None
+
+
+def _context_level(usage: ContextUsage) -> float:
+    limit = usage.compacts_at or usage.window
+    if not limit:
+        return 0.0
+    full = usage.used / limit
+    return max((level for level in CONTEXT_WARNING_LEVELS if full >= level), default=0.0)
+
+
+def _context_warning(usage: ContextUsage) -> str:
+    text = CONTEXT_FULL_WARNING.format(percent=usage.percent)
+    if usage.compacts_at is not None and usage.window:
+        text += CONTEXT_COMPACTS_AT_SUFFIX.format(
+            percent=round(100 * usage.compacts_at / usage.window)
+        )
+    return text
 
 
 def _merge_messages(messages: list[Message]) -> Message:

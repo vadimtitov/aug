@@ -15,12 +15,14 @@ from dataclasses import replace
 from aug.core.harness.types import (
     ApprovalRequested,
     ApprovalResolved,
+    ContextUsage,
     FileEmitted,
     FilePart,
     HarnessError,
     HarnessEvent,
     Message,
     ModelTier,
+    SessionStatus,
     TextDelta,
     ToolEnded,
     ToolStarted,
@@ -33,6 +35,9 @@ from aug.core.prompts import HARNESS_ERROR_MESSAGES, HARNESS_RETRY_AT_SUFFIX
 from aug.core.transcript import Transcript, file_record
 
 logger = logging.getLogger(__name__)
+
+# How long reading the context after a turn may hold the turn's end back.
+CONTEXT_AFTER_TURN_SECONDS = 10
 
 
 class Harness(ABC):
@@ -48,9 +53,10 @@ class Harness(ABC):
         """One agent turn.  Never raises.
 
         The first event is TurnStarted, yielded once the turn can take inject(); the
-        last is always TurnEnded, carrying any error.  The turn is logged and written
-        to AUG's transcript here, so every harness records it the same way.  A tool
-        whose approval was not granted ends with ``ToolEnded(error=True)``.
+        last is always TurnEnded, carrying any error and how full the context now is.
+        The turn is logged and written to AUG's transcript here, so every harness
+        records it the same way.  A tool whose approval was not granted ends with
+        ``ToolEnded(error=True)``.
         """
         async for event in self._turn(
             message, context_id, turn, self._run(message, context_id, turn)
@@ -83,6 +89,11 @@ class Harness(ABC):
         has not started yet."""
 
     @abstractmethod
+    async def session_status(self, context_id: str) -> SessionStatus:
+        """What the harness knows about the session: its model, how full its context is,
+        the plan's usage limits, background work.  Never starts a session."""
+
+    @abstractmethod
     async def oneshot(
         self, prompt: str, tier: ModelTier = ModelTier.STRONG, *, system: str = ""
     ) -> str:
@@ -97,6 +108,23 @@ class Harness(ABC):
         Default: nothing to start or stop.
         """
         yield
+
+    async def _context_after_turn(self, context_id: str) -> ContextUsage | None:
+        """The session's context once a turn whose TurnEnded didn't carry it is over.
+        Default: session_status's.  Bounded by CONTEXT_AFTER_TURN_SECONDS."""
+        return (await self.session_status(context_id)).context
+
+    async def _safe_context(self, context_id: str) -> ContextUsage | None:
+        """_context_after_turn, never failing or stalling the turn: None instead."""
+        try:
+            return await asyncio.wait_for(
+                self._context_after_turn(context_id), CONTEXT_AFTER_TURN_SECONDS
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # TimeoutError included
+            logger.warning("context after turn failed context=%s: %r", context_id, e)
+            return None
 
     def _open_turn(self, context_id: str, turn: TurnContext) -> None:  # noqa: B027 — optional hook
         """Called before TurnStarted: from here on inject() must reach this turn."""
@@ -187,6 +215,8 @@ class Harness(ABC):
                 ended = TurnEnded(error=HarnessError(kind="internal"))
 
             ended = ended or TurnEnded()
+            if ended.context is None:
+                ended = replace(ended, context=await self._safe_context(context_id))
             await transcript.append(
                 "turn_ended",
                 context_id,
