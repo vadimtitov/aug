@@ -551,8 +551,6 @@ VOICE_TRANSCRIPT_TEMPLATE = "[Voice message, already transcribed]\n{transcript}"
 TOOL_NO_OUTPUT = "(no output)"
 # Claude Code: an AUG tool that raised, as its result.
 CLAUDE_TOOL_ERROR_RESULT = "Tool error: {error}"
-# Claude Code: shown when a usage window is close to its limit.
-CLAUDE_RATE_LIMIT_WARNING = "Claude usage is at {percent}% of the {window} limit."
 # Claude Code: the transcript's text for a turn Claude started by itself (background
 # work finishing after its turn ended).
 CLAUDE_BACKGROUND_TURN = "(background work finished)"

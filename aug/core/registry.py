@@ -59,6 +59,10 @@ _VISION_DESCRIPTION_MODEL = _KIMI
 _CLAUDE_STRONG = "claude-opus-5-5"
 _CLAUDE_FAST = "claude-haiku-5-5"
 
+# What a conversation with no agent selected (and no parent conversation's to inherit)
+# runs on.
+NEW_CONVERSATION_PROFILE = "v14_claude_code"
+
 # Profiles a chat on a deleted agent version is moved to: glm versions to v13_glm,
 # every other one to v13_kimi.
 DEFAULT_PROFILE = "v13_kimi"

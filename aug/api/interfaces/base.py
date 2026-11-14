@@ -54,7 +54,7 @@ from aug.core.prompts import (
     LOCATION_SHARE_UNKNOWN_SENDER,
     VOICE_TRANSCRIPT_TEMPLATE,
 )
-from aug.core.registry import get_harness, harnesses
+from aug.core.registry import NEW_CONVERSATION_PROFILE, get_harness, harnesses
 from aug.core.run import run_registry
 from aug.utils.file_settings import ConversationSettings, load_settings, save_settings
 from aug.utils.logging import set_context_id, set_correlation_id
@@ -270,25 +270,24 @@ class BaseInterface[ContextT](ABC):
 
         Default: none — every conversation stands alone.  Telegram overrides this so a
         forum topic falls back to its group's selection until one is picked in the topic
-        itself.  Without a fallback, a conversation nobody has visited yet resolves to no
-        agent at all, which is fine for a chat (the user is told to run /version) but not
-        for a scheduled push, where there is nobody to tell.
+        itself.  A conversation with neither selection runs on ``NEW_CONVERSATION_PROFILE``.
         """
         return None
 
     def get_agent_version(self, context_id: str) -> str:
         """Return the agent version selected for *context_id*'s conversation.
 
-        Falls back to the parent conversation when this one has no selection of its own.
+        Falls back to the parent conversation when this one has no selection of its own,
+        and to ``NEW_CONVERSATION_PROFILE`` when neither has one.  A stored ``"default"``
+        (ConversationSettings' own value) counts as no selection.
         """
         conversations = load_settings().conversations
         conversation = self.conversation_id(context_id)
-        if conversation in conversations:
-            return conversations[conversation].agent
-        parent = self.parent_conversation_id(conversation)
-        if parent is not None and parent in conversations:
-            return conversations[parent].agent
-        return ConversationSettings().agent
+        for key in (conversation, self.parent_conversation_id(conversation)):
+            selected = conversations.get(key) if key is not None else None
+            if selected is not None and selected.agent != ConversationSettings().agent:
+                return selected.agent
+        return NEW_CONVERSATION_PROFILE
 
     async def session_prompt(self, context_id: str, interface: str) -> str | None:
         """The system prompt *context_id*'s session runs with (or will start with), or
