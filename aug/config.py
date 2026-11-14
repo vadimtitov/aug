@@ -8,7 +8,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     # App
-    APP_VERSION: str = "0.1.0"
     DEBUG: bool = False  # True → human-readable logs; does NOT affect auth
     # Set to True in local dev to skip Telegram initData HMAC verification.
     # Must be False in production — any other value is a critical security risk.

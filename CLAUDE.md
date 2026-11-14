@@ -266,6 +266,7 @@ only when there is a clear, immediate reason.
 
 ## Key rules
 
+- **Version** — every pull request to `main` raises `__version__` in `aug/__init__.py` (the only place it is set; `pyproject.toml` reads it). Semver: MAJOR for breaking changes, MINOR for features, PATCH for fixes. CI's `version` job fails a PR that doesn't.
 - **LLM access** — always via `build_chat_model()` in `aug/core/llm.py`. Never instantiate `ChatOpenAI` directly.
 - **Settings** — always via `get_settings()` from `aug/config.py`. Never import `settings` at module level.
 - **Prompts** — all hardcoded strings passed to an LLM (system prompts, tool instructions, consolidation prompts, format instructions) must be defined as named constants in `aug/core/prompts.py`. Never define prompt strings inline in other modules.

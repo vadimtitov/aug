@@ -24,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
+from aug import __version__
 from aug.api.interfaces.telegram import TelegramInterface
 from aug.api.internal.gateway import serve_gateway
 from aug.api.routers import (
@@ -125,7 +126,7 @@ async def _announce_startup(app: FastAPI, mcp_outcomes: list[McpOperationOutcome
 
     if not get_settings().STARTUP_ANNOUNCEMENT:
         return
-    message = f"🟢 AUG {get_settings().APP_VERSION} is up."
+    message = f"🟢 AUG {__version__} is up."
     if fallback_summaries:
         message = "\n".join([message, *fallback_summaries])
     delivered = await broadcast(app, message)
@@ -136,7 +137,7 @@ async def _announce_startup(app: FastAPI, mcp_outcomes: list[McpOperationOutcome
 async def lifespan(app: FastAPI):
     """Manage startup and shutdown of shared resources."""
     configure_logging(debug=get_settings().DEBUG)
-    logger.info("AUG %s starting up…", get_settings().APP_VERSION)
+    logger.info("AUG %s starting up…", __version__)
     init_workspace()
 
     # Database pool
@@ -212,7 +213,7 @@ async def lifespan(app: FastAPI):
         logger.info(
             "AUG startup complete — version=%s telegram=%s brave=%s gmail=%s portainer=%s "
             "mcp_servers=%d/%d mcp_tools=%d",
-            settings.APP_VERSION,
+            __version__,
             bool(settings.TELEGRAM_BOT_TOKEN),
             bool(settings.BRAVE_API_KEY),
             bool(settings.GMAIL_CLIENT_ID),
@@ -242,7 +243,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(
         title="AUG — Agent Using Graph",
-        version=get_settings().APP_VERSION,
+        version=__version__,
         lifespan=lifespan,
     )
 
@@ -263,7 +264,7 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["health"])
     async def health():
-        checks: dict[str, object] = {"version": get_settings().APP_VERSION}
+        checks: dict[str, object] = {"version": __version__}
 
         # DB probe
         try:
