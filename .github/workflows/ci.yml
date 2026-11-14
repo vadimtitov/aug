@@ -6,6 +6,25 @@ on:
     branches: [main]
 
 jobs:
+  version:
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Version is bumped
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --depth=1 origin "$BASE_REF"
+          git show FETCH_HEAD:aug/__init__.py > "$RUNNER_TEMP/base_init.py"
+          python scripts/check_version_bump.py "$RUNNER_TEMP/base_init.py" aug/__init__.py
+
   check:
     runs-on: ubuntu-latest
 

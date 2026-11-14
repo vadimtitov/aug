@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from aug import __version__
 from aug.core.dispatch import broadcast
 
 
@@ -179,7 +180,6 @@ def _boot(announce: bool) -> MagicMock:
     mock_pool.close = AsyncMock()
     settings = MagicMock(
         STARTUP_ANNOUNCEMENT=announce,
-        APP_VERSION="1.2.3",
         DEBUG=True,
         DATABASE_URL="postgresql+asyncpg://test:test@localhost:5432/test",
         BROWSER_CDP_URL=None,
@@ -211,7 +211,7 @@ def test_lifespan_announces_to_whatever_interface_registered_itself():
     iface.send_proactive.assert_awaited_once()
     context_id, message = iface.send_proactive.await_args[0]
     assert context_id == "fake-thread"
-    assert message == "🟢 AUG 1.2.3 is up."
+    assert message == f"🟢 AUG {__version__} is up."
 
 
 def test_lifespan_respects_the_opt_out():
