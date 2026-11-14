@@ -49,9 +49,14 @@ def init_workspace() -> None:
         _write_new(MEMORY_INDEX, initial_memory_index())
 
 
-def session_prompt(interface: str, *, describes_images: bool = False) -> str:
+def session_prompt(
+    interface: str, *, describes_images: bool = False, skills_index: bool = True
+) -> str:
     """The system prompt for a new session, from the workspace as it is now.  Built once
-    per session and kept with it, so nothing written later changes a running chat."""
+    per session and kept with it, so nothing written later changes a running chat.
+
+    *skills_index* False leaves the skills index out, for a harness that lists the
+    workspace's skills itself."""
     return build_session_prompt(
         workspace=str(WORKSPACE_DIR),
         agents_md=_read(AGENTS_MD),
@@ -59,6 +64,7 @@ def session_prompt(interface: str, *, describes_images: bool = False) -> str:
         memory_index=cap_memory_index(_read(MEMORY_INDEX)),
         skills=[(s.name, s.description) for s in load_skills(SKILLS_DIR)],
         describes_images=describes_images,
+        skills_index=skills_index,
     )
 
 

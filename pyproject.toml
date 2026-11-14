@@ -37,6 +37,7 @@ dependencies = [
     "langchain-mcp-adapters>=0.3",
     "pillow>=10.0",
     "pillow-heif>=0.18",
+    "claude-agent-sdk==0.2.182",
 ]
 
 [project.optional-dependencies]

@@ -24,8 +24,8 @@ aug/
 │   │   ├── workspace_template/ ← AGENTS.md a fresh install starts with
 │   │   ├── memory.py           ← Memory file init, append_note(), light + deep consolidation (the dream)
 │   │   ├── jobs.py             ← Background jobs: JOBS (which job, when, on which profile) + job_runner
-│   │   ├── registry.py         ← Profiles (v13_kimi, v13_glm) + get_harness(); moves chats off deleted versions
-│   │   ├── harness/            ← Harness ABC + types (Message, TurnContext, TurnEnded…) + LangGraphHarness
+│   │   ├── registry.py         ← Profiles (v13_kimi, v13_glm, v14_claude_code) + get_harness(); moves chats off deleted versions
+│   │   ├── harness/            ← Harness ABC + types (Message, TurnContext, TurnEnded…), LangGraphHarness, ClaudeCodeHarness
 │   │   ├── run.py              ← run_registry: per-context run lock, routing lock, LangGraph AgentRuns
 │   │   ├── dispatch.py         ← fire_task / fire_push / broadcast — pushes run through the harness
 │   │   ├── transcript.py       ← AUG's own append-only turn log, data/transcripts/<conversation>.jsonl
@@ -144,6 +144,11 @@ behaviour change". Scripts and step formats: top of `scripts/fakes.py`.
     ...
 ),
 ```
+
+A Claude Code profile is a `ClaudeCodeProfile` in `_build_profiles()` instead: its
+model and effort, Claude's built-in tools it may use (an allowlist), AUG's tools, which
+of them Claude keeps loaded (`always_loaded`; the rest wait behind its ToolSearch), and
+its `oneshot()` models per tier (see `docs/design/harness-design.md`).
 
 A deleted version needs no cleanup: at startup `migrate_conversations()` moves every
 chat set to it onto `v13_kimi` (`v13_glm` for a glm version).

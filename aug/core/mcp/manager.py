@@ -14,9 +14,6 @@ import contextlib
 import logging
 import os
 import re
-import subprocess
-import sys
-import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterable
@@ -33,6 +30,7 @@ from mcp.shared.exceptions import McpError
 from mcp.types import CONNECTION_CLOSED
 
 from aug.utils.file_settings import McpServerConfig, load_settings
+from aug.utils.hushed import HushedError, read_secret
 from aug.utils.state import McpOperation, load_state, update_state
 
 logger = logging.getLogger(__name__)
@@ -42,7 +40,6 @@ _OVERALL_TIMEOUT = 60.0
 _SHUTDOWN_TIMEOUT = 10.0
 _MAX_CONCURRENT_CONNECTS = 4
 _TOOL_CALL_TIMEOUT = 60.0
-_HUSHED_TIMEOUT = 15.0
 _HUSHED_PREFIX = "hushed:"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # OpenAI/Anthropic function-calling name limits top out around 64 characters —
@@ -67,17 +64,6 @@ def _is_connection_closed(exc: BaseException) -> bool:
     server process exited) — a second transport-death check alongside
     ``_TRANSPORT_DEAD_EXCEPTIONS``."""
     return isinstance(exc, McpError) and exc.error.code == CONNECTION_CLOSED
-
-
-# A tiny, argv-driven reader: `hushed run` injects the secret into this child's
-# environment under NAME, and it writes the raw bytes straight to the fd number
-# given on argv. Passing the fd as an int argument (not shell syntax) is what
-# lets this work past descriptor 9 — see _read_hushed_secret.
-_HUSHED_READER_SCRIPT = (
-    "import os,sys\n"
-    "fd = int(sys.argv[1])\n"
-    "os.write(fd, os.environb.get(sys.argv[2].encode(), b''))\n"
-)
 
 
 class McpSecretError(Exception):
@@ -632,33 +618,7 @@ async def _resolve_hushed_ref(ref: str) -> str:
 
 
 def _read_hushed_secret(name: str) -> str:
-    """Fetch one secret's value from hushed via a private inherited pipe, since
-    `hushed run` redacts secret values from stdout. The reader is a tiny Python
-    child (fd passed as a plain argv int, not shell ``>&N`` redirection, which
-    breaks past descriptor 9 on Debian's dash).
-    """
-    if not _ENV_VAR_NAME_RE.match(name):
-        raise McpSecretError(f"invalid secret name {name!r} — must be a valid env var name")
-
-    with tempfile.TemporaryFile() as tf:
-        fd = tf.fileno()
-        try:
-            result = subprocess.run(
-                ["hushed", "run", "--", sys.executable, "-c", _HUSHED_READER_SCRIPT, str(fd), name],
-                pass_fds=(fd,),
-                capture_output=True,
-                text=True,
-                timeout=_HUSHED_TIMEOUT,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise McpSecretError(f"failed to read secret {name!r}: {exc}") from exc
-        if result.returncode != 0:
-            raise McpSecretError(
-                f"hushed failed resolving {name!r}: {result.stderr.strip()[:_MAX_ERROR_LEN]}"
-            )
-        tf.seek(0)
-        value = tf.read().decode("utf-8", errors="replace")
-
-    if not value:
-        raise McpSecretError(f"secret {name!r} is not set. Set it with: hushed add {name} <value>")
-    return value
+    try:
+        return read_secret(name)
+    except HushedError as exc:
+        raise McpSecretError(str(exc)) from exc
