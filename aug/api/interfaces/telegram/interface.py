@@ -1007,9 +1007,9 @@ class TelegramInterface(_SshMixin, _ClaudeLoginMixin, BaseInterface[Update]):
         """Gracefully stop the bot. Called from FastAPI lifespan shutdown."""
         if not self._bot_app:
             return
-        await self.end_claude_logins()
         await self._bot_app.updater.stop()
         await self._bot_app.stop()
+        await self.end_claude_logins()  # after stop(): no handler can start one now
         await self._bot_app.shutdown()
         logger.info("Telegram bot stopped.")
 
@@ -1019,6 +1019,8 @@ class TelegramInterface(_SshMixin, _ClaudeLoginMixin, BaseInterface[Update]):
 
     async def _handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.message or not update.message.text:
+            return
+        if await self.decline_stray_login_code(update.message):
             return
         await self.run(update)
 

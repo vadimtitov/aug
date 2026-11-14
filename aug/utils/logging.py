@@ -70,5 +70,7 @@ def configure_logging(debug: bool = False) -> None:
 
     for noisy in ("httpx", "httpcore", "asyncio"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    # Its DEBUG lines carry every update in full, a pasted sign-in code included.
+    logging.getLogger("telegram").setLevel(logging.INFO)
 
     logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())

@@ -44,6 +44,10 @@ _NOT_A_CODE = (
 _REFUSED = "Claude did not accept that code. Send /claude_login to try again."
 _FAILED = "The Claude sign-in failed. Send /claude_login to try again."
 _TIMED_OUT = "The Claude sign-in timed out. Send /claude_login to start again."
+_STRAY_CODE = (
+    "That looks like a Claude sign-in code, so it was deleted and not sent to the AI. "
+    "No sign-in is waiting for it: send /claude_login to start one."
+)
 
 # Who a sign-in waits on: chat, forum topic (None outside topics), user.
 _Key = tuple[int, int | None, int]
@@ -67,10 +71,12 @@ class _PendingLogins:
 
     async def add(self, key: _Key, attempt: LoginAttempt, prompt: Message) -> None:
         """Wait on *key* for the code; a sign-in already waiting there is ended."""
-        await self.end(key)
+        old = self.take(key)
         pending = _Pending(attempt, prompt)
         pending.timeout = asyncio.create_task(self._time_out(key, pending))
         self._by_key[key] = pending
+        if old is not None:
+            await _close(old)
 
     def take(self, key: _Key) -> _Pending | None:
         """Stop waiting on *key*; the caller finishes the sign-in."""
@@ -95,7 +101,10 @@ class _PendingLogins:
         await asyncio.sleep(_LOGIN_TIMEOUT_SECONDS)
         if self._by_key.get(key) is pending:
             del self._by_key[key]
-            await _close(pending)
+            try:
+                await _close(pending)
+            except Exception:
+                logger.exception("claude login could not be closed after its timeout")
             with contextlib.suppress(Exception):
                 await pending.prompt.chat.send_message(
                     _TIMED_OUT, message_thread_id=_thread(pending.prompt)
@@ -128,6 +137,16 @@ class _ClaudeLoginMixin:
                 self._claude_login_code,
             )
         )
+
+    async def decline_stray_login_code(self, message: Message) -> bool:
+        """Keep a sign-in code no sign-in is waiting for (one pasted after /cancel or a
+        timeout) away from the agent: delete it and say so.  True when it was one."""
+        if not looks_like_code(message.text or ""):
+            return False
+        with contextlib.suppress(Exception):
+            await message.delete()
+        await message.chat.send_message(_STRAY_CODE, message_thread_id=_thread(message))
+        return True
 
     async def end_claude_logins(self) -> None:
         """End every waiting sign-in (shutdown)."""

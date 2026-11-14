@@ -21,7 +21,7 @@ from aug.utils.claude_setup_token import SetupToken, SetupTokenError, looks_like
 from aug.utils.state import update_state
 
 TOKEN = "sk-ant-oat01-" + "T" * 90
-CODE = "good-code#the-state"
+CODE = "good-code-0123456789#the-state-0123456789"
 
 # Behaves like `claude setup-token` on a terminal: escapes, a link, a prompt, a token.
 _STUB = f"""#!{sys.executable}
@@ -42,7 +42,8 @@ elif code.startswith("hang"):
     time.sleep(60)
 else:
     # Like the real CLI: it says so, then waits for Enter to retry.
-    w("\\r\\nOAuth error: That code wasn't accepted.\\r\\nPress Enter to retry.\\r\\n")
+    # The worst case: the typed code redrawn on the error's own line.
+    w("\\r\\nOAuth error: That code wasn't accepted: " + code + "\\r\\nPress Enter to retry.\\r\\n")
     sys.stdout.flush()
     sys.stdin.readline()
 """
@@ -90,9 +91,10 @@ async def test_a_refused_code_is_an_error_at_once(stub_cli):
     try:
         await setup.start()
         started = time.monotonic()
-        with pytest.raises(SetupTokenError, match="wasn't accepted"):
-            await setup.finish("bad#code")
+        with pytest.raises(SetupTokenError, match="wasn't accepted") as raised:
+            await setup.finish("refused-code-0123456789#state-0123456789")
         assert time.monotonic() - started < 5
+        assert "refused-code" not in str(raised.value)
     finally:
         await setup.close()
 
@@ -120,9 +122,10 @@ async def test_a_cli_that_never_answers_leaves_the_code_out_of_the_error(stub_cl
 
 
 def test_only_the_sign_in_code_shape_is_taken_as_a_code():
-    assert looks_like_code("el5lzaKb5Asy0dUp#-Ac40JOX_8X0xCz")
+    assert looks_like_code("x" * 48 + "#" + "y-_" * 14 + "z")  # the real lengths, 48 and 43
     assert not looks_like_code("what's the weather?")
     assert not looks_like_code("abc")
+    assert not looks_like_code("C#")
 
 
 # -- the login -------------------------------------------------------------------------
@@ -290,3 +293,22 @@ def test_telegram_the_code_is_caught_before_the_agent_sees_text():
         handlers = TelegramInterface().build_bot().handlers[0]
     names = [getattr(getattr(h, "callback", None), "__name__", "") for h in handlers]
     assert names.index("_claude_login_code") < names.index("_handle_text")
+
+
+async def test_telegram_a_code_no_sign_in_waits_for_is_kept_from_the_agent(bot):
+    stray = _message(CODE, topic=3)
+    assert await bot.decline_stray_login_code(stray)
+    stray.delete.assert_awaited()
+    (text,), kwargs = stray.chat.send_message.call_args
+    assert "not sent to the AI" in text and kwargs["message_thread_id"] == 3
+    assert not await bot.decline_stray_login_code(_message("what's the weather?"))
+
+
+async def test_telegram_the_agent_never_gets_a_stray_code(bot, monkeypatch):
+    run = AsyncMock()
+    monkeypatch.setattr(bot, "run", run)
+    update = _update(_message(CODE))
+    await bot._handle_text(update, MagicMock())
+    run.assert_not_awaited()
+    await bot._handle_text(_update(_message("hello")), MagicMock())
+    run.assert_awaited_once()

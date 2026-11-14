@@ -35,7 +35,7 @@ _TOKEN = re.compile(r"sk-ant-oat\d+-[A-Za-z0-9_-]+")
 # A refused code: the CLI says so, then waits for Enter to retry.
 _TOKEN_OR_REFUSAL = re.compile(rf"(?P<token>{_TOKEN.pattern})|(?P<refused>OAuth error:[^\r\n]*)")
 # The sign-in page shows "<code>#<state>".
-_CODE = re.compile(r"^[A-Za-z0-9_-]+#[A-Za-z0-9_-]+$")
+_CODE = re.compile(r"^[A-Za-z0-9_-]{16,}#[A-Za-z0-9_-]{16,}$")
 
 
 class SetupTokenError(Exception):
@@ -58,11 +58,12 @@ class SetupToken:
         self._process: subprocess.Popen | None = None
         self._output = ""
         self._closed = False
+        self._reader: asyncio.Future | None = None
 
     async def start(self) -> str:
         """Start the CLI and return the sign-in link it prints."""
         self._fd = await asyncio.to_thread(self._spawn)
-        match = await asyncio.to_thread(self._read_until, _URL, _URL_TIMEOUT)
+        match = await self._read(_URL, _URL_TIMEOUT)
         if match is None:
             raise SetupTokenError(f"the Claude CLI printed no sign-in link: {self._tail()}")
         return match.group(0)
@@ -75,12 +76,13 @@ class SetupToken:
         os.write(self._fd, code.strip().encode())
         await asyncio.sleep(0.3)  # the CLI reads a paste and Enter apart
         os.write(self._fd, b"\r")
-        match = await asyncio.to_thread(self._read_until, _TOKEN_OR_REFUSAL, _TOKEN_TIMEOUT)
+        match = await self._read(_TOKEN_OR_REFUSAL, _TOKEN_TIMEOUT)
         if match is None:
             # Not the CLI's output: it shows the code that was typed.
             raise SetupTokenError("Claude did not answer the code")
         if match["refused"]:
-            raise SetupTokenError(f"Claude did not accept the code: {match['refused']}")
+            refusal = match["refused"].replace(code.strip(), "[code]")  # in case it is echoed
+            raise SetupTokenError(f"Claude did not accept the code: {refusal}")
         return match["token"]
 
     async def close(self) -> None:
@@ -90,11 +92,22 @@ class SetupToken:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(self._process.pid, signal.SIGKILL)
             await asyncio.to_thread(self._process.wait)
+        if self._reader is not None:
+            # The reader may still be on the fd: closing it under the reader could let
+            # it read whatever reuses the number.  It stops within a pass now.
+            await asyncio.wait({self._reader}, timeout=2)
+            if self._reader.done() and not self._reader.cancelled():
+                self._reader.exception()  # retrieved: a failed read was already reported
         if self._fd is not None:
             with contextlib.suppress(OSError):
                 os.close(self._fd)
             self._fd = None
         await asyncio.to_thread(shutil.rmtree, self._home, True)
+
+    async def _read(self, pattern: re.Pattern[str], seconds: float) -> re.Match[str] | None:
+        """Read in a thread; a cancelled caller leaves the read running for close()."""
+        self._reader = asyncio.ensure_future(asyncio.to_thread(self._read_until, pattern, seconds))
+        return await asyncio.shield(self._reader)
 
     def _spawn(self) -> int:
         """Start the CLI on a new terminal; returns the terminal's controlling end."""
