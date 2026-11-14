@@ -35,9 +35,9 @@ from langchain_core.tools import BaseTool
 from aug.core.harness.base import Harness
 from aug.core.harness.claude_code_session import ChatSession, Content
 from aug.core.harness.claude_code_tools import (
-    AUG_SERVER,
+    AUG_SERVERS,
     ToolCalls,
-    aug_mcp_server,
+    aug_mcp_servers,
     guard_hooks,
     tool_fingerprint,
 )
@@ -130,6 +130,8 @@ class ClaudeCodeProfile:
     model / effort: fixed for the profile (a change mid-chat breaks the cache).
     builtin_tools:  Claude's own tools it may use; anything else stays blocked.
     tools:          AUG's tools, the MCP manager's included.
+    always_loaded:  names of *tools* Claude has loaded in every request; the rest wait
+                    behind its ToolSearch until it looks them up.
     models:         oneshot()'s model per tier.
     """
 
@@ -137,7 +139,12 @@ class ClaudeCodeProfile:
     effort: str
     builtin_tools: Sequence[str]
     tools: Sequence[BaseTool]
+    always_loaded: frozenset[str] = frozenset()
     models: Mapping[ModelTier, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if unknown := self.always_loaded - {t.name for t in self.tools}:
+            raise ValueError(f"always_loaded names tools the profile lacks: {sorted(unknown)}")
 
 
 @dataclass
@@ -369,9 +376,9 @@ class ClaudeCodeHarness(Harness):
             system_prompt={"type": "preset", "preset": "claude_code", "append": record.prompt},
             setting_sources=[],
             tools=builtin,
-            allowed_tools=[*builtin, f"mcp__{AUG_SERVER}"],
+            allowed_tools=[*builtin, *(f"mcp__{server}" for server in AUG_SERVERS)],
             permission_mode="dontAsk",
-            mcp_servers={AUG_SERVER: aug_mcp_server(self.profile.tools, calls)},
+            mcp_servers=aug_mcp_servers(self.profile.tools, self.profile.always_loaded, calls),
             strict_mcp_config=True,
             plugins=[{"type": "local", "path": str(plugin)}],
             skills=list(record.skills),
@@ -394,6 +401,7 @@ class ClaudeCodeHarness(Harness):
             "effort": self.profile.effort,
             "builtin_tools": list(self.profile.builtin_tools),
             "tools": tool_fingerprint(self.profile.tools),
+            "always_loaded": sorted(self.profile.always_loaded),
             "env": _CLI_ENV,
             "settings": _CLI_SETTINGS,
         }

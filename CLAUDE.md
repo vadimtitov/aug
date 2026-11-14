@@ -146,7 +146,8 @@ behaviour change". Scripts and step formats: top of `scripts/fakes.py`.
 ```
 
 A Claude Code profile is a `ClaudeCodeProfile` in `_build_profiles()` instead: its
-model and effort, Claude's built-in tools it may use (an allowlist), AUG's tools, and
+model and effort, Claude's built-in tools it may use (an allowlist), AUG's tools, which
+of them Claude keeps loaded (`always_loaded`; the rest wait behind its ToolSearch), and
 its `oneshot()` models per tier (see `docs/design/harness-design.md`).
 
 A deleted version needs no cleanup: at startup `migrate_conversations()` moves every

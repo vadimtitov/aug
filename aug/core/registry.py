@@ -98,6 +98,8 @@ _TOOLS = [
 # Claude Code's profile: AUG's tools except those Claude has its own of (run_bash: Bash,
 # fetch_page: WebFetch, brave_search: WebSearch, get_skill: Skill).
 _CLAUDE_TOOLS = [t for t in _TOOLS if t not in (run_bash, fetch_page, brave_search, get_skill)]
+# AUG's tools Claude keeps loaded; the rest it looks up through ToolSearch when needed.
+_CLAUDE_ALWAYS_LOADED = frozenset({"respond_with_file", "note", "create_task", "list_tasks"})
 # Claude's own tools a profile may use.  Anything else, including a tool a new CLI
 # version adds, stays blocked: Claude's cron and wake-ups (scheduling is AUG's), remote
 # triggers, peer messaging (it could carry text between chats), worktrees.
@@ -326,6 +328,7 @@ def _build_profiles(mcp_tools: list[BaseTool]) -> dict[str, Profile]:
             effort="high",
             builtin_tools=_CLAUDE_BUILTIN_TOOLS,
             tools=[*_CLAUDE_TOOLS, *_MCP_MANAGEMENT_TOOLS, *mcp_tools, *dev_tools],
+            always_loaded=_CLAUDE_ALWAYS_LOADED,
             models={ModelTier.STRONG: _CLAUDE_STRONG, ModelTier.FAST: _CLAUDE_FAST},
         ),
     }

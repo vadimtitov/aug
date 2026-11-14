@@ -9,6 +9,7 @@ import asyncio
 import os
 import subprocess
 from collections.abc import AsyncIterator, Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from langchain_core.tools import tool
+from mcp.types import ListToolsRequest
 
 from aug.core.harness import (
     Address,
@@ -326,7 +328,7 @@ async def test_the_session_starts_with_aug_prompt_skills_and_no_filesystem_setti
     assert options.setting_sources == []
     assert options.skills == ["aug:weather"]
     assert options.permission_mode == "dontAsk"
-    assert options.allowed_tools == ["Bash", "Read", "mcp__aug"]
+    assert options.allowed_tools == ["Bash", "Read", "mcp__aug_core", "mcp__aug"]
     assert options.tools == ["Bash", "Read"]
     assert options.session_id is not None and options.resume is None
     assert Path(options.cli_path).name == "claude_cli.sh"
@@ -376,12 +378,50 @@ async def test_a_setup_change_restarts_the_process_and_resumes(harness, fake_cli
         """A new tool."""
         return "x"
 
-    harness.profile = ClaudeCodeProfile(**{**harness.profile.__dict__, "tools": [echo, extra]})
+    harness.profile = replace(harness.profile, tools=[echo, extra])
     await _turn(harness)
 
     assert len(fake_client.instances) == 2
     assert fake_client.instances[0].closed
     assert fake_client.instances[1].options.resume == SESSION
+
+
+async def test_always_loaded_tools_get_their_own_server_claude_always_loads(harness, fake_client):
+    @tool
+    def extra() -> str:
+        """Another tool."""
+        return "x"
+
+    harness.profile = replace(
+        harness.profile, tools=[echo, extra], always_loaded=frozenset({"echo"})
+    )
+    fake_client.on_query = _reply("ok")
+    await _turn(harness)
+
+    servers = fake_client.instances[0].options.mcp_servers
+    assert servers["aug_core"]["alwaysLoad"] is True
+    assert "alwaysLoad" not in servers["aug"]
+    assert await _tool_names(servers["aug_core"]) == ["echo"]
+    assert await _tool_names(servers["aug"]) == ["extra"]
+
+
+async def test_changing_the_always_loaded_tools_restarts_the_process(harness, fake_client):
+    fake_client.on_query = _reply("ok")
+    await _turn(harness)
+    harness.profile = replace(harness.profile, always_loaded=frozenset({"echo"}))
+    await _turn(harness)
+    assert len(fake_client.instances) == 2
+
+
+def test_a_profile_cannot_always_load_a_tool_it_lacks():
+    with pytest.raises(ValueError, match="gmail_send"):
+        ClaudeCodeProfile(
+            model="m",
+            effort="high",
+            builtin_tools=(),
+            tools=[echo],
+            always_loaded=frozenset({"echo", "gmail_send"}),
+        )
 
 
 async def test_a_session_whose_file_is_gone_starts_afresh(harness, fake_client, tmp_path):
@@ -406,7 +446,7 @@ async def test_a_setup_change_waits_for_background_work(harness, fake_client):
         """A new tool."""
         return "x"
 
-    harness.profile = ClaudeCodeProfile(**{**harness.profile.__dict__, "tools": [echo, extra]})
+    harness.profile = replace(harness.profile, tools=[echo, extra])
     await _turn(harness)
     assert len(fake_client.instances) == 1  # not restarted under the running task
 
@@ -686,6 +726,7 @@ async def test_a_dead_process_ends_the_turn_and_is_reopened(harness, fake_client
 
 def test_canonical_names_drop_the_aug_server_prefix():
     assert canonical_name("mcp__aug__run_ssh") == "run_ssh"
+    assert canonical_name("mcp__aug_core__note") == "note"
     assert canonical_name("playwright__browser_click") == "playwright__browser_click"
     assert canonical_name("Bash") == "Bash"
 
@@ -708,7 +749,7 @@ async def test_the_adapter_runs_the_tool_with_the_turn_context_and_files_events_
         await ctx.emit(FileEmitted(file_id="f", path=Path("/x"), media_type="a/b", filename=name))
         return "sent"
 
-    calls.announce("toolu_1", "mcp__aug__sender", {"name": "x"})
+    calls.announce("toolu_1", "mcp__aug_core__sender", {"name": "x"})
     result = await _adapt(sender, calls).handler({"name": "x"})
 
     assert result == {"content": [{"type": "text", "text": "sent"}], "is_error": False}
@@ -807,3 +848,9 @@ def test_the_cli_gets_only_the_allowlisted_environment():
     names = {line.split("=", 1)[0] for line in out.splitlines()}
     assert "CLAUDE_CONFIG_DIR" in names
     assert names <= set(cc._ENV_KEEP)
+
+
+async def _tool_names(server: Any) -> list[str]:
+    handler = server["instance"].request_handlers[ListToolsRequest]
+    result = await handler(ListToolsRequest(method="tools/list"))
+    return [t.name for t in result.root.tools]

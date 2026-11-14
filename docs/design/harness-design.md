@@ -124,13 +124,16 @@ the CLI comes inside it, so both move together.
   workspace's `.claude/`. The workspace loads as a local plugin named `aug`, and the
   session's skills are passed explicitly (`aug:<name>`), which also hides the CLI's own
   bundled skills.
-- **Tools.** AUG's tools (the MCP manager's included) reach Claude through one
-  in-process MCP server, `aug`; each call runs the LangChain tool with the turn's
-  `ToolContext`, so tools don't know which harness runs them. Events use canonical
-  names (`mcp__aug__` stripped). Claude's own tools are an allowlist
-  (`_CLAUDE_BUILTIN_TOOLS`) and run without approval (`permission_mode="dontAsk"`):
-  anything not listed, including a tool a new CLI adds, is refused. Approvals stay on
-  AUG's tools that ask for them.
+- **Tools.** AUG's tools (the MCP manager's included) reach Claude through two
+  in-process MCP servers: `aug_core` with the profile's `always_loaded` tools, which
+  are in every request (`alwaysLoad`), and `aug` with the rest, which Claude looks up
+  through ToolSearch when it needs them. Each call runs the LangChain tool with the
+  turn's `ToolContext`, so tools don't know which harness runs them. Events use
+  canonical names (the `mcp__aug_core__` / `mcp__aug__` prefix stripped), so moving a
+  tool between the two changes nothing outside Claude's own session. Claude's own
+  tools are an allowlist (`_CLAUDE_BUILTIN_TOOLS`) and run without approval
+  (`permission_mode="dontAsk"`): anything not listed, including a tool a new CLI adds,
+  is refused. Approvals stay on AUG's tools that ask for them.
 - **Guard.** A PreToolUse hook refuses the blocked paths (`blocked_paths`) in Bash,
   Read, Write and Edit, and rewrites every shell command to run through hushed, as
   `run_bash` does. The CLI starts through `claude_cli.sh`, which keeps only the

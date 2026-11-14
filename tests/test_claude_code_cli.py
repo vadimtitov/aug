@@ -40,6 +40,12 @@ async def echo(value: str) -> str:
     return f"echo:{value}:{ctx.context_id if ctx else 'none'}"
 
 
+@tool
+async def stamp() -> str:
+    """Stamp the chat."""
+    return "stamped"
+
+
 def _respond(request: dict[str, Any]) -> list[dict[str, Any]]:
     """The scripted model: a marker in the user's text picks what it does; a tool result
     is reported back as text."""
@@ -58,6 +64,8 @@ def _respond(request: dict[str, Any]) -> list[dict[str, Any]]:
         if "mcp__aug__echo" in names:
             return [tool_use("t-echo", "mcp__aug__echo", {"value": "x"})]
         return [tool_use("t-search", "ToolSearch", {"query": "select:mcp__aug__echo"})]
+    if "MARK:stamp" in said:
+        return [tool_use("t-stamp", "mcp__aug_core__stamp", {})]
     if "MARK:bash" in said:
         return [tool_use("t-bash", "Bash", {"command": "echo API_KEY=${API_KEY:-unset}"})]
     if "MARK:secret" in said:
@@ -113,7 +121,8 @@ def _new_harness(tmp_path) -> ClaudeCodeHarness:
         model="claude-opus-5-5",
         effort="high",
         builtin_tools=("Bash", "Read", "ToolSearch", "Skill"),
-        tools=[echo],
+        tools=[echo, stamp],
+        always_loaded=frozenset({"stamp"}),
     )
     return ClaudeCodeHarness(profile, config_dir=tmp_path / "claude")
 
@@ -155,6 +164,17 @@ async def test_an_aug_tool_runs_in_process_with_the_turn_context(harness):
     (events,) = await _in(harness, "MARK:echo")
     outputs = [e.output for e in events if isinstance(e, ToolEnded) and e.name == "echo"]
     assert outputs == ["echo:x:ctx"]
+
+
+async def test_an_always_loaded_tool_is_in_every_request_and_the_rest_wait(harness, api):
+    (events,) = await _in(harness, "MARK:stamp")
+    outputs = [e.output for e in events if isinstance(e, ToolEnded) and e.name == "stamp"]
+    assert outputs == ["stamped"]
+    request = api.requests[-1]
+    loaded = {t["name"] for t in request["tools"] if not t.get("defer_loading")}
+    assert "mcp__aug_core__stamp" in loaded
+    # A deferred tool is only named in the request, for ToolSearch to load.
+    assert "mcp__aug__echo" not in loaded and "mcp__aug__echo" in json.dumps(request)
 
 
 async def test_bash_is_rewritten_and_never_sees_aug_environment(harness, monkeypatch):

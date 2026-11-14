@@ -1,10 +1,11 @@
 """AUG's tools on Claude Code, and the guard on Claude's own file and shell tools.
 
 AUG's tools (LangChain tools, the MCP manager's servers included) reach Claude through
-one in-process MCP server, ``aug``.  Each call runs the LangChain tool with the turn's
-ToolContext in its config, exactly as on LangGraph, so the tools themselves don't know
-which harness runs them.  Claude sees them as ``mcp__aug__<name>``; events carry the
-canonical ``<name>``.
+two in-process MCP servers: ``aug_core`` holds the ones the profile keeps loaded in
+every request, ``aug`` the rest, which wait behind Claude's ToolSearch.  Each call runs
+the LangChain tool with the turn's ToolContext in its config, exactly as on LangGraph,
+so the tools themselves don't know which harness runs them.  Claude sees them as
+``mcp__aug_core__<name>`` or ``mcp__aug__<name>``; events carry the canonical ``<name>``.
 
 Claude's own Bash, Read, Write, Edit, Glob and Grep pass a PreToolUse hook first: it
 refuses the paths no tool may touch (``blocked_paths``) and rewrites every shell command
@@ -15,7 +16,7 @@ import json
 import logging
 import uuid
 from collections import defaultdict, deque
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ from typing import Any
 from claude_agent_sdk import (
     HookContext,
     HookMatcher,
-    McpSdkServerConfig,
+    McpServerConfig,
     SdkMcpTool,
     create_sdk_mcp_server,
 )
@@ -39,20 +40,26 @@ from aug.utils.logging import set_context_id
 
 logger = logging.getLogger(__name__)
 
-AUG_SERVER = "aug"
-_PREFIX = f"mcp__{AUG_SERVER}__"
+AUG_SERVER = "aug"  # AUG's tools Claude loads through ToolSearch when it needs them
+AUG_CORE_SERVER = "aug_core"  # those the profile keeps loaded in every request
+AUG_SERVERS = (AUG_CORE_SERVER, AUG_SERVER)
+_PREFIXES = tuple(f"mcp__{server}__" for server in AUG_SERVERS)
 # Claude's tools that read or write files, and the input field holding the path.
 _PATH_FIELDS = ("file_path", "path", "notebook_path")
 GUARDED_TOOLS = ("Bash", "Monitor", "Read", "Write", "Edit", "NotebookEdit", "Glob", "Grep")
 
 
 def canonical_name(name: str) -> str:
-    """The name AUG uses for a tool Claude calls: ``mcp__aug__run_ssh`` is ``run_ssh``."""
-    return name.removeprefix(_PREFIX)
+    """The name AUG uses for a tool Claude calls: ``mcp__aug__run_ssh`` is ``run_ssh``,
+    ``mcp__aug_core__note`` is ``note``."""
+    for prefix in _PREFIXES:
+        if name.startswith(prefix):
+            return name.removeprefix(prefix)
+    return name
 
 
-def claude_name(name: str) -> str:
-    return f"{_PREFIX}{name}"
+def is_aug_tool(name: str) -> bool:
+    return name.startswith(_PREFIXES)
 
 
 class ToolCalls:
@@ -69,7 +76,7 @@ class ToolCalls:
         self._announced: dict[tuple[str, str], deque[str]] = defaultdict(deque)
 
     def announce(self, tool_use_id: str, name: str, args: dict) -> None:
-        if name.startswith(_PREFIX):
+        if is_aug_tool(name):
             self._announced[(canonical_name(name), _args_key(args))].append(tool_use_id)
 
     def claim(self, name: str, args: dict) -> str | None:
@@ -80,9 +87,19 @@ class ToolCalls:
         self._announced.clear()
 
 
-def aug_mcp_server(tools: Sequence[BaseTool], calls: ToolCalls) -> McpSdkServerConfig:
-    """One in-process MCP server with every tool in *tools*."""
-    return create_sdk_mcp_server(AUG_SERVER, tools=[_adapt(t, calls) for t in tools])
+def aug_mcp_servers(
+    tools: Sequence[BaseTool], always_loaded: Collection[str], calls: ToolCalls
+) -> dict[str, McpServerConfig]:
+    """AUG's two in-process MCP servers: the tools named in *always_loaded* on one Claude
+    always loads, every other tool on one it defers behind ToolSearch."""
+    core = create_sdk_mcp_server(
+        AUG_CORE_SERVER, tools=[_adapt(t, calls) for t in tools if t.name in always_loaded]
+    )
+    rest = create_sdk_mcp_server(
+        AUG_SERVER, tools=[_adapt(t, calls) for t in tools if t.name not in always_loaded]
+    )
+    # The SDK hands a server's config keys, all but the instance, to the CLI.
+    return {AUG_CORE_SERVER: {**core, "alwaysLoad": True}, AUG_SERVER: rest}  # type: ignore[dict-item]
 
 
 def tool_fingerprint(tools: Sequence[BaseTool]) -> list[dict[str, Any]]:
