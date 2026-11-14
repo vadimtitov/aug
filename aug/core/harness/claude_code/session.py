@@ -52,7 +52,7 @@ from aug.core.harness.types import (
     TurnEnded,
     Usage,
 )
-from aug.core.prompts import CLAUDE_COMPACTED_STATUS, CLAUDE_RATE_LIMIT_WARNING
+from aug.core.prompts import CLAUDE_COMPACTED_STATUS
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,6 @@ class _Turn:
     result_seen: bool = False
     error: HarnessError | None = None
     cancelled: bool = False
-    rate_warned: bool = False
     usage: Usage = field(default_factory=Usage)
 
 
@@ -447,13 +446,6 @@ class ChatSession:
         if info.status == "rejected":
             retry_at = datetime.fromtimestamp(info.resets_at, UTC) if info.resets_at else None
             turn.error = HarnessError(kind="rate_limited", retry_at=retry_at)
-        elif info.status == "allowed_warning" and not turn.rate_warned:
-            turn.rate_warned = True
-            percent = round((info.utilization or 0) * 100)
-            window = (info.rate_limit_type or "usage").replace("_", " ")
-            self._put(
-                StatusUpdate(text=CLAUDE_RATE_LIMIT_WARNING.format(percent=percent, window=window))
-            )
 
 
 async def _drain(turn: _Turn) -> AsyncIterator[HarnessEvent]:

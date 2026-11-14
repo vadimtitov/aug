@@ -703,7 +703,8 @@ async def test_a_rejected_rate_limit_says_when_it_resets(harness, fake_client):
     assert error.kind == "rate_limited" and error.retry_at.hour == 14
 
 
-async def test_a_rate_limit_warning_is_a_status_once(harness, fake_client):
+async def test_a_usage_warning_is_not_shown_in_the_chat(harness, fake_client):
+    # Plan usage is in /status; the CLI's warning would repeat on every turn.
     warning = RateLimitEvent(
         rate_limit_info=RateLimitInfo(
             status="allowed_warning", utilization=0.9, rate_limit_type="five_hour"
@@ -717,7 +718,9 @@ async def test_a_rate_limit_warning_is_a_status_once(harness, fake_client):
 
     fake_client.on_query = answer
     statuses = [e.text for e in await _turn(harness) if isinstance(e, StatusUpdate)]
-    assert statuses == ["Claude usage is at 90% of the five hour limit."]
+    assert statuses == []
+    (limit,) = (await harness.session_status("ctx")).limits
+    assert limit.utilization == 0.9
 
 
 async def test_a_dead_process_ends_the_turn_and_is_reopened(harness, fake_client):

@@ -248,8 +248,8 @@ Rules:
   directly, so the inheritance fallback below applies everywhere.
 - A conversation with no selection of its own inherits from
   `BaseInterface.parent_conversation_id()` (Telegram: a topic falls back to its group).
-  Without it, a conversation nobody has visited resolves to no agent — survivable in a
-  chat, silent breakage for a scheduled push, where nobody is there to be told.
+  A conversation with neither selection runs on `NEW_CONVERSATION_PROFILE`
+  (`aug/core/registry.py`).
 
 ---
 

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from aug.api.interfaces.telegram.utils import get_context_id, get_conversation_id
+from aug.core.registry import NEW_CONVERSATION_PROFILE, list_agents
 from aug.utils.file_settings import AppSettings, ConversationSettings
 
 
@@ -139,7 +140,7 @@ async def test_version_selection_is_scoped_to_one_topic(telegram_interface):
     from aug.core.registry import list_agents
     from aug.utils.file_settings import AppSettings
 
-    agent = next(a for a in list_agents() if a != "fake")
+    agent = next(a for a in list_agents() if a not in ("fake", NEW_CONVERSATION_PROFILE))
     settings = AppSettings()
 
     with (
@@ -150,8 +151,28 @@ async def test_version_selection_is_scoped_to_one_topic(telegram_interface):
             _make_callback_update(chat_id=-100, topic_id=7, agent=agent), MagicMock()
         )
         assert telegram_interface.get_agent_version("tg--100-topic-7") == agent
-        assert telegram_interface.get_agent_version("tg--100-topic-8") == "default"
-        assert telegram_interface.get_agent_version("tg--100-0") == "default"
+        assert telegram_interface.get_agent_version("tg--100-topic-8") == NEW_CONVERSATION_PROFILE
+        assert telegram_interface.get_agent_version("tg--100-0") == NEW_CONVERSATION_PROFILE
+
+
+def test_a_new_chat_runs_on_the_new_conversation_profile(telegram_interface):
+    """A chat nobody has picked a version for, outside any group, starts on Claude Code."""
+    with patch("aug.api.interfaces.base.load_settings", return_value=AppSettings()):
+        assert telegram_interface.get_agent_version("tg-555-0") == "v14_claude_code"
+    assert NEW_CONVERSATION_PROFILE in list_agents()
+
+
+def test_a_stored_default_counts_as_no_selection(telegram_interface):
+    settings = AppSettings(
+        conversations={
+            "tg--100": ConversationSettings(agent="v13_kimi"),
+            "tg--100-topic-7": ConversationSettings(),
+            "tg-555": ConversationSettings(),
+        }
+    )
+    with patch("aug.api.interfaces.base.load_settings", return_value=settings):
+        assert telegram_interface.get_agent_version("tg--100-topic-7") == "v13_kimi"
+        assert telegram_interface.get_agent_version("tg-555-0") == NEW_CONVERSATION_PROFILE
 
 
 @pytest.mark.asyncio
