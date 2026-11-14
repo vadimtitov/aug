@@ -168,7 +168,7 @@ def test_every_harness_event_has_its_own_sse_frame() -> None:
         "parent_id": "t1",
     }
     assert frames[7][1]["decision"] == "denied"
-    assert frames[8][1] == {"error": "rate_limited", "cancelled": False}
+    assert frames[8][1] == {"error": "rate_limited", "cancelled": False, "context": None}
 
 
 def test_a_subagents_text_is_not_part_of_the_reply() -> None:

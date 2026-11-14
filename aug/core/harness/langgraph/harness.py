@@ -7,9 +7,11 @@ kinds.  Interfaces only ever see harness events from here.
 """
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator, Mapping
 from contextlib import aclosing, suppress
+from dataclasses import replace
 
 import openai
 import psycopg
@@ -23,21 +25,25 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.runnables.config import RunnableConfig
+from langchain_core.tools import BaseTool
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 
 from aug.core.agents.base_agent import BaseAgent
-from aug.core.compaction import compact_thread
+from aug.core.compaction import compact_thread, count_tokens
 from aug.core.harness.base import Harness
 from aug.core.harness.langgraph.events import dispatch
 from aug.core.harness.tool_context import TOOL_CONTEXT_CONFIG_KEY, ToolContext
 from aug.core.harness.types import (
+    ContextUsage,
     FilePart,
     HarnessError,
     HarnessEvent,
     Message,
     ModelTier,
+    SessionStatus,
     StatusUpdate,
     TextPart,
     TurnContext,
@@ -83,6 +89,7 @@ class LangGraphHarness(Harness):
         self._checkpointer = checkpointer
         self._models = dict(models or {})
         self._opened: dict[str, AgentRun] = {}
+        self._tool_tokens: tuple[tuple[str, ...], int] | None = None  # (tool names, tokens)
 
     def _run(
         self, message: Message, context_id: str, turn: TurnContext
@@ -127,6 +134,33 @@ class LangGraphHarness(Harness):
             return stored
         return await asyncio.to_thread(self.agent.new_session_prompt, interface)
 
+    async def session_status(self, context_id: str) -> SessionStatus:
+        """The context is estimated with the count compaction itself goes by, plus the
+        system prompt and the tool schemas it doesn't count."""
+        status = SessionStatus(model=self.agent.model_name or "")
+        window = self.agent.context_window
+        if window is None:
+            return status
+        snapshot = await self.agent.aget_state(_config(context_id), self._checkpointer)
+        values = snapshot.values or {}
+        messages = values.get("messages") or []
+        if not messages:
+            return status
+        fixed = {
+            "system prompt": len(values.get("session_prompt") or "") // 4,
+            "tools": self._tools_size(),
+        }
+        parts = {**fixed, "messages": count_tokens(messages)}
+        compacts_at = self.agent.compacts_at
+        context = ContextUsage(
+            used=sum(parts.values()),
+            window=window,
+            compacts_at=compacts_at + sum(fixed.values()) if compacts_at is not None else None,
+            breakdown=tuple(sorted(parts.items(), key=lambda item: -item[1])),
+            estimated=True,
+        )
+        return replace(status, context=context)
+
     async def oneshot(
         self, prompt: str, tier: ModelTier = ModelTier.STRONG, *, system: str = ""
     ) -> str:
@@ -142,6 +176,13 @@ class LangGraphHarness(Harness):
         if not model:
             raise ValueError(f"Agent '{type(self.agent).__name__}' has no model for oneshot()")
         return model
+
+    def _tools_size(self) -> int:
+        """The agent's tool schemas, estimated once per set of tools."""
+        names = tuple(t.name for t in self.agent.tools)
+        if self._tool_tokens is None or self._tool_tokens[0] != names:
+            self._tool_tokens = (names, _tool_tokens(self.agent.tools))
+        return self._tool_tokens[1]
 
     def _open_turn(self, context_id: str, turn: TurnContext) -> None:
         existing = run_registry.get(context_id)
@@ -336,6 +377,11 @@ class LangGraphHarness(Harness):
                 if texts:
                     result.append(f"{prefix}: {' '.join(texts)}")
         return result
+
+
+def _tool_tokens(tools: list[BaseTool]) -> int:
+    """The tool schemas sent with every call, estimated like messages: chars / 4."""
+    return len(json.dumps([convert_to_openai_tool(t) for t in tools])) // 4
 
 
 def _config(context_id: str) -> RunnableConfig:

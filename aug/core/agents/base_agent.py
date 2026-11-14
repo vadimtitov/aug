@@ -59,6 +59,8 @@ class BaseAgent(ABC):
     reflexes: list[Reflex] = []
     recursion_limit: int = 25
     model_name: str | None = None  # the main model; what LangGraphHarness.oneshot() calls
+    context_window: int | None = None  # the main model's, in tokens
+    compacts_at: int | None = None  # history tokens at which the agent compacts itself
 
     def __init__(self) -> None:
         self._compiled_graph = None

@@ -489,6 +489,10 @@ HARNESS_RETRY_AT_SUFFIX = " The limit resets at {time} UTC."
 # Told after /stop ended a turn.  Whatever already ran is not undone.
 HARNESS_STOPPED_MESSAGE = "⏹ Stopped."
 
+# Sent once a turn leaves the context past a warning level (see BaseInterface).
+CONTEXT_FULL_WARNING = "⚠️ Context is {percent}% full. /compact or /clear frees it."
+CONTEXT_COMPACTS_AT_SUFFIX = " It compacts itself at {percent}%."
+
 # Sent when an agent push or scheduled task runs past its time limit and is stopped.
 UNATTENDED_TIMED_OUT_MESSAGE = (
     "⏹ A background task ran for over {minutes} minutes without finishing and was stopped."

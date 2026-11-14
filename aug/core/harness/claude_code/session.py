@@ -19,7 +19,9 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    ContextUsageResponse,
     RateLimitEvent,
+    RateLimitInfo,
     ResultMessage,
     StreamEvent,
     SystemMessage,
@@ -38,8 +40,10 @@ from aug.core.harness.tool_context import ToolContext
 from aug.core.harness.types import (
     Address,
     AgentEvent,
+    ContextUsage,
     HarnessError,
     HarnessEvent,
+    LimitUsage,
     StatusUpdate,
     TextDelta,
     ToolEnded,
@@ -54,6 +58,10 @@ logger = logging.getLogger(__name__)
 
 # How long an interrupt may take before the turn is ended without the CLI.
 _INTERRUPT_SECONDS = 10
+# How long the CLI may take to report its context before the question is dropped.
+_CONTEXT_SECONDS = 5
+# Context categories that hold no tokens of the conversation's own.
+_NOT_IN_CONTEXT = frozenset({"Free space", "Autocompact buffer"})
 
 # A user message's content: Anthropic content blocks.
 Content = list[dict[str, Any]]
@@ -85,7 +93,10 @@ class ChatSession:
         fingerprint: str,
         reply_to: Address,
         on_unsolicited: UnsolicitedHandler,
+        limits: dict[str, LimitUsage] | None = None,
     ) -> None:
+        """*limits* is updated in place whenever the CLI reports the plan's usage
+        windows; the harness shares one across its sessions, as the plan is one."""
         self.context_id = context_id
         self.fingerprint = fingerprint
         self.reply_to = reply_to
@@ -94,6 +105,7 @@ class ChatSession:
         self._options = options
         self._calls = calls
         self._on_unsolicited = on_unsolicited
+        self._limits = limits if limits is not None else {}
         self._client: ClaudeSDKClient | None = None
         self._reader: asyncio.Task[None] | None = None
         self._turn: _Turn | None = None
@@ -103,6 +115,19 @@ class ChatSession:
         self._streamed: set[str] = set()  # assistant message ids whose text was streamed
         self._message_id: dict[str | None, str] = {}  # parent → message being streamed
         self._deliveries: set[asyncio.Task[None]] = set()  # self-started turns being sent
+        # The context as of the last main-thread model call: its tokens in and out are
+        # the next call's context.  None once a compaction made it stale.  The output
+        # count is final only at the call's message_delta.
+        self._context_tokens: int | None = None
+        self._output_tokens = 0
+        self._model = ""  # the model that made that call, as the API names it
+        self._window: int | None = None  # its context window, from the turn's result
+        self._window_warned = False
+        self._compacts_at: int | None = None  # from the CLI's last context report
+        # The CLI's own report is wanted: none yet for this process, or a compaction
+        # since.  It carries what a model call's usage doesn't: the breakdown and where
+        # the CLI compacts.
+        self.needs_report = True
 
     @property
     def alive(self) -> bool:
@@ -166,6 +191,40 @@ class ChatSession:
             return False
         await self._client.query(_as_messages(content, verbatim=True))
         return True
+
+    @property
+    def background_tasks(self) -> int:
+        """Background tasks started and not yet finished."""
+        return len(self._tasks)
+
+    @property
+    def context(self) -> ContextUsage | None:
+        """The context as the last model call left it: free, no breakdown.  None
+        before the first call, or after a compaction until the next one."""
+        if self._context_tokens is None or not self._window:
+            return None
+        return ContextUsage(
+            used=self._context_tokens + self._output_tokens,
+            window=self._window,
+            compacts_at=self._compacts_at,
+        )
+
+    async def context_usage(self) -> ContextUsage | None:
+        """How full the CLI says the context is, with its breakdown; None when the
+        process is gone or doesn't answer in time.  The CLI counts it with the API's
+        token counting, a request per category: for when someone asks, not per turn."""
+        if self._client is None or not self.alive:
+            return None
+        self.needs_report = False  # asked: a failed report isn't retried every turn
+        try:
+            raw = await asyncio.wait_for(self._client.get_context_usage(), _CONTEXT_SECONDS)
+            context = _context_usage(raw)
+        except Exception as e:
+            logger.warning("claude context usage failed context=%s: %r", self.context_id, e)
+            return None
+        self._compacts_at = context.compacts_at
+        self._window = self._window or context.window
+        return context
 
     @property
     def has_background_work(self) -> bool:
@@ -244,6 +303,8 @@ class ChatSession:
             case SystemMessage(subtype="init", data=data):
                 self.session_id = data.get("session_id") or self.session_id
             case SystemMessage(subtype="compact_boundary"):
+                self._context_tokens = None
+                self.needs_report = True
                 self._put(StatusUpdate(text=CLAUDE_COMPACTED_STATUS))
 
     def _on_state(self, state: str | None) -> None:
@@ -275,6 +336,8 @@ class ChatSession:
         task.add_done_callback(self._deliveries.discard)
 
     def _end(self, turn: _Turn) -> None:
+        # The context is the harness's to add (_context_after_turn): it decides
+        # whether the CLI's own report is worth asking for.
         turn.events.put_nowait(
             TurnEnded(error=turn.error, cancelled=turn.cancelled, usage=turn.usage)
         )
@@ -291,9 +354,15 @@ class ChatSession:
         event = message.event
         kind = event.get("type")
         if kind == "message_start":
+            if message.parent_tool_use_id is None:
+                self._output_tokens = 0  # a new main-thread call
             self._message_id[message.parent_tool_use_id] = (event.get("message") or {}).get(
                 "id", ""
             )
+        elif kind == "message_delta" and message.parent_tool_use_id is None:
+            output = (event.get("usage") or {}).get("output_tokens")
+            if output is not None:
+                self._output_tokens = max(self._output_tokens, int(output))
         elif kind == "content_block_delta":
             delta = event.get("delta") or {}
             if delta.get("type") == "text_delta" and delta.get("text"):
@@ -303,6 +372,14 @@ class ChatSession:
     def _on_assistant(self, message: AssistantMessage) -> None:
         if message.error is not None and self._turn is not None:
             self._turn.error = _assistant_error(message)
+        tokens = _input_tokens(message.usage or {})
+        # A message the CLI made up itself (an API error's text, say) counts nothing.
+        if message.parent_tool_use_id is None and tokens and message.error is None:
+            self._context_tokens = tokens
+            # Whichever of this and the call's message_delta comes last, keep the larger.
+            output = int((message.usage or {}).get("output_tokens") or 0)
+            self._output_tokens = max(self._output_tokens, output)
+            self._model = message.model
         streamed = message.message_id in self._streamed
         for block in message.content:
             match block:
@@ -338,6 +415,15 @@ class ChatSession:
 
     def _on_result(self, message: ResultMessage) -> None:
         self.session_id = message.session_id or self.session_id
+        self._window = _context_window(message.model_usage or {}, self._model) or self._window
+        if self._window is None and self._model and message.model_usage and not self._window_warned:
+            self._window_warned = True
+            logger.warning(
+                "claude context window unknown context=%s model=%s usage keys=%s",
+                self.context_id,
+                self._model,
+                sorted(message.model_usage),
+            )
         turn = self._turn
         if turn is None:
             return
@@ -354,6 +440,7 @@ class ChatSession:
 
     def _on_rate_limit(self, message: RateLimitEvent) -> None:
         info = message.rate_limit_info
+        self._limits.update({limit.window: limit for limit in _limits(info)})
         turn = self._turn
         if turn is None:
             return
@@ -411,6 +498,70 @@ def _add_usage(usage: Usage, raw: dict[str, Any]) -> Usage:
         cache_write_tokens=usage.cache_write_tokens
         + int(raw.get("cache_creation_input_tokens") or 0),
     )
+
+
+def _input_tokens(usage: dict[str, Any]) -> int:
+    keys = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+    return sum(int(usage.get(key) or 0) for key in keys)
+
+
+def _context_window(model_usage: dict[str, Any], model: str) -> int | None:
+    """*model*'s context window from a result's per-model usage.  Its keys are the
+    CLI's model names (``claude-haiku-4-5``), which *model*, the API's
+    (``claude-haiku-4-5-20251001``), extends."""
+    names = [n for n in model_usage if model and (model == n or model.startswith(f"{n}-"))]
+    if not names:
+        return None
+    usage = model_usage[max(names, key=len)]  # the exact name, else the longest prefix
+    window = usage.get("contextWindow") if isinstance(usage, dict) else None
+    return int(window) if window else None
+
+
+def _context_usage(raw: ContextUsageResponse) -> ContextUsage:
+    window = int(raw.get("rawMaxTokens") or raw.get("maxTokens") or 0)
+    limit = int(raw.get("maxTokens") or 0)
+    auto = bool(raw.get("isAutoCompactEnabled"))
+    breakdown = [
+        (c["name"].lower(), int(c["tokens"]))
+        for c in raw.get("categories") or []
+        if c["name"] not in _NOT_IN_CONTEXT and not c.get("isDeferred") and c.get("tokens")
+    ]
+    return ContextUsage(
+        used=int(raw.get("totalTokens") or 0),
+        window=window,
+        # maxTokens is the window less the autocompact buffer, when the CLI reserves one.
+        compacts_at=limit if auto and 0 < limit < window else None,
+        breakdown=tuple(sorted(breakdown, key=lambda item: -item[1])),
+    )
+
+
+def _limits(info: RateLimitInfo) -> list[LimitUsage]:
+    """Every usage window the event reports: all of them when the CLI sends its
+    ``unifiedWindows``, else the one the event is about."""
+    windows = info.raw.get("unifiedWindows")
+    if isinstance(windows, dict) and windows:
+        return [
+            LimitUsage(
+                window=name,
+                utilization=float(w["utilization"]),
+                resets_at=_timestamp(w.get("resetsAt")),
+            )
+            for name, w in windows.items()
+            if isinstance(w, dict) and w.get("utilization") is not None
+        ]
+    if info.rate_limit_type is None or info.utilization is None:
+        return []
+    return [
+        LimitUsage(
+            window=info.rate_limit_type,
+            utilization=info.utilization,
+            resets_at=_timestamp(info.resets_at),
+        )
+    ]
+
+
+def _timestamp(value: Any) -> datetime | None:
+    return datetime.fromtimestamp(value, UTC) if isinstance(value, int | float) else None
 
 
 def _assistant_error(message: AssistantMessage) -> HarnessError:

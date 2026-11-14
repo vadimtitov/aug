@@ -28,12 +28,14 @@ from aug.core.harness import (
     ApprovalDecision,
     ApprovalRequested,
     ApprovalResolved,
+    ContextUsage,
     FileEmitted,
     FilePart,
     HarnessError,
     Message,
     ModelTier,
     Sender,
+    SessionStatus,
     StatusUpdate,
     TextDelta,
     TextPart,
@@ -967,3 +969,64 @@ async def test_a_stopped_turn_tells_the_user_it_stopped_not_that_it_failed() -> 
 
     iface.send_message.assert_awaited_once()
     assert iface.send_message.await_args.args[0] == HARNESS_STOPPED_MESSAGE
+
+
+# ---------------------------------------------------------------------------
+# session status
+# ---------------------------------------------------------------------------
+
+_FULL = ContextUsage(used=150, window=200)
+
+
+class _BrokenStatus(ScriptedHarness):
+    async def session_status(self, context_id: str) -> SessionStatus:
+        raise RuntimeError("status down")
+
+
+async def test_turn_ended_gets_the_context_from_session_status() -> None:
+    harness = ScriptedHarness(status=SessionStatus(model="m", context=_FULL))
+    events = await _collect(harness.run(_msg("x"), "c1", TURN))
+    assert events[-1].context == _FULL
+
+
+async def test_a_context_the_harness_put_on_turn_ended_is_kept() -> None:
+    own = ContextUsage(used=10, window=200)
+    harness = ScriptedHarness(
+        [TurnEnded(context=own)], status=SessionStatus(model="m", context=_FULL)
+    )
+    events = await _collect(harness.run(_msg("x"), "c1", TURN))
+    assert events[-1].context == own
+
+
+async def test_a_failing_session_status_never_fails_the_turn() -> None:
+    events = await _collect(_BrokenStatus([TextDelta(text="hi")]).run(_msg("x"), "c1", TURN))
+    assert events[-1] == TurnEnded()
+
+
+async def test_langgraph_estimates_the_context_with_prompt_tools_and_messages() -> None:
+    harness, agent = _harness(AIMessage(content="hello " * 100))
+    agent.model_name, agent.context_window, agent.compacts_at = "kimi", 10_000, 8_000
+
+    events = await _collect(harness.run(_msg("hi"), "c1", TURN))
+
+    context = events[-1].context
+    assert context is not None and context.estimated and context.window == 10_000
+    parts = dict(context.breakdown)
+    assert set(parts) == {"system prompt", "tools", "messages"}
+    assert parts["tools"] > 0 and parts["messages"] >= 150
+    assert context.used == sum(parts.values())
+    # Compaction counts messages only: the rest is on top of its threshold.
+    assert context.compacts_at == 8_000 + parts["system prompt"] + parts["tools"]
+    assert (await harness.session_status("c1")).model == "kimi"
+
+
+async def test_langgraph_has_no_context_before_the_first_turn() -> None:
+    harness, agent = _harness()
+    agent.context_window = 10_000
+    assert (await harness.session_status("c1")).context is None
+
+
+async def test_langgraph_without_a_known_window_reports_no_context() -> None:
+    harness, _ = _harness(AIMessage(content="hello"))
+    events = await _collect(harness.run(_msg("hi"), "c1", TURN))
+    assert events[-1].context is None

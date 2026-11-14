@@ -2,7 +2,14 @@
 
 from collections.abc import AsyncIterator
 
-from aug.core.harness import Harness, HarnessEvent, Message, ModelTier, TurnContext
+from aug.core.harness import (
+    Harness,
+    HarnessEvent,
+    Message,
+    ModelTier,
+    SessionStatus,
+    TurnContext,
+)
 
 
 class ScriptedHarness(Harness):
@@ -17,6 +24,7 @@ class ScriptedHarness(Harness):
         events: list[HarnessEvent] | None = None,
         accept_inject: bool = False,
         running: bool = True,
+        status: SessionStatus | None = None,
     ):
         self.events = list(events or [])
         self.accept_inject = accept_inject
@@ -25,6 +33,7 @@ class ScriptedHarness(Harness):
         self.injected: list[tuple[Message, str]] = []
         self.cancelled: list[str] = []
         self.compacted: list[str] = []
+        self.status = status or SessionStatus(model="scripted")  # what session_status() answers
 
     async def _run(
         self, message: Message, context_id: str, turn: TurnContext
@@ -48,6 +57,9 @@ class ScriptedHarness(Harness):
 
     async def session_prompt(self, context_id: str, interface: str) -> str:
         return f"prompt:{context_id}:{interface}"
+
+    async def session_status(self, context_id: str) -> SessionStatus:
+        return self.status
 
     async def oneshot(
         self, prompt: str, tier: ModelTier = ModelTier.STRONG, *, system: str = ""

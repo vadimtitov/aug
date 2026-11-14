@@ -27,6 +27,7 @@ from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import claude_agent_sdk
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
@@ -45,11 +46,14 @@ from aug.core.harness.tool_context import ToolContext, pending_approvals
 from aug.core.harness.types import (
     Address,
     ApprovalDecision,
+    ContextUsage,
     FilePart,
     HarnessEvent,
+    LimitUsage,
     Message,
     ModelTier,
     Sender,
+    SessionStatus,
     TextPart,
     TurnContext,
     TurnEnded,
@@ -160,6 +164,7 @@ class _Record:
     started: bool = False
     conversation_id: str = ""
     chat_id: str = ""
+    context: dict[str, Any] | None = None  # the last ContextUsage seen, for a closed process
 
     @property
     def reply_to(self) -> Address:
@@ -187,6 +192,7 @@ class ClaudeCodeHarness(Harness):
         self._early: dict[str, list[Content]] = {}  # injected before the session took it
         self._opened: dict[str, AgentRun] = {}
         self._sink: UnsolicitedSink | None = None
+        self._limits: dict[str, LimitUsage] = {}  # the plan's usage windows, latest seen
 
     # -- Harness -----------------------------------------------------------------------
 
@@ -253,13 +259,40 @@ class ClaudeCodeHarness(Harness):
         async for event in events:
             if isinstance(event, TurnEnded):
                 ended = event
-        return ended is not None and ended.error is None
+        ok = ended is not None and ended.error is None
+        if ok:
+            self._remember(context_id, None)  # what was stored is from before
+        return ok
 
     async def session_prompt(self, context_id: str, interface: str) -> str:
         record = self._load(context_id)
         if record is not None:
             return record.prompt
         return await asyncio.to_thread(_new_prompt, interface)
+
+    async def session_status(self, context_id: str) -> SessionStatus:
+        """The context comes from the warm process; once that is closed, from what it
+        last reported.  Limits are the plan's, the latest any session heard of."""
+        record = self._load(context_id)
+        session = self._sessions.get(context_id)
+        context: ContextUsage | None = None
+        if record is not None and record.started:
+            context = await session.context_usage() if session is not None else None
+            if context is not None:
+                self._remember(context_id, context)
+            else:
+                context = _stored_context(record)
+        now = datetime.now(UTC)
+        limits = sorted(
+            (lim for lim in self._limits.values() if lim.resets_at is None or lim.resets_at > now),
+            key=lambda lim: lim.window,
+        )
+        return SessionStatus(
+            model=self.profile.model,
+            context=context,
+            limits=tuple(limits),
+            background_tasks=session.background_tasks if session is not None else 0,
+        )
 
     async def oneshot(
         self, prompt: str, tier: ModelTier = ModelTier.STRONG, *, system: str = ""
@@ -300,6 +333,18 @@ class ClaudeCodeHarness(Harness):
             await asyncio.gather(*(s.close() for s in self._sessions.values()))
             self._sessions.clear()
             self._sink = None
+
+    async def _context_after_turn(self, context_id: str) -> ContextUsage | None:
+        """Free from the turn's own model calls, unless the CLI's report is due (a new
+        process, or a compaction since): that one costs a token count per category."""
+        session = self._sessions.get(context_id)
+        if session is None:
+            return None
+        report = await session.context_usage() if session.needs_report else None
+        context = report or session.context
+        if context is not None:
+            self._remember(context_id, context)
+        return context
 
     def _open_turn(self, context_id: str, turn: TurnContext) -> None:
         if _UNSOLICITED.get():
@@ -349,6 +394,7 @@ class ClaudeCodeHarness(Harness):
                         "claude session file gone, starting afresh context=%s", context_id
                     )
                     record.session_id, record.started = str(uuid.uuid4()), False
+                    record.context = None
                     self._save(record)
                 calls = ToolCalls()
                 session = ChatSession(
@@ -358,6 +404,7 @@ class ClaudeCodeHarness(Harness):
                     fingerprint=fingerprint,
                     reply_to=reply_to,
                     on_unsolicited=lambda events: self._unsolicited(context_id, events),
+                    limits=self._limits,
                 )
                 await session.open()
                 self._sessions[context_id] = session
@@ -512,6 +559,15 @@ class ClaudeCodeHarness(Harness):
             record.session_id = session.session_id
             self._save(record)
 
+    def _remember(self, context_id: str, context: ContextUsage | None) -> None:
+        """Keep *context* for when the process is closed; None forgets a stale one."""
+        record = self._load(context_id)
+        # As it reads back: lists, not tuples.
+        stored = json.loads(json.dumps(asdict(context))) if context is not None else None
+        if record is not None and record.context != stored:
+            record.context = stored
+            self._save(record)
+
     def _record_path(self, context_id: str) -> Path:
         return self._records_dir / f"{hashlib.sha256(context_id.encode()).hexdigest()[:32]}.json"
 
@@ -530,6 +586,18 @@ class ClaudeCodeHarness(Harness):
         partial = path.with_suffix(".partial")
         partial.write_text(json.dumps(asdict(record)))
         partial.replace(path)
+
+
+def _stored_context(record: _Record) -> ContextUsage | None:
+    if record.context is None:
+        return None
+    try:
+        stored = dict(record.context)
+        stored["breakdown"] = tuple((str(n), int(t)) for n, t in stored.get("breakdown") or ())
+        return ContextUsage(**stored)
+    except (TypeError, ValueError):
+        logger.warning("unreadable stored context context=%s", record.context_id)
+        return None
 
 
 def _new_prompt(interface: str) -> str:

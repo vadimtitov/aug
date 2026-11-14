@@ -154,6 +154,10 @@ async def test_a_plain_turn(harness, api):
     (events,) = await _in(harness, "hi")
     assert _reply(events) == "hello there"
     assert isinstance(events[-1], TurnEnded) and events[-1].error is None
+    # A new process: the CLI's own report, with its breakdown.
+    context = events[-1].context
+    assert context is not None and context.used > 0 and context.window > 0
+    assert "system prompt" in dict(context.breakdown)
     systems = [" ".join(b.get("text", "") for b in r.get("system", [])) for r in api.requests]
     assert any("I am AUG." in system for system in systems)
 
@@ -173,7 +177,7 @@ async def test_an_always_loaded_tool_is_in_every_request_and_the_rest_wait(harne
     (events,) = await _in(harness, "MARK:stamp")
     outputs = [e.output for e in events if isinstance(e, ToolEnded) and e.name == "stamp"]
     assert outputs == ["stamped"]
-    request = api.requests[-1]
+    request = _calls(api)[-1]
     loaded = {t["name"] for t in request["tools"] if not t.get("defer_loading")}
     assert "mcp__aug_core__stamp" in loaded
     # A deferred tool is only named in the request, for ToolSearch to load.
@@ -200,7 +204,7 @@ async def test_a_new_harness_resumes_the_session(harness, tmp_path, api):
 
     said = [
         b.get("text", "")
-        for m in api.requests[-1]["messages"]
+        for m in _calls(api)[-1]["messages"]
         if m["role"] == "user"
         for b in (m["content"] if isinstance(m["content"], list) else [])
     ]
@@ -216,3 +220,8 @@ async def test_a_revoked_login_tells_the_user_to_sign_in(harness, monkeypatch):
     assert isinstance(ended, TurnEnded) and ended.error is not None
     assert ended.error.kind == "login"
     assert "/claude_login" in error_text(ended.error)
+
+
+def _calls(api: FakeAnthropicAPI) -> list[dict[str, Any]]:
+    """The model calls the CLI made; not its token counts for a context report."""
+    return [r for r in api.requests if "max_tokens" in r]

@@ -71,6 +71,8 @@ class ChatAgent(BaseAgent):
         self._compaction_model = compaction_model
         self._compaction_threshold = compaction_threshold
         self._context_window = context_window
+        self.context_window = context_window
+        self.compacts_at = int(compaction_threshold * context_window) if compaction_model else None
         self._max_summary_tokens = max_summary_tokens
         self._llm = build_chat_model(
             model,
@@ -182,6 +184,8 @@ class AugAgent(BaseAgent):
         self._compaction_model = compaction_model
         self._compaction_threshold = compaction_threshold
         self._context_window = context_window
+        self.context_window = context_window
+        self.compacts_at = int(compaction_threshold * context_window) if compaction_model else None
         self._max_summary_tokens = max_summary_tokens
         self._llm = build_chat_model(
             model,

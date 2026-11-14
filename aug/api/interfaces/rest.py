@@ -15,7 +15,7 @@ from aug.api.interfaces.base import (
     IncomingMessage,
     TextContent,
 )
-from aug.api.schemas.chat import ChatFile, ChatRequest
+from aug.api.schemas.chat import ChatFile, ChatRequest, ContextUsageInfo
 from aug.core.harness import (
     ApprovalRequested,
     ApprovalResolved,
@@ -88,6 +88,10 @@ class RestApiInterface(BaseInterface[_RestContext]):
     Both /chat/invoke and /chat/stream benefit from reflexes, structured logging,
     run lifecycle management, and error handling defined in BaseInterface.
     """
+
+    # Clients get the context on every turn_ended event; a warning in the chat would
+    # end up inside /chat/invoke's reply text.
+    _warns_context = False
 
     async def receive_message(self, context: _RestContext) -> IncomingMessage | None:
         req = context.request
@@ -252,10 +256,11 @@ def _frame(event: HarnessEvent) -> Frame | None:
                 "decision": decision.value,
                 "parent_id": parent_id,
             }
-        case TurnEnded(error=error, cancelled=cancelled):
+        case TurnEnded(error=error, cancelled=cancelled, context=context):
             return "turn_ended", {
                 "error": error.kind if error else None,
                 "cancelled": cancelled,
+                "context": ContextUsageInfo.of(context).model_dump() if context else None,
             }
     return None
 

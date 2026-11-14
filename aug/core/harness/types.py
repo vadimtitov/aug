@@ -93,6 +93,48 @@ class Usage:
 
 
 @dataclass(frozen=True)
+class ContextUsage:
+    """How full a session's context window is.
+
+    used:        tokens in the context now.
+    window:      the model's context window.
+    compacts_at: where the harness compacts the session by itself; None if it doesn't,
+                 or doesn't say.
+    breakdown:   (category, tokens) pairs, largest first; empty if the harness can't tell.
+    estimated:   True when *used* is an estimate rather than the model's own count.
+    """
+
+    used: int
+    window: int
+    compacts_at: int | None = None
+    breakdown: tuple[tuple[str, int], ...] = ()
+    estimated: bool = False
+
+    @property
+    def percent(self) -> int:
+        return round(100 * self.used / self.window) if self.window else 0
+
+
+@dataclass(frozen=True)
+class LimitUsage:
+    """One usage window of the model's plan (Claude's five-hour or weekly limit, say)."""
+
+    window: str  # the provider's name for it: "five_hour", "seven_day", …
+    utilization: float  # 0.0-1.0
+    resets_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class SessionStatus:
+    """What a harness can tell about one session.  A field it can't fill stays empty."""
+
+    model: str
+    context: ContextUsage | None = None  # None: no session yet, the next turn starts fresh
+    limits: tuple[LimitUsage, ...] = ()
+    background_tasks: int = 0  # work still running after its turn ended
+
+
+@dataclass(frozen=True)
 class ApprovalRequest:
     """An operation a tool wants the user to approve before it runs.
 
@@ -221,12 +263,15 @@ class TurnEnded:
 
     unconsumed: messages injected too late for the turn to use; the caller starts a
                 follow-up turn with them.
+    usage:      tokens the turn spent, summed over its model calls.
+    context:    how full the session's context is once the turn is over.
     """
 
     unconsumed: list[Message] = field(default_factory=list)
     error: HarnessError | None = None
     cancelled: bool = False
     usage: Usage = field(default_factory=Usage)
+    context: ContextUsage | None = None
 
 
 HarnessEvent = AgentEvent | TurnStarted | TurnEnded

@@ -1,4 +1,4 @@
-"""Chat router — /chat/invoke, /chat/stream and approvals."""
+"""Chat router — /chat/invoke, /chat/stream, approvals and the session's status."""
 
 import logging
 
@@ -6,10 +6,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from aug.api.interfaces.rest import RestApiInterface
-from aug.api.schemas.chat import ApprovalAnswer, ChatRequest, ChatResponse, PendingApprovalInfo
+from aug.api.schemas.chat import (
+    ApprovalAnswer,
+    ChatRequest,
+    ChatResponse,
+    PendingApprovalInfo,
+    SessionStatusResponse,
+)
 from aug.api.security import require_api_key
 from aug.core.harness import ApprovalDecision, pending_approvals
-from aug.core.registry import list_agents
+from aug.core.registry import get_harness, list_agents
 from aug.utils.logging import set_context_id
 from aug.utils.storage import file_store
 
@@ -78,6 +84,18 @@ async def cancel_run(context_id: str, request: Request) -> None:
     """Cancel the currently active agent run for a thread, if any."""
     if await _get_interface(request).stop_run(context_id):
         logger.info("cancel_run thread=%s", context_id)
+
+
+@router.get("/{context_id}/status", response_model=SessionStatusResponse)
+async def session_status(
+    context_id: str, request: Request, agent: str | None = None
+) -> SessionStatusResponse:
+    """The session's model, how full its context is, the plan's usage limits and any
+    background work.  *agent* defaults to the thread's selected agent."""
+    agent = agent or _get_interface(request).get_agent_version(context_id)
+    _validate_agent(agent)
+    status_ = await get_harness(agent).session_status(context_id)
+    return SessionStatusResponse.of(context_id, agent, status_)
 
 
 @router.get("/{context_id}/approvals", response_model=list[PendingApprovalInfo])
