@@ -60,6 +60,7 @@ from aug.core.harness.types import (
     UnsolicitedSink,
 )
 from aug.core.prompts import CLAUDE_BACKGROUND_TURN, USER_FILE_HINT, USER_IMAGE_HINT
+from aug.core.reflexes import Reflex
 from aug.core.run import AgentRun, run_registry
 from aug.core.workspace import session_prompt
 from aug.utils.data import DATA_DIR, SKILLS_DIR, WORKSPACE_DIR
@@ -138,6 +139,7 @@ class ClaudeCodeProfile:
     always_loaded:  names of *tools* Claude has loaded in every request; the rest wait
                     behind its ToolSearch until it looks them up.
     models:         oneshot()'s model per tier.
+    reflexes:       run on each message before Claude sees it (see Harness.run).
     """
 
     model: str
@@ -146,6 +148,7 @@ class ClaudeCodeProfile:
     tools: Sequence[BaseTool]
     always_loaded: frozenset[str] = frozenset()
     models: Mapping[ModelTier, str] = field(default_factory=dict)
+    reflexes: Sequence[Reflex] = ()
 
     def __post_init__(self) -> None:
         if unknown := self.always_loaded - {t.name for t in self.tools}:
@@ -195,6 +198,10 @@ class ClaudeCodeHarness(Harness):
         self._limits: dict[str, LimitUsage] = {}  # the plan's usage windows, latest seen
 
     # -- Harness -----------------------------------------------------------------------
+
+    @property
+    def reflexes(self) -> Sequence[Reflex]:
+        return self.profile.reflexes
 
     async def _run(
         self, message: Message, context_id: str, turn: TurnContext

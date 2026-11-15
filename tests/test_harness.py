@@ -63,7 +63,6 @@ from aug.core.prompts import (
     HARNESS_TURN_STOPPED_NOTE,
     MID_RUN_INJECTION_PREFIX,
 )
-from aug.core.reflexes import ReflexOutput
 from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, run_registry
 from aug.core.state import AgentState, AgentStateUpdate
 from aug.core.tools.approval import requires_approval
@@ -819,31 +818,6 @@ async def test_unattended_turn_takes_no_injections() -> None:
     assert await harness.inject(_msg("user typing"), "c1") is False
     assert run_registry.accepting("c1") is False
     await _collect(stream)
-
-
-def _reflexing_harness(display: str = "🪄 light on"):
-    harness, agent = _harness(AIMessage(content="ok"))
-    reflex = AsyncMock(return_value=ReflexOutput(inject="[reflex] done", display=display))
-    agent.reflexes = [reflex]
-    return harness, reflex
-
-
-async def test_reflex_display_reaches_the_event_stream() -> None:
-    harness, reflex = _reflexing_harness()
-
-    events = await _collect(harness.run(_msg("turn on the light"), "c1", TURN))
-
-    reflex.assert_awaited_once()
-    assert StatusUpdate(text="🪄 light on") in events
-
-
-async def test_follow_up_turns_fire_no_reflexes() -> None:
-    harness, reflex = _reflexing_harness()
-    follow_up = TurnContext(reply_to=TURN.reply_to, attended=True, follow_up=True)
-
-    await _collect(harness.run(_msg("late message"), "c1", follow_up))
-
-    reflex.assert_not_awaited()
 
 
 async def test_close_turn_never_drops_a_run_it_did_not_open() -> None:

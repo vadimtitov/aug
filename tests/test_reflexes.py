@@ -1,25 +1,60 @@
-"""Unit tests for the reflex infrastructure."""
+"""Reflexes: run_reflexes, and Harness.run() running them before a turn."""
 
 import asyncio
+import json
 import time
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, patch
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+import pytest
 
-from aug.core.harness.langgraph.harness import LangGraphHarness
-from aug.core.reflexes import Reflex, ReflexOutput, run_reflexes
+from aug.core.harness import (
+    Address,
+    Message,
+    Sender,
+    StatusUpdate,
+    TextDelta,
+    TextPart,
+    TurnContext,
+    TurnEnded,
+    TurnStarted,
+)
+from aug.core.reflexes import Exchange, Reflex, ReflexOutput, run_reflexes
+from aug.core.transcript import Transcript
+from tests.harness_fakes import ScriptedHarness
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+_TURN = TurnContext(reply_to=Address(interface="telegram", conversation_id="tg-1"), attended=True)
 
 
 def _make_reflex(output: ReflexOutput | None) -> Reflex:
     return AsyncMock(return_value=output)
 
 
+def _msg(text: str) -> Message:
+    return Message(parts=[TextPart(text=text)], sender=Sender(interface="telegram", user_id="u"))
+
+
+@pytest.fixture
+def transcripts(tmp_path):
+    with patch("aug.core.transcript.TRANSCRIPTS_DIR", tmp_path / "transcripts"):
+        yield tmp_path / "transcripts"
+
+
+class _ReflexHarness(ScriptedHarness):
+    def __init__(self, reflexes: list[Reflex], events=None) -> None:
+        super().__init__(events or [TextDelta(text="ok")])
+        self._reflexes = reflexes
+
+    @property
+    def reflexes(self):
+        return self._reflexes
+
+
+async def _collect(harness, message: Message, turn: TurnContext = _TURN) -> list:
+    return [e async for e in harness.run(message, "tg-1-0", turn)]
+
+
 # ---------------------------------------------------------------------------
-# run_reflexes — basic behaviour
+# run_reflexes
 # ---------------------------------------------------------------------------
 
 
@@ -29,154 +64,160 @@ async def test_run_reflexes_empty_list_returns_empty() -> None:
 
 async def test_run_reflexes_returns_non_none_outputs() -> None:
     reflexes = [
-        _make_reflex(ReflexOutput(inject="did thing A", display="A done")),
-        _make_reflex(None),  # skipped
-        _make_reflex(ReflexOutput(inject="did thing B")),
+        _make_reflex(ReflexOutput(note="did thing A", display="A done")),
+        _make_reflex(None),
+        _make_reflex(ReflexOutput(note="did thing B")),
     ]
     results = await run_reflexes(reflexes, "query", [])
-    assert len(results) == 2
-    assert results[0].inject == "did thing A"
-    assert results[0].display == "A done"
-    assert results[1].inject == "did thing B"
-    assert results[1].display is None
+    assert results == [
+        ReflexOutput(note="did thing A", display="A done"),
+        ReflexOutput("did thing B"),
+    ]
 
 
 async def test_run_reflexes_passes_query_and_history() -> None:
-    captured: dict = {}
-
-    async def spy_reflex(query: str, history: list) -> ReflexOutput | None:
-        captured["query"] = query
-        captured["history"] = history
-        return None
-
-    history = ["previous message"]
-    await run_reflexes([spy_reflex], "turn on lights", history)
-
-    assert captured["query"] == "turn on lights"
-    assert captured["history"] is history
-
-
-# ---------------------------------------------------------------------------
-# run_reflexes — error isolation
-# ---------------------------------------------------------------------------
+    reflex = _make_reflex(None)
+    history = [Exchange(role="user", text="previous message")]
+    await run_reflexes([reflex], "turn on lights", history)
+    reflex.assert_awaited_once_with("turn on lights", history)
 
 
 async def test_run_reflexes_swallows_exception_from_one_reflex() -> None:
-    async def bad_reflex(query: str, history: list) -> ReflexOutput | None:
+    async def bad_reflex(query, history) -> ReflexOutput | None:
         raise RuntimeError("boom")
 
-    good = _make_reflex(ReflexOutput(inject="ok"))
-    results = await run_reflexes([bad_reflex, good], "query", [])
-    assert len(results) == 1
-    assert results[0].inject == "ok"
+    good = _make_reflex(ReflexOutput(note="ok"))
+    assert await run_reflexes([bad_reflex, good], "query", []) == [ReflexOutput(note="ok")]
 
 
 async def test_run_reflexes_swallows_timeout() -> None:
-    async def slow_reflex(query: str, history: list) -> ReflexOutput | None:
+    async def slow_reflex(query, history) -> ReflexOutput | None:
         await asyncio.sleep(60)
-        return ReflexOutput(inject="never")
+        return ReflexOutput(note="never")
 
-    good = _make_reflex(ReflexOutput(inject="fast"))
+    good = _make_reflex(ReflexOutput(note="fast"))
     results = await run_reflexes([slow_reflex, good], "query", [], reflex_timeout=0.05)
-    assert len(results) == 1
-    assert results[0].inject == "fast"
-
-
-# ---------------------------------------------------------------------------
-# run_reflexes — all run in parallel
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# LangGraphHarness._recent_history
-# ---------------------------------------------------------------------------
-
-
-async def _recent_history(agent, context_id: str, checkpointer, n: int = 3):
-    return await LangGraphHarness(agent, checkpointer)._recent_history(context_id, n=n)
-
-
-def _make_agent(messages: list) -> MagicMock:
-    snapshot = MagicMock()
-    snapshot.values = {"messages": messages}
-    agent = MagicMock()
-    agent.aget_state = AsyncMock(return_value=snapshot)
-    return agent
-
-
-async def test_recent_history_returns_empty_for_new_thread() -> None:
-    agent = _make_agent([])
-    result = await _recent_history(agent, "thread-1", MagicMock())
-    assert result == []
-
-
-async def test_recent_history_labels_human_and_ai_messages() -> None:
-    agent = _make_agent(
-        [
-            HumanMessage(content="turn on the kitchen light"),
-            AIMessage(content="Done, kitchen light is on."),
-        ]
-    )
-    result = await _recent_history(agent, "thread-1", MagicMock())
-    assert result == [
-        "User: turn on the kitchen light",
-        "Assistant: Done, kitchen light is on.",
-    ]
-
-
-async def test_recent_history_filters_tool_messages() -> None:
-    agent = _make_agent(
-        [
-            HumanMessage(content="search something"),
-            ToolMessage(content="[result]", tool_call_id="x"),
-            AIMessage(content="Here is what I found."),
-        ]
-    )
-    result = await _recent_history(agent, "thread-1", MagicMock())
-    assert len(result) == 2
-    assert all("Tool" not in r for r in result)
-
-
-async def test_recent_history_returns_last_n() -> None:
-    messages = [HumanMessage(content=f"msg {i}") for i in range(10)]
-    agent = _make_agent(messages)
-    result = await _recent_history(agent, "thread-1", MagicMock(), n=3)
-    assert len(result) == 3
-    assert "msg 7" in result[0]
-    assert "msg 9" in result[2]
-
-
-async def test_recent_history_returns_empty_on_aget_state_failure() -> None:
-    agent = MagicMock()
-    agent.aget_state = AsyncMock(side_effect=RuntimeError("db down"))
-    result = await _recent_history(agent, "thread-1", MagicMock())
-    assert result == []
-
-
-# ---------------------------------------------------------------------------
-# run_reflexes — all run in parallel
-# ---------------------------------------------------------------------------
+    assert results == [ReflexOutput(note="fast")]
 
 
 async def test_run_reflexes_runs_in_parallel() -> None:
-    """All reflexes should overlap — total time should be close to one reflex duration."""
     delay = 0.05
-    results_order: list[int] = []
 
-    async def make_reflex(i: int) -> Reflex:
-        async def r(query: str, history: list) -> ReflexOutput | None:
-            await asyncio.sleep(delay)
-            results_order.append(i)
-            return ReflexOutput(inject=f"reflex {i}")
-
-        return r
-
-    reflexes = [await make_reflex(i) for i in range(3)]
+    async def reflex(query, history) -> ReflexOutput | None:
+        await asyncio.sleep(delay)
+        return ReflexOutput(note="done")
 
     t0 = time.monotonic()
-    results = await run_reflexes(reflexes, "query", [])
-    elapsed = time.monotonic() - t0
-
+    results = await run_reflexes([reflex, reflex, reflex], "query", [])
     assert len(results) == 3
-    # All three ran, but total time is ~delay, not 3*delay
-    assert elapsed < delay * 2
+    assert time.monotonic() - t0 < delay * 2
+
+
+# ---------------------------------------------------------------------------
+# Harness.run()
+# ---------------------------------------------------------------------------
+
+
+async def test_what_a_reflex_did_reaches_the_agent_and_the_user(transcripts) -> None:
+    reflex = _make_reflex(ReflexOutput(note="light.turn_on on light.lamp", display="🪄 on"))
+    harness = _ReflexHarness([reflex])
+
+    events = await _collect(harness, _msg("turn on the lamp"))
+
+    seen, _, _ = harness.turns[0]
+    assert seen.parts[0] == TextPart(text="turn on the lamp")
+    assert "light.turn_on on light.lamp" in seen.parts[1].text
+    assert isinstance(events[0], TurnStarted)
+    assert events[1] == StatusUpdate(text="🪄 on")
+    assert isinstance(events[-1], TurnEnded)
+
+
+async def test_the_transcript_keeps_the_users_own_words_and_records_the_reflex(
+    transcripts,
+) -> None:
+    harness = _ReflexHarness([_make_reflex(ReflexOutput(note="did it"))])
+
+    await _collect(harness, _msg("turn on the lamp"))
+
+    records = [json.loads(line) for line in (transcripts / "tg-1.jsonl").read_text().splitlines()]
+    started = next(r for r in records if r["event"] == "turn_started")
+    assert started["text"] == "turn on the lamp"
+    assert next(r for r in records if r["event"] == "reflexed")["notes"] == ["did it"]
+
+
+async def test_a_reflex_with_nothing_to_do_leaves_the_message_alone(transcripts) -> None:
+    harness = _ReflexHarness([_make_reflex(None)])
+    message = _msg("what's the weather?")
+
+    events = await _collect(harness, message)
+
+    assert harness.turns[0][0] == message
+    assert not any(isinstance(e, StatusUpdate) for e in events)
+
+
+@pytest.mark.parametrize(
+    "turn",
+    [
+        TurnContext(reply_to=_TURN.reply_to, attended=False),  # a push or scheduled task
+        TurnContext(reply_to=_TURN.reply_to, attended=True, follow_up=True),
+    ],
+)
+async def test_reflexes_only_run_when_someone_is_there(transcripts, turn) -> None:
+    reflex = _make_reflex(ReflexOutput(note="did it"))
+    harness = _ReflexHarness([reflex])
+
+    await _collect(harness, _msg("turn on the lamp"), turn)
+
+    reflex.assert_not_awaited()
+
+
+async def test_a_reflex_sees_the_sessions_earlier_messages_without_the_current_one(
+    transcripts,
+) -> None:
+    harness = _ReflexHarness([_make_reflex(None)], events=[TextDelta(text="Kitchen is off.")])
+    await _collect(harness, _msg("turn off the kitchen light"))
+    reflex = _make_reflex(None)
+    harness._reflexes = [reflex]
+
+    await _collect(harness, _msg("now turn it on"))
+
+    reflex.assert_awaited_once_with(
+        "now turn it on",
+        [
+            Exchange(role="user", text="turn off the kitchen light"),
+            Exchange(role="assistant", text="Kitchen is off."),
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Transcript.recent()
+# ---------------------------------------------------------------------------
+
+
+async def test_recent_returns_the_sessions_last_messages_oldest_first(tmp_path) -> None:
+    t = Transcript("tg-1", root=tmp_path)
+    for i in range(4):
+        await t.append("turn_started", "s1", text=f"q{i}")
+        await t.append("tool_started", "s1", tool="x")
+        await t.append("turn_ended", "s1", text=f"a{i}")
+    await t.append("turn_started", "s0", text="other session")
+    await t.append("turn_ended", "s1", text="")  # a turn that said nothing
+
+    records = await t.recent("s1", 3)
+
+    assert [r["text"] for r in records] == ["a2", "q3", "a3"]
+
+
+async def test_recent_with_no_transcript_is_empty(tmp_path) -> None:
+    assert await Transcript("tg-1", root=tmp_path).recent("s1", 3) == []
+
+
+async def test_recent_reads_only_the_tail_of_a_long_transcript(tmp_path) -> None:
+    t = Transcript("tg-1", root=tmp_path)
+    with patch("aug.core.transcript._TAIL_BYTES", 200):
+        for i in range(50):
+            await t.append("turn_started", "s1", text=f"q{i}")
+        records = await t.recent("s1", 100)
+    assert records and len(records) < 50
+    assert records[-1]["text"] == "q49"

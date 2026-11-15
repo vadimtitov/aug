@@ -8,7 +8,7 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import replace
 
@@ -23,7 +23,9 @@ from aug.core.harness.types import (
     Message,
     ModelTier,
     SessionStatus,
+    StatusUpdate,
     TextDelta,
+    TextPart,
     ToolEnded,
     ToolStarted,
     TurnContext,
@@ -31,13 +33,16 @@ from aug.core.harness.types import (
     TurnStarted,
     UnsolicitedSink,
 )
-from aug.core.prompts import HARNESS_ERROR_MESSAGES, HARNESS_RETRY_AT_SUFFIX
+from aug.core.prompts import HARNESS_ERROR_MESSAGES, HARNESS_RETRY_AT_SUFFIX, REFLEX_NOTE
+from aug.core.reflexes import Exchange, Reflex, ReflexOutput, run_reflexes
 from aug.core.transcript import Transcript, file_record
 
 logger = logging.getLogger(__name__)
 
 # How long reading the context after a turn may hold the turn's end back.
 CONTEXT_AFTER_TURN_SECONDS = 10
+# Earlier messages a reflex is shown, for follow-ups like "now turn it off".
+REFLEX_HISTORY = 4
 
 
 class Harness(ABC):
@@ -57,11 +62,26 @@ class Harness(ABC):
         The turn is logged and written to AUG's transcript here, so every harness
         records it the same way.  A tool whose approval was not granted ends with
         ``ToolEnded(error=True)``.
+
+        The profile's reflexes run first, on a turn someone is there for (not a push,
+        a job or a follow-up of leftover messages): what they did is added to the
+        message the harness's agent sees, and their display text follows TurnStarted.
         """
+        transcript = Transcript(turn.reply_to.conversation_id)
+        reflexed = await self._run_reflexes(message, context_id, turn, transcript)
+        seen = message
+        if reflexed:
+            notes = [TextPart(text=REFLEX_NOTE.format(note=r.note)) for r in reflexed]
+            seen = replace(message, parts=[*message.parts, *notes])
         async for event in self._turn(
-            message, context_id, turn, self._run(message, context_id, turn)
+            message, context_id, turn, self._run(seen, context_id, turn), reflexed=reflexed
         ):
             yield event
+
+    @property
+    def reflexes(self) -> Sequence[Reflex]:
+        """Run on each message before the turn (see run()).  Default: none."""
+        return ()
 
     @abstractmethod
     def _run(
@@ -126,6 +146,18 @@ class Harness(ABC):
             logger.warning("context after turn failed context=%s: %r", context_id, e)
             return None
 
+    async def _run_reflexes(
+        self, message: Message, context_id: str, turn: TurnContext, transcript: Transcript
+    ) -> list[ReflexOutput]:
+        if not self.reflexes or not turn.attended or turn.follow_up or not message.text:
+            return []
+        records = await transcript.recent(context_id, REFLEX_HISTORY)
+        history = [
+            Exchange(role="user" if r["event"] == "turn_started" else "assistant", text=r["text"])
+            for r in records
+        ]
+        return await run_reflexes(self.reflexes, message.text, history)
+
     def _open_turn(self, context_id: str, turn: TurnContext) -> None:  # noqa: B027 — optional hook
         """Called before TurnStarted: from here on inject() must reach this turn."""
 
@@ -138,8 +170,11 @@ class Harness(ABC):
         context_id: str,
         turn: TurnContext,
         inner: AsyncIterator[HarnessEvent],
+        *,
+        reflexed: Sequence[ReflexOutput] = (),
     ) -> AsyncIterator[HarnessEvent]:
-        """Wrap a harness's own event stream in the run() contract."""
+        """Wrap a harness's own event stream in the run() contract.  *reflexed*: what
+        the reflexes did before the turn, shown and recorded once it starts."""
         transcript = Transcript(turn.reply_to.conversation_id)
         started = time.monotonic()
         tool_started: dict[str, float] = {}
@@ -168,6 +203,11 @@ class Harness(ABC):
                     if isinstance(p, FilePart)
                 ],
             )
+            if reflexed:
+                await transcript.append("reflexed", context_id, notes=[r.note for r in reflexed])
+            for r in reflexed:
+                if r.display:
+                    yield StatusUpdate(text=r.display)
             try:
                 async with aclosing(inner) as events:
                     async for event in events:

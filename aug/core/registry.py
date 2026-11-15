@@ -1,7 +1,9 @@
 """Agent registry: one entry per profile (agent version).
 
 ``v13_kimi`` (kimi-k3) and ``v13_glm`` (glm-5.3) run on LangGraph; ``v14_claude_code``
-(Claude Opus 5.5) runs on Claude Code.  All are built by ``_build_profiles()``, since
+(Claude Opus 5.5) runs on Claude Code.  ``v15_kimi``, ``v15_glm`` and ``v15_claude_code``
+are the same three with the Home Assistant reflex.  All are built by
+``_build_profiles()``, since
 their tool lists include whichever MCP servers connected at startup.  The ``browser``
 tool's code stays but no profile exposes it.
 """
@@ -19,6 +21,8 @@ from aug.core.harness.base import Harness
 from aug.core.harness.claude_code.harness import ClaudeCodeHarness, ClaudeCodeProfile
 from aug.core.harness.langgraph.harness import LangGraphHarness
 from aug.core.harness.types import ModelTier
+from aug.core.reflexes import Reflex
+from aug.core.reflexes.homeassistant import HomeAssistantReflex
 from aug.core.tools.brave_search import brave_search
 from aug.core.tools.fetch_page import fetch_page
 from aug.core.tools.gmail import gmail_draft, gmail_read_thread, gmail_search, gmail_send
@@ -156,7 +160,12 @@ _subagent_glm = AugAgent(
 _TIER_MODELS: dict[str, dict[ModelTier, str]] = {
     "v13_kimi": {ModelTier.STRONG: _KIMI, ModelTier.FAST: _FAST},
     "v13_glm": {ModelTier.STRONG: _GLM, ModelTier.FAST: _FAST},
+    "v15_kimi": {ModelTier.STRONG: _KIMI, ModelTier.FAST: _FAST},
+    "v15_glm": {ModelTier.STRONG: _GLM, ModelTier.FAST: _FAST},
 }
+
+# One instance for every profile that has it, so they share its HTTP clients.
+_HA_REFLEX = HomeAssistantReflex()
 
 
 def base_tool_names() -> set[str]:
@@ -293,8 +302,9 @@ _harnesses = _Harnesses()
 def _build_profiles(mcp_tools: list[BaseTool]) -> dict[str, Profile]:
     # Dev only: the scenario stack runs its scripts on the real profiles too.
     dev_tools = SCRIPTED_TOOLS if get_settings().SCRIPTED_AGENT else []
-    return {
-        "v13_kimi": AugAgent(
+
+    def kimi(reflexes: list[Reflex]) -> AugAgent:
+        return AugAgent(
             model=_KIMI,
             tools=[
                 *_TOOLS,
@@ -309,8 +319,11 @@ def _build_profiles(mcp_tools: list[BaseTool]) -> dict[str, Profile]:
             compaction_threshold=0.8,
             context_window=200_000,
             max_summary_tokens=2000,
-        ),
-        "v13_glm": AugAgent(
+            reflexes=reflexes,
+        )
+
+    def glm(reflexes: list[Reflex]) -> AugAgent:
+        return AugAgent(
             model=_GLM,
             tools=[
                 *_TOOLS,
@@ -326,15 +339,27 @@ def _build_profiles(mcp_tools: list[BaseTool]) -> dict[str, Profile]:
             compaction_threshold=0.8,
             context_window=200_000,
             max_summary_tokens=2000,
-        ),
-        "v14_claude_code": ClaudeCodeProfile(
+            reflexes=reflexes,
+        )
+
+    def claude_code(reflexes: list[Reflex]) -> ClaudeCodeProfile:
+        return ClaudeCodeProfile(
             model=_CLAUDE_STRONG,
             effort="high",
             builtin_tools=_CLAUDE_BUILTIN_TOOLS,
             tools=[*_CLAUDE_TOOLS, *_MCP_MANAGEMENT_TOOLS, *mcp_tools, *dev_tools],
             always_loaded=_CLAUDE_ALWAYS_LOADED,
             models={ModelTier.STRONG: _CLAUDE_STRONG, ModelTier.FAST: _CLAUDE_FAST},
-        ),
+            reflexes=tuple(reflexes),
+        )
+
+    return {
+        "v13_kimi": kimi([]),
+        "v13_glm": glm([]),
+        "v14_claude_code": claude_code([]),
+        "v15_kimi": kimi([_HA_REFLEX]),
+        "v15_glm": glm([_HA_REFLEX]),
+        "v15_claude_code": claude_code([_HA_REFLEX]),
     }
 
 
