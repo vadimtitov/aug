@@ -38,6 +38,7 @@ dependencies = [
     "pillow>=10.0",
     "pillow-heif>=0.18",
     "claude-agent-sdk==0.2.182",
+    "curl-cffi>=0.17.0",
 ]
 
 [project.optional-dependencies]

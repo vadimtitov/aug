@@ -1,0 +1,107 @@
+# fetch_page benchmark (scripts/fetch_bench.py): real pages, many behind bot protection.
+# Genuine 404s from the original list are dropped so every line should load.
+# clothing
+https://www2.hm.com/en_gb/men/shop-by-product/sweatpants.html
+https://www2.hm.com/en_gb/productpage.0970817024.html
+https://www2.hm.com/en_gb/productpage.0970817001.html
+https://www.uniqlo.com/uk/en/products/E477875-000/00
+https://www.uniqlo.com/uk/en/men/bottoms/joggers-and-sweatpants/sweat
+https://www.weekday.com/en-gb/men/trousers/joggers-and-sweatpants/
+https://www.cos.com/en-gb/men/trousers
+https://www.stories.com/en-gb/clothing/
+https://www.zara.com/uk/en/man-trousers-l838.html
+https://shop.mango.com/gb/en/h/men
+https://www.next.co.uk/shop/gender-men-productaffiliation-clothing/category-joggers
+https://www.primark.com/en-gb/c/men/clothing/joggers
+https://www.asos.com/men/joggers/cat/?cid=26776
+https://www.mrporter.com/en-gb/mens/clothing/trousers
+https://www.selfridges.com/GB/en/cat/mens/clothing/trousers/
+https://www.nike.com/gb/w/mens-joggers-sweatpants-2kq19znik1
+https://www.adidas.co.uk/men-joggers
+https://www.muji.eu/
+https://www.farfetch.com/uk/shopping/men/items.aspx
+https://www.lyst.co.uk/
+https://www.vinted.co.uk/
+https://www.depop.com/
+https://www.boohooman.com/
+https://www.very.co.uk/
+# retail
+https://www.amazon.co.uk/s?k=sweatpants
+https://www.ebay.co.uk/sch/i.html?_nkw=sweatpants
+https://www.argos.co.uk/search/kettle/
+https://www.currys.co.uk/
+https://www.tesco.com/groceries/en-GB/search?query=milk
+https://www.sainsburys.co.uk/
+https://www.ocado.com/
+https://www.waitrose.com/
+https://www.boots.com/
+https://www.ikea.com/gb/en/
+https://www.etsy.com/uk/search?q=mug
+https://www.walmart.com/search?q=sweatpants
+https://www.target.com/s?searchTerm=sweatpants
+https://www.bestbuy.com/
+https://www.homedepot.com/
+https://www.costco.co.uk/
+https://www.sephora.co.uk/
+https://www.wayfair.co.uk/
+https://www.aliexpress.com/
+https://www.temu.com/uk
+https://www.decathlon.co.uk/
+https://www.screwfix.com/
+# travel
+https://www.booking.com/city/gb/london.html
+https://www.airbnb.co.uk/
+https://www.skyscanner.net/
+https://www.ryanair.com/gb/en
+https://www.easyjet.com/en
+https://www.britishairways.com/
+https://www.thetrainline.com/
+https://tfl.gov.uk/status-updates/major-works-and-events
+https://www.tripadvisor.co.uk/
+https://www.expedia.co.uk/
+# news
+https://www.bbc.co.uk/news
+https://www.theguardian.com/uk
+https://www.ft.com/
+https://www.bloomberg.com/europe
+https://www.reuters.com/
+https://www.nytimes.com/
+https://www.economist.com/
+https://www.thetimes.com/
+https://medium.com/
+https://www.imdb.com/title/tt0111161/
+https://www.rottentomatoes.com/
+https://www.goodreads.com/
+# tech
+https://en.wikipedia.org/wiki/Akamai_Technologies
+https://github.com/daijro/camoufox
+https://stackoverflow.com/questions/tagged/python
+https://www.reddit.com/r/london/
+https://news.ycombinator.com/
+https://docs.python.org/3/library/asyncio.html
+https://developer.mozilla.org/en-US/docs/Web/JavaScript
+https://pypi.org/project/curl-cffi/
+https://www.npmjs.com/package/playwright
+https://www.home-assistant.io/integrations/
+https://x.com/
+https://www.linkedin.com/company/anthropicresearch/
+https://www.quora.com/
+# services
+https://www.rightmove.co.uk/
+https://www.zoopla.co.uk/
+https://www.zillow.com/
+https://uk.indeed.com/
+https://www.glassdoor.co.uk/
+https://www.opentable.co.uk/
+https://deliveroo.co.uk/
+https://www.ticketmaster.co.uk/
+https://www.eventbrite.co.uk/
+https://stockx.com/
+https://www.g2.com/
+https://www.trustpilot.com/
+# gov
+https://www.gov.uk/
+https://www.nhs.uk/conditions/
+https://www.metoffice.gov.uk/
+https://www.moneysavingexpert.com/
+https://www.which.co.uk/

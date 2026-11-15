@@ -30,6 +30,8 @@ def _fetch_page_fmt(args: dict) -> str:
         urls = [urls]
     hosts = [urlparse(u).netloc or u for u in urls[:2]]
     text = ", ".join(hosts)
+    if args.get("offset"):
+        text += f" @{args['offset']}"
     return text[:_ARG_TRUNCATE] + "…" if len(text) > _ARG_TRUNCATE else text
 
 

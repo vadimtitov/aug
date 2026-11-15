@@ -100,20 +100,23 @@ _TOOLS = [
     upload_ssh_file,
 ]
 # Claude Code's profile: AUG's tools except those Claude has its own of (run_bash: Bash,
-# fetch_page: WebFetch, brave_search: WebSearch, get_skill: Skill).
-_CLAUDE_TOOLS = [t for t in _TOOLS if t not in (run_bash, fetch_page, brave_search, get_skill)]
+# brave_search: WebSearch, get_skill: Skill).  fetch_page stays and replaces Claude's
+# WebFetch, which bot protection blocks on most shops and many other sites.
+_CLAUDE_TOOLS = [t for t in _TOOLS if t not in (run_bash, brave_search, get_skill)]
 # AUG's tools Claude keeps loaded; the rest it looks up through ToolSearch when needed.
-_CLAUDE_ALWAYS_LOADED = frozenset({"respond_with_file", "note", "create_task", "list_tasks"})
+_CLAUDE_ALWAYS_LOADED = frozenset(
+    {"respond_with_file", "note", "create_task", "list_tasks", "fetch_page"}
+)
 # Claude's own tools a profile may use.  Anything else, including a tool a new CLI
 # version adds, stays blocked: Claude's cron and wake-ups (scheduling is AUG's), remote
-# triggers, peer messaging (it could carry text between chats), worktrees.
+# triggers, peer messaging (it could carry text between chats), worktrees, and WebFetch
+# (AUG's fetch_page reads pages instead).
 _CLAUDE_BUILTIN_TOOLS = (
     "Bash",
     "Read",
     "Write",
     "Edit",
     "WebSearch",
-    "WebFetch",
     "Task",
     "TaskStop",
     "Monitor",

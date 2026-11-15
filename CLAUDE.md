@@ -38,7 +38,8 @@ aug/
 │   │   │   └── fake_agent.py   ← Hardcoded response, no LLM (for testing)
 │   │   └── tools/
 │   │       ├── brave_search.py ← Web search via Brave API
-│   │       ├── fetch_page.py   ← URL content extraction
+│   │       ├── fetch_page.py   ← Reads web pages: curl_cffi, then the stealth browser when blocked
+│       ├── page_content.py ← Page classification (ok/blocked/thin) + markdown extraction
 │   │       ├── run_bash.py     ← Shell access with secret injection + blocklist
 │   │       ├── note.py         ← Mid-conversation memory capture
 │   │       └── memory.py       ← Legacy key-value memory tools (remember/recall/forget)
@@ -54,6 +55,7 @@ aug/
 │       ├── logging.py          ← JSON (prod) / human-readable (dev) structured logging
 │       ├── data.py             ← DATA_DIR, WORKSPACE_DIR and the paths inside it, read_data_file() / write_data_file()
 │       ├── homeassistant.py    ← HomeAssistantClient: typed HA REST+WebSocket client with entity cache
+│       ├── stealth_browser.py  ← StealthBrowserClient: the stealth-browser sidecar's HTTP API
 │       └── user_settings.py    ← per-user settings; get_setting() / set_setting() with nested path
 ├── tests/
 ├── docs/
@@ -64,6 +66,7 @@ aug/
 ├── Makefile
 ├── pyproject.toml
 ├── Dockerfile
+├── stealth-browser/            ← sidecar: Camoufox behind POST /fetch, for fetch_page
 ├── docker-compose.yml          ← local dev: aug + postgres
 └── docker-compose.prod.yml     ← production: aug only
 ```
@@ -314,6 +317,7 @@ only when there is a clear, immediate reason.
 | `BRAVE_API_KEY` | No | Web search tool disabled if absent |
 | `PORTAINER_URL` | No | Portainer instance URL, e.g. `http://portainer:9000` |
 | `PORTAINER_API_TOKEN` | No | Portainer API token (generate in Portainer → Account Settings) |
+| `STEALTH_BROWSER_URL` | No | stealth-browser sidecar, `http://stealth-browser:8100` (compose sets it). Unset: `fetch_page` makes plain requests only |
 | `STARTUP_ANNOUNCEMENT` | No | `true` (default) → announce every boot on each interface with a push channel. Set `false` in local dev (`docker-compose.yml` already does) so `--reload` doesn't spam Telegram. |
 | `BASE_URL` | For OAuth | Public origin for OAuth links and redirect URIs. Must be `https://` when `DEBUG=false` — the app refuses to boot otherwise. |
 | `OAUTH_ENCRYPTION_KEY` | For OAuth | 32 bytes base64 (`openssl rand -base64 32`). Encrypts stored tokens. Keep it durable — losing it means re-authorizing every provider. |
