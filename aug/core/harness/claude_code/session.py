@@ -36,7 +36,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import TERMINAL_TASK_STATUSES
 
 from aug.core.harness.claude_code.tools import ToolCalls, canonical_name
-from aug.core.harness.tool_context import ToolContext
+from aug.core.harness.tool_context import Oneshot, ToolContext
 from aug.core.harness.types import (
     Address,
     AgentEvent,
@@ -92,6 +92,7 @@ class ChatSession:
         fingerprint: str,
         reply_to: Address,
         on_unsolicited: UnsolicitedHandler,
+        oneshot: Oneshot | None = None,
         limits: dict[str, LimitUsage] | None = None,
     ) -> None:
         """*limits* is updated in place whenever the CLI reports the plan's usage
@@ -104,6 +105,7 @@ class ChatSession:
         self._options = options
         self._calls = calls
         self._on_unsolicited = on_unsolicited
+        self._oneshot = oneshot  # for the tools of a turn the CLI starts by itself
         self._limits = limits if limits is not None else {}
         self._client: ClaudeSDKClient | None = None
         self._reader: asyncio.Task[None] | None = None
@@ -326,6 +328,7 @@ class ChatSession:
             context_id=self.context_id,
             turn=TurnContext(reply_to=self.reply_to, attended=False),
             _emit=self._emit,
+            _oneshot=self._oneshot,
         )
 
         task = asyncio.create_task(

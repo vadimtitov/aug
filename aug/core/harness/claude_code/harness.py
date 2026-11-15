@@ -214,7 +214,9 @@ class ClaudeCodeHarness(Harness):
             if stopped.is_set():
                 yield TurnEnded(cancelled=True)
                 return
-            ctx = ToolContext(context_id=context_id, turn=turn, stopped=stopped)
+            ctx = ToolContext(
+                context_id=context_id, turn=turn, stopped=stopped, _oneshot=self.oneshot
+            )
             events = await session.start(content, ctx)
             for early in self._early.pop(context_id, []):
                 await session.inject(early)
@@ -259,7 +261,9 @@ class ClaudeCodeHarness(Harness):
             return False
         session = await self._session(context_id, record.reply_to)
         ctx = ToolContext(
-            context_id=context_id, turn=TurnContext(reply_to=record.reply_to, attended=False)
+            context_id=context_id,
+            turn=TurnContext(reply_to=record.reply_to, attended=False),
+            _oneshot=self.oneshot,
         )
         ended: TurnEnded | None = None
         events = await session.start([{"type": "text", "text": "/compact"}], ctx, verbatim=False)
@@ -411,6 +415,7 @@ class ClaudeCodeHarness(Harness):
                     fingerprint=fingerprint,
                     reply_to=reply_to,
                     on_unsolicited=lambda events: self._unsolicited(context_id, events),
+                    oneshot=self.oneshot,
                     limits=self._limits,
                 )
                 await session.open()

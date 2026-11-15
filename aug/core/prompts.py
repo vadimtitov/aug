@@ -719,6 +719,26 @@ HA_REFLEX_TONES = {
 }
 
 
+# web_fetch: what its small model reads, in the shape of Claude Code's WebFetch.
+WEB_FETCH_PAGE = """
+Web page content:
+---
+{content}
+---
+
+{prompt}
+
+{instructions}
+"""
+WEB_FETCH_INSTRUCTIONS = "Provide a concise response based only on the content above."
+# Starts the prompt when the content is read from an offset.
+WEB_FETCH_PART_LEAD = (
+    "The content below is one part of a longer page: it starts {offset} characters "
+    "into the page's {total}.\n"
+)
+WEB_FETCH_TRUNCATED = "\n\n[Content truncated due to length...]"
+
+
 def _section(tag: str, content: str) -> str:
     indented = "\n".join(
         "  " + line if line.strip() else "" for line in content.strip().splitlines()

@@ -21,8 +21,8 @@ from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
-from aug.core.tools.fetch_page import FetchedPage, fetch_url
-from aug.core.tools.fetch_page.page_content import Classification
+from aug.utils.fetching.fetcher import FetchedPage, fetch_url
+from aug.utils.fetching.page_content import Classification
 from aug.utils.stealth_browser import StealthBrowserClient
 
 

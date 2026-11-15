@@ -1,4 +1,5 @@
-"""fetch_page: classification, tier escalation, domain memory, extraction and rendering.
+"""Page fetching and the fetch_page tool: classification, tier escalation, domain memory,
+extraction, redirects and rendering.
 
 The cheap tier is faked at curl_cffi's AsyncSession, the browser tier at the
 StealthBrowserClient (and the client itself at httpx's transport).  No network.
@@ -13,22 +14,23 @@ import httpx
 import pytest
 from curl_cffi.requests.exceptions import DNSError, Timeout
 
-from aug.core.tools.fetch_page import tool as fp
-from aug.core.tools.fetch_page.page_content import (
+from aug.core.tools import fetch_page as tool_module
+from aug.core.tools.fetch_page import MAX_CHARS_PER_PAGE, render
+from aug.utils.fetching import fetcher as fp
+from aug.utils.fetching.fetcher import (
+    FetchedPage,
+    Strategy,
+    domains,
+    fetch_url,
+    is_same_site,
+    registrable_domain,
+)
+from aug.utils.fetching.page_content import (
     Classification,
     bot_vendor,
     classify,
     extract,
     product_summary,
-)
-from aug.core.tools.fetch_page.tool import (
-    MAX_CHARS_PER_PAGE,
-    FetchedPage,
-    Strategy,
-    domains,
-    fetch_url,
-    registrable_domain,
-    render,
 )
 from aug.utils.stealth_browser import (
     BrowserCookie,
@@ -77,6 +79,7 @@ class _Reply:
     headers: dict[str, str] = field(default_factory=dict)
     charset: str = "utf-8"
     delay_s: float = 0.0
+    redirects: dict[str, tuple[int, str]] = field(default_factory=dict)  # url → (status, to)
 
 
 class _FakeCurl:
@@ -132,6 +135,11 @@ class _FakeSession:
         if reply.error:
             raise reply.error
         self.cookies = _FakeCookies({**(cookies or {}), **reply.set_cookies})
+        if url in reply.redirects:
+            status, location = reply.redirects[url]
+            return _FakeResponse(
+                url, _Reply(status=status, body="", headers={"location": location})
+            )
         return _FakeResponse(url, reply)
 
 
@@ -150,11 +158,14 @@ class _FakeBrowser:
 
 
 def _browser_page(
-    html: str = _GOOD_HTML, status: int = 200, cookies: list[BrowserCookie] | None = None
+    html: str = _GOOD_HTML,
+    status: int = 200,
+    cookies: list[BrowserCookie] | None = None,
+    final_url: str = "https://www2.hm.com/en_gb/p.html",
 ) -> BrowserPage:
     return BrowserPage(
         status=status,
-        final_url="https://www2.hm.com/en_gb/p.html",
+        final_url=final_url,
         html=html,
         cookies=cookies
         if cookies is not None
@@ -447,10 +458,10 @@ def _fails_on_a_com(html: str, url: str, visible: str | None = None):
 async def test_a_failure_on_one_url_leaves_the_others_in_the_tool_output():
     with (
         patch.object(fp, "AsyncSession", _curl(_Reply())),
-        patch.object(fp, "_browser_client", return_value=None),
+        patch.object(tool_module, "browser_client", return_value=None),
         patch.object(fp, "extract", side_effect=_fails_on_a_com),
     ):
-        out = await fp.fetch_page.ainvoke({"urls": ["https://a.com/", "https://b.com/"]})
+        out = await tool_module.fetch_page.ainvoke({"urls": ["https://a.com/", "https://b.com/"]})
 
     assert "RuntimeError: boom" in out and "NOT retrieved" in out
     assert "Paragraph 29" in out
@@ -459,9 +470,9 @@ async def test_a_failure_on_one_url_leaves_the_others_in_the_tool_output():
 async def test_the_tool_fetches_urls_in_parallel_and_joins_them():
     with (
         patch.object(fp, "AsyncSession", _curl(_Reply())),
-        patch.object(fp, "_browser_client", return_value=None),
+        patch.object(tool_module, "browser_client", return_value=None),
     ):
-        out = await fp.fetch_page.ainvoke({"urls": ["https://a.com/", "https://b.com/"]})
+        out = await tool_module.fetch_page.ainvoke({"urls": ["https://a.com/", "https://b.com/"]})
 
     assert "[https://a.com/] (via cheap, HTTP 200)" in out
     assert "[https://b.com/] (via cheap, HTTP 200)" in out
@@ -621,3 +632,76 @@ def test_in_page_anchor_links_are_reduced_to_their_text():
 
     assert "See [1] and [Other](https://en.wikipedia.org/wiki/Other)" in text
     assert "#cite-1" not in text
+
+
+# ---------------------------------------------------------------------------
+# Redirects
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("url", "target", "same"),
+    [
+        ("https://example.com/a", "https://example.com/b", True),
+        ("https://example.com/a", "https://www.example.com/b", True),
+        ("https://www.example.com/a", "https://example.com/b", True),
+        ("https://example.com/a", "https://docs.example.com/b", False),
+        ("https://example.com/a", "https://other.com/", False),
+        ("https://example.com/a", "http://example.com/a", False),
+        ("https://example.com/a", "https://example.com:8443/a", False),
+        ("https://example.com/a", "https://user:pw@example.com/a", False),
+    ],
+)
+def test_is_same_site(url, target, same):
+    assert is_same_site(url, target) is same
+
+
+async def test_same_site_redirects_are_followed_by_hand():
+    reply = _Reply(redirects={"https://www.a.com/": (301, "https://a.com/home")})
+    curl = _curl(reply)
+    with patch.object(fp, "AsyncSession", curl):
+        page = await fetch_url("https://www.a.com/", None, redirects="same_site")
+
+    assert page.classification is Classification.OK
+    assert page.final_url == "https://a.com/home"
+    assert "Paragraph 29" in page.text
+
+
+async def test_a_redirect_off_the_site_is_returned_not_followed():
+    reply = _Reply(redirects={"https://bit.ly/x": (302, "https://shop.com/item?id=1")})
+    curl = _curl(reply)
+    with patch.object(fp, "AsyncSession", curl):
+        page = await fetch_url("https://bit.ly/x", _FakeBrowser(), redirects="same_site")
+
+    assert page.classification is Classification.REDIRECT
+    assert page.redirect_to == "https://shop.com/item?id=1"
+    assert page.status == 302 and not page.text
+    assert all(url == "https://bit.ly/x" for _, url, _ in curl.calls)  # never fetched
+
+
+async def test_a_relative_location_resolves_against_the_url():
+    reply = _Reply(redirects={"https://a.com/old": (308, "/new")})
+    with patch.object(fp, "AsyncSession", _curl(reply)):
+        page = await fetch_url("https://a.com/old", None, redirects="same_site")
+
+    assert page.final_url == "https://a.com/new"
+
+
+async def test_a_redirect_loop_is_a_network_error():
+    reply = _Reply(redirects={"https://a.com/": (302, "https://a.com/")})
+    with patch.object(fp, "AsyncSession", _curl(reply)):
+        page = await fetch_url("https://a.com/", None, redirects="same_site")
+
+    assert page.classification is Classification.NETWORK_ERROR
+    assert "redirects" in (page.note or "")
+
+
+async def test_a_browser_that_ended_on_another_site_is_a_redirect():
+    blocked = _curl(_Reply(status=403, body=_CLOUDFLARE_HTML))
+    browser = _FakeBrowser(_browser_page(final_url="https://elsewhere.com/landing"))
+    with patch.object(fp, "AsyncSession", blocked):
+        page = await fetch_url("https://a.com/", browser, redirects="same_site")
+
+    assert page.classification is Classification.REDIRECT
+    assert page.redirect_to == "https://elsewhere.com/landing"
+    assert not page.text

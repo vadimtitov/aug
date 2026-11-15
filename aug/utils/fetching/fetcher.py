@@ -1,4 +1,4 @@
-"""fetch_page — reads web pages, including bot-protected and JavaScript-rendered ones.
+"""Fetching web pages, including bot-protected and JavaScript-rendered ones.
 
 Per URL, two tiers:
 
@@ -9,6 +9,8 @@ Per URL, two tiers:
   seconds.  Its cookies are kept, so the cheap tier often works on the domain afterwards.
 
 A genuine HTTP error (404, 410…) is returned as is: a browser would get it too.
+
+fetch_url() never raises: whatever goes wrong comes back as a FetchedPage with a note.
 """
 
 import asyncio
@@ -16,8 +18,8 @@ import logging
 import time
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import Literal
-from urllib.parse import urlparse
+from typing import Any, Literal
+from urllib.parse import urljoin, urlparse
 
 from curl_cffi import CurlError
 from curl_cffi.requests import AsyncSession
@@ -26,12 +28,12 @@ from curl_cffi.requests.exceptions import (
     InvalidSchema,
     InvalidURL,
     MissingSchema,
+    TooManyRedirects,
 )
-from langchain_core.tools import tool
 from tld import get_fld
 
 from aug.config import get_settings
-from aug.core.tools.fetch_page.page_content import (
+from aug.utils.fetching.page_content import (
     BLOCK_STATUS,
     Classification,
     bot_vendor,
@@ -47,11 +49,12 @@ from aug.utils.stealth_browser import (
 
 logger = logging.getLogger(__name__)
 
-MAX_CHARS_PER_PAGE = 12_000
 _CHEAP_TIMEOUT_S = 15
 _MAX_BODY_BYTES = 5_000_000
 _DOMAIN_TTL_S = 24 * 3600
-_NOT_RETRYABLE = (DNSError, InvalidURL, MissingSchema, InvalidSchema)
+_MAX_REDIRECTS = 10
+_REDIRECT_STATUS = frozenset({301, 302, 303, 307, 308})
+_NOT_RETRYABLE = (DNSError, InvalidURL, MissingSchema, InvalidSchema, TooManyRedirects)
 _HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 # Besides text/*, +json and +xml (feeds, JSON:API, problem details…).
 _TEXT_TYPES = frozenset(
@@ -66,6 +69,9 @@ _TEXT_TYPES = frozenset(
 )
 
 Tier = Literal["cheap", "browser"]
+# "any": follow every redirect.  "same_site": follow only those within the site (the same
+# host give or take "www.", scheme and port) and return any other as a REDIRECT page.
+Redirects = Literal["any", "same_site"]
 
 
 class Strategy(StrEnum):
@@ -90,6 +96,8 @@ class FetchedPage:
     note: str | None = None  # why the content is missing or partial
     final_url: str = ""
     retryable: bool = False  # a network error the browser might get past
+    redirect_to: str = ""  # a REDIRECT page's target, not fetched
+    html: str = ""  # the page's HTML, for a caller that converts it its own way
 
 
 @dataclass
@@ -140,88 +148,45 @@ class DomainMemory:
 domains = DomainMemory()
 
 
-@tool
-async def fetch_page(urls: list[str], offset: int = 0) -> str:
-    """Read web pages: fetch one or more URLs in parallel and return their content as markdown.
-
-    This is the tool for reading any web page — articles, docs, product and search pages.
-    It handles bot-protected and JavaScript-rendered sites itself (a slower stealth browser
-    takes over when a plain request is blocked), so a site that blocks other fetchers
-    usually works here.  Each page shows up to 12,000 characters; when a page is longer
-    its last line says so and gives the offset to call again with to read on.
-
-    Args:
-        urls: URLs to fetch, all at once.
-        offset: Character offset into each page's text, to continue a truncated page.
-    """
-    browser = _browser_client()
-    pages = await asyncio.gather(*[_fetch_contained(url, browser) for url in urls])
-    return "\n\n---\n\n".join(render(page, offset) for page in pages)
-
-
-async def fetch_url(url: str, browser: StealthBrowserClient | None) -> FetchedPage:
+async def fetch_url(
+    url: str, browser: StealthBrowserClient | None, *, redirects: Redirects = "any"
+) -> FetchedPage:
     """Fetch *url* through the tiers.  *browser* None: the stealth browser is not configured."""
     started = time.monotonic()
-    domain = registrable_domain(url)
-    strategy = domains.strategy(domain)
-    browser_failure: str | None = None
-
-    if strategy is Strategy.BROWSER_FIRST and browser:
-        page, browser_failure = await _browser_tier(url, domain, browser, started)
-        if page:
-            return _logged(page)
-
-    cheap = await _cheap_tier(url, domain, started)
-    if not _escalates(cheap):
-        if strategy is Strategy.BROWSER_FIRST and cheap.classification is Classification.OK:
-            domains.set_strategy(domain, Strategy.CHEAP)  # the browser failed, cheap works
-        return _logged(cheap)
-    if strategy is Strategy.CHEAP_WITH_COOKIES:
-        domains.set_strategy(domain, Strategy.BROWSER_FIRST)  # the cookies stopped working
-
-    if browser and browser_failure is None:
-        page, browser_failure = await _browser_tier(url, domain, browser, started)
-        if page:
-            # Only a page the browser got and the cheap tier did not changes the
-            # domain's strategy: a page thin in both is just a short page.
-            if strategy is Strategy.CHEAP and page.classification is Classification.OK:
-                domains.set_strategy(
-                    domain,
-                    Strategy.BROWSER_FIRST
-                    if cheap.classification is Classification.THIN
-                    else Strategy.CHEAP_WITH_COOKIES,
-                )
-            return _logged(page)
-
-    reason = browser_failure or "stealth browser unavailable"
-    return _logged(replace(cheap, note=_failure_note(cheap, reason)))
-
-
-def render(page: FetchedPage, offset: int = 0) -> str:
-    """The page as the model reads it: a header line, then a window of its text."""
-    status = f"HTTP {page.status}" if page.status else "no response"
-    header = f"[{page.url}] (via {page.tier or 'nothing'}, {status})"
-    if page.final_url and page.final_url.rstrip("/") != page.url.rstrip("/"):
-        header += f"\nredirected to {page.final_url}"
-    if page.note:
-        header += f"\n{page.note}"
-    text = page.text
-    if not text:
-        return header
-    total = len(text)
-    start = max(offset, 0)
-    if start >= total:
-        return f"{header}\n[offset {start} is past the end of the page ({total} chars)]"
-    end = min(start + MAX_CHARS_PER_PAGE, total)
-    body = text[start:end]
-    if end < total:
-        body += (
-            f"\n\n[truncated: showing chars {start}-{end} of {total}; "
-            f"call fetch_page again with offset={end}]"
+    try:
+        return await _fetch_tiers(url, browser, redirects, started)
+    except Exception as e:  # one URL's surprise must not fail its caller
+        logger.exception("fetch_url failed url=%s", url)
+        return FetchedPage(
+            url=url,
+            tier=None,
+            classification=Classification.NETWORK_ERROR,
+            status=0,
+            elapsed_s=_since(started),
+            note=f"[FAILED — {type(e).__name__}: {e}. The page content was NOT retrieved.]",
         )
-    elif start:
-        body += f"\n\n[end of page: showed chars {start}-{end} of {total}]"
-    return f"{header}\n{body}"
+
+
+def browser_client() -> StealthBrowserClient | None:
+    """The stealth browser, or None when it is not configured."""
+    url = get_settings().STEALTH_BROWSER_URL
+    return StealthBrowserClient(url) if url else None
+
+
+def is_same_site(url: str, target: str) -> bool:
+    """Whether a redirect from *url* to *target* stays on the site: the same host give or
+    take a leading "www.", the same scheme and port, and no credentials in the target."""
+    try:
+        a, b = urlparse(url), urlparse(target)
+        same_port = a.port == b.port
+    except ValueError:
+        return False
+    return (
+        a.scheme == b.scheme
+        and same_port
+        and not (b.username or b.password)
+        and _bare_host(a.hostname) == _bare_host(b.hostname)
+    )
 
 
 def registrable_domain(url: str) -> str:
@@ -247,13 +212,54 @@ class _Response:
     server: str
     cookies: dict[str, str]
     charset: str | None
+    redirect_to: str = ""  # a redirect off the site, not followed
 
 
-async def _cheap_tier(url: str, domain: str, started: float) -> FetchedPage:
-    """Chrome and Safari impersonations at once; the first good answer wins."""
+async def _fetch_tiers(
+    url: str, browser: StealthBrowserClient | None, redirects: Redirects, started: float
+) -> FetchedPage:
+    domain = registrable_domain(url)
+    same_site = redirects == "same_site"
+    strategy = domains.strategy(domain)
+    browser_failure: str | None = None
+
+    if strategy is Strategy.BROWSER_FIRST and browser:
+        page, browser_failure = await _browser_tier(url, domain, browser, started, same_site)
+        if page:
+            return _logged(page)
+
+    cheap = await _cheap_tier(url, domain, started, same_site)
+    if not _escalates(cheap):
+        if strategy is Strategy.BROWSER_FIRST and cheap.classification is Classification.OK:
+            domains.set_strategy(domain, Strategy.CHEAP)  # the browser failed, cheap works
+        return _logged(cheap)
+    if strategy is Strategy.CHEAP_WITH_COOKIES:
+        domains.set_strategy(domain, Strategy.BROWSER_FIRST)  # the cookies stopped working
+
+    if browser and browser_failure is None:
+        page, browser_failure = await _browser_tier(url, domain, browser, started, same_site)
+        if page:
+            # Only a page the browser got and the cheap tier did not changes the
+            # domain's strategy: a page thin in both is just a short page.
+            if strategy is Strategy.CHEAP and page.classification is Classification.OK:
+                domains.set_strategy(
+                    domain,
+                    Strategy.BROWSER_FIRST
+                    if cheap.classification is Classification.THIN
+                    else Strategy.CHEAP_WITH_COOKIES,
+                )
+            return _logged(page)
+
+    reason = browser_failure or "stealth browser unavailable"
+    return _logged(replace(cheap, note=_failure_note(cheap, reason)))
+
+
+async def _cheap_tier(url: str, domain: str, started: float, same_site: bool) -> FetchedPage:
+    """Chrome and Safari impersonations at once; the first good answer (or redirect off
+    the site) wins."""
     cookies = domains.cookies(domain)
     attempts = [
-        asyncio.create_task(_cheap_attempt(url, impersonate, cookies, domain, started))
+        asyncio.create_task(_cheap_attempt(url, impersonate, cookies, domain, started, same_site))
         for impersonate in ("chrome", "safari")
     ]
     pending = set(attempts)
@@ -261,7 +267,7 @@ async def _cheap_tier(url: str, domain: str, started: float) -> FetchedPage:
         while pending:
             done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
-                if task.result().classification is Classification.OK:
+                if task.result().classification in _CHEAP_FINAL:
                     return task.result()
     finally:
         for task in pending:
@@ -274,10 +280,15 @@ async def _cheap_tier(url: str, domain: str, started: float) -> FetchedPage:
 
 
 async def _cheap_attempt(
-    url: str, impersonate: str, cookies: dict[str, str], domain: str, started: float
+    url: str,
+    impersonate: str,
+    cookies: dict[str, str],
+    domain: str,
+    started: float,
+    same_site: bool,
 ) -> FetchedPage:
     try:
-        response = await _get(url, impersonate, cookies)
+        response = await _get(url, impersonate, cookies, same_site)
     except CurlError as e:
         return FetchedPage(
             url=url,
@@ -304,47 +315,78 @@ async def _cheap_attempt(
     return await asyncio.to_thread(_page_from_response, url, response, started)
 
 
-async def _get(url: str, impersonate: str, cookies: dict[str, str]) -> _Response:
+async def _get(url: str, impersonate: str, cookies: dict[str, str], same_site: bool) -> _Response:
+    """GET *url*.  *same_site*: follow redirects by hand, only within the site; one off
+    it comes back with redirect_to set and no body."""
     async with AsyncSession(impersonate=impersonate) as session:
-        response = await session.get(
-            url,
-            cookies=cookies or None,
-            timeout=_CHEAP_TIMEOUT_S,
-            allow_redirects=True,
-            max_redirects=10,
-            stream=True,
-        )
-        try:
-            content_type = (response.headers.get("content-type") or "").lower()
-            readable = _is_html(content_type) or _is_text(content_type)
-            body = b""
-            if readable:
-                chunks = []
-                size = 0
-                async for chunk in response.aiter_content():
-                    chunks.append(chunk)
-                    size += len(chunk)
-                    if size >= _MAX_BODY_BYTES:
-                        break
-                body = b"".join(chunks)[:_MAX_BODY_BYTES]
-            length = response.headers.get("content-length") or ""
-            return _Response(
-                status=response.status_code,
-                final_url=str(response.url),
-                content_type=content_type,
-                body=body,
-                size=len(body) if readable else int(length) if length.isdigit() else 0,
-                server=response.headers.get("server") or "",
-                cookies=session.cookies.get_dict(),
-                charset=response.charset_encoding,
+        current = url
+        for _ in range(_MAX_REDIRECTS + 1):
+            response = await session.get(
+                current,
+                cookies=cookies or None,
+                timeout=_CHEAP_TIMEOUT_S,
+                allow_redirects=not same_site,
+                max_redirects=_MAX_REDIRECTS,
+                stream=True,
             )
-        finally:
-            await response.aclose()
+            try:
+                location = response.headers.get("location") or ""
+                if same_site and response.status_code in _REDIRECT_STATUS and location:
+                    target = urljoin(current, location)
+                    if is_same_site(current, target):
+                        current = target
+                        continue
+                    return _response(response, session, b"", 0, redirect_to=target)
+                return await _read(response, session)
+            finally:
+                await response.aclose()
+        raise TooManyRedirects(f"more than {_MAX_REDIRECTS} redirects")
+
+
+async def _read(response: Any, session: AsyncSession) -> _Response:
+    content_type = (response.headers.get("content-type") or "").lower()
+    readable = _is_html(content_type) or _is_text(content_type)
+    body = b""
+    if readable:
+        chunks = []
+        size = 0
+        async for chunk in response.aiter_content():
+            chunks.append(chunk)
+            size += len(chunk)
+            if size >= _MAX_BODY_BYTES:
+                break
+        body = b"".join(chunks)[:_MAX_BODY_BYTES]
+    length = response.headers.get("content-length") or ""
+    size = len(body) if readable else int(length) if length.isdigit() else 0
+    return _response(response, session, body, size)
+
+
+def _response(
+    response: Any, session: AsyncSession, body: bytes, size: int, redirect_to: str = ""
+) -> _Response:
+    return _Response(
+        status=response.status_code,
+        final_url=str(response.url),
+        content_type=(response.headers.get("content-type") or "").lower(),
+        body=body,
+        size=size,
+        server=response.headers.get("server") or "",
+        cookies=session.cookies.get_dict(),
+        charset=response.charset_encoding,
+        redirect_to=redirect_to,
+    )
 
 
 def _page_from_response(url: str, response: _Response, started: float) -> FetchedPage:
     content_type = response.content_type
     common = dict(url=url, tier="cheap", status=response.status, final_url=response.final_url)
+    if response.redirect_to:
+        return FetchedPage(
+            **common,
+            classification=Classification.REDIRECT,
+            elapsed_s=_since(started),
+            redirect_to=response.redirect_to,
+        )
     if not _is_html(content_type) and not _is_text(content_type):
         kind = content_type.split(";")[0]
         size = f"{response.size:,} bytes" if response.size else "unknown size"
@@ -379,21 +421,33 @@ def _page_from_response(url: str, response: _Response, started: float) -> Fetche
         elapsed_s=_since(started),
         title=page.title,
         text=page.text,
+        html=text,
     )
 
 
 async def _browser_tier(
-    url: str, domain: str, browser: StealthBrowserClient, started: float
+    url: str, domain: str, browser: StealthBrowserClient, started: float, same_site: bool
 ) -> tuple[FetchedPage | None, str | None]:
     """The page from the stealth browser, or (None, why it did not get it)."""
     try:
         result = await browser.fetch(url)
     except StealthBrowserUnavailable as e:
-        logger.warning("fetch_page stealth browser unavailable url=%s: %s", url, e)
+        logger.warning("fetch stealth browser unavailable url=%s: %s", url, e)
         return None, "stealth browser unavailable"
     _remember_browser_cookies(result)
     if result.outcome == "error":
         return None, f"stealth browser failed: {result.error or 'unknown error'}"
+    if same_site and result.final_url and not is_same_site(url, result.final_url):
+        # The browser follows redirects itself: what it read is dropped.
+        page = FetchedPage(
+            url=url,
+            tier="browser",
+            classification=Classification.REDIRECT,
+            status=0,
+            elapsed_s=_since(started),
+            redirect_to=result.final_url,
+        )
+        return page, None
     return await asyncio.to_thread(_page_from_browser, url, result, started)
 
 
@@ -419,6 +473,7 @@ def _page_from_browser(
             title=page.title,
             text=page.text,
             final_url=result.final_url,
+            html=result.html,
             note="[page has little text even in a browser]"
             if classification is Classification.THIN
             else None,
@@ -459,23 +514,6 @@ def _by_status(status: int) -> Classification:
     return Classification.HTTP_ERROR if status >= 400 else Classification.OK
 
 
-async def _fetch_contained(url: str, browser: StealthBrowserClient | None) -> FetchedPage:
-    """fetch_url(), with any surprise kept to its own URL."""
-    started = time.monotonic()
-    try:
-        return await fetch_url(url, browser)
-    except Exception as e:
-        logger.exception("fetch_page failed url=%s", url)
-        return FetchedPage(
-            url=url,
-            tier=None,
-            classification=Classification.NETWORK_ERROR,
-            status=0,
-            elapsed_s=_since(started),
-            note=f"[FAILED — {type(e).__name__}: {e}. The page content was NOT retrieved.]",
-        )
-
-
 def _media_type(content_type: str) -> str:
     return content_type.split(";")[0].strip()
 
@@ -499,7 +537,7 @@ def _decode(body: bytes, charset: str | None) -> str:
 
 def _logged(page: FetchedPage) -> FetchedPage:
     logger.info(
-        "fetch_page url=%s tier=%s classification=%s status=%s elapsed=%.2fs chars=%d",
+        "fetch_url url=%s tier=%s classification=%s status=%s elapsed=%.2fs chars=%d",
         page.url,
         page.tier,
         page.classification,
@@ -510,11 +548,6 @@ def _logged(page: FetchedPage) -> FetchedPage:
     return page
 
 
-def _browser_client() -> StealthBrowserClient | None:
-    url = get_settings().STEALTH_BROWSER_URL
-    return StealthBrowserClient(url) if url else None
-
-
 def _since(started: float) -> float:
     return round(time.monotonic() - started, 2)
 
@@ -523,8 +556,15 @@ def _since(started: float) -> float:
 # thin page has some text, a block at least names the vendor.
 _CHEAP_PREFERENCE = (
     Classification.OK,
+    Classification.REDIRECT,
     Classification.HTTP_ERROR,
     Classification.THIN,
     Classification.BLOCKED,
     Classification.NETWORK_ERROR,
 )
+# A cheap attempt that ends the race: the page, or a redirect off the site.
+_CHEAP_FINAL = (Classification.OK, Classification.REDIRECT)
+
+
+def _bare_host(host: str | None) -> str:
+    return (host or "").lower().rstrip(".").removeprefix("www.")

@@ -1,8 +1,9 @@
-"""What a fetched web page is (classify) and what it says (extract).
+"""What a fetched web page is (classify) and what it says (extract, full_markdown).
 
 classify() tells a real page from a bot-protection interstitial, a JavaScript shell or an
-HTTP error; extract() turns a page's HTML into markdown for the model, with a summary of
-any JSON-LD products (retailer pages carry their prices there).
+HTTP error.  extract() turns a page's main content into markdown, with a summary of any
+JSON-LD products (retailer pages carry their prices there); full_markdown() converts the
+whole page, navigation and all, as Claude Code's WebFetch does.
 """
 
 import json
@@ -16,6 +17,7 @@ from urllib.parse import urljoin
 import lxml.html
 import trafilatura
 from lxml import etree
+from markdownify import markdownify
 
 # Fewer visible characters than this and the page is a shell that needs JavaScript.
 MIN_TEXT = 400
@@ -53,6 +55,7 @@ _LINK = re.compile(r"\[((?:[^\[\]]|\[[^\]]*\])*)\]\(([^)\s]+)\)")
 # An in-page anchor as trafilatura writes it, bare or resolved to the host alone.
 _ANCHOR = re.compile(r"^(?:https?://[^/#\s]+/?)?#")
 _XML_DECLARATION = re.compile(r"^\s*<\?xml[^>]*\?>")
+_BLANK_LINES = re.compile(r"\n\s*\n(\s*\n)+")
 
 
 class Classification(StrEnum):
@@ -61,6 +64,9 @@ class Classification(StrEnum):
     THIN = "thin"  # too little text: a JavaScript-rendered shell
     HTTP_ERROR = "http_error"  # a genuine 404 and the like; a browser would get it too
     NETWORK_ERROR = "network_error"
+    # A redirect off the site that the caller asked not to follow; classify() never
+    # returns it.
+    REDIRECT = "redirect"
 
 
 @dataclass(frozen=True)
@@ -122,6 +128,19 @@ def extract(html: str, url: str, visible: str | None = None) -> PageText:
     if body:
         parts.append(body)
     return PageText(title=title, text="\n\n".join(parts))
+
+
+def full_markdown(html: str, url: str) -> str:
+    """The whole page as markdown: everything but scripts, styles and frames."""
+    doc = _parse(html)
+    if doc is None:
+        return ""
+    for node in doc.xpath("//script|//style|//noscript|//iframe|//template"):
+        node.drop_tree()
+    body = markdownify(lxml.html.tostring(doc, encoding="unicode"), heading_style="ATX")
+    body = _BLANK_LINES.sub("\n\n", _absolute_links(body, url)).strip()
+    title = page_title(html)
+    return f"# {title}\n\n{body}" if title and not body.startswith(f"# {title}") else body
 
 
 def page_title(html: str) -> str:
