@@ -28,6 +28,7 @@ from curl_cffi.requests.exceptions import (
     MissingSchema,
 )
 from langchain_core.tools import tool
+from tld import get_fld
 
 from aug.config import get_settings
 from aug.core.tools.page_content import (
@@ -36,6 +37,7 @@ from aug.core.tools.page_content import (
     bot_vendor,
     classify,
     extract,
+    visible_text,
 )
 from aug.utils.stealth_browser import (
     BrowserPage,
@@ -49,11 +51,19 @@ MAX_CHARS_PER_PAGE = 12_000
 _CHEAP_TIMEOUT_S = 15
 _MAX_BODY_BYTES = 5_000_000
 _DOMAIN_TTL_S = 24 * 3600
-# Second-level labels under which a registrable domain takes three labels (bbc.co.uk).
-_SECOND_LEVEL = frozenset({"co", "com", "org", "net", "gov", "ac", "edu", "ne", "or", "go"})
 _NOT_RETRYABLE = (DNSError, InvalidURL, MissingSchema, InvalidSchema)
-_TEXT_TYPES = ("application/json", "application/ld+json", "application/xml", "text/")
-_HTML_TYPES = ("text/html", "application/xhtml+xml")
+_HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+# Besides text/*, +json and +xml (feeds, JSON:API, problem details…).
+_TEXT_TYPES = frozenset(
+    {
+        "application/json",
+        "application/xml",
+        "application/javascript",
+        "application/x-javascript",
+        "application/ecmascript",
+        "application/x-ndjson",
+    }
+)
 
 Tier = Literal["cheap", "browser"]
 
@@ -86,11 +96,15 @@ class FetchedPage:
 class _DomainEntry:
     cookies: dict[str, str] = field(default_factory=dict)
     strategy: Strategy = Strategy.CHEAP
-    updated_at: float = 0.0
+    created_at: float = 0.0
 
 
 class DomainMemory:
-    """Cookies and the strategy that works, per registrable domain, for a day."""
+    """Cookies and the strategy that works, per registrable domain, for a day.
+
+    The day runs from the domain's first fetch and is not extended by later ones, so a
+    domain sent browser_first by a passing block tries the cheap tier again tomorrow.
+    """
 
     def __init__(self, ttl_s: float = _DOMAIN_TTL_S) -> None:
         self._ttl_s = ttl_s
@@ -104,22 +118,22 @@ class DomainMemory:
 
     def add_cookies(self, domain: str, cookies: dict[str, str]) -> None:
         if cookies:
-            entry = self._entry(domain)
-            entry.cookies.update(cookies)
-            entry.updated_at = time.monotonic()
+            self._entry(domain).cookies.update(cookies)
 
     def set_strategy(self, domain: str, strategy: Strategy) -> None:
-        entry = self._entry(domain)
-        entry.strategy = strategy
-        entry.updated_at = time.monotonic()
+        self._entry(domain).strategy = strategy
 
     def clear(self) -> None:
         self._entries.clear()
 
     def _entry(self, domain: str) -> _DomainEntry:
+        now = time.monotonic()
         entry = self._entries.get(domain)
-        if entry is None or time.monotonic() - entry.updated_at > self._ttl_s:
-            entry = self._entries[domain] = _DomainEntry(updated_at=time.monotonic())
+        if entry is None or now - entry.created_at > self._ttl_s:
+            self._entries = {  # drop every expired domain, not just this one
+                d: e for d, e in self._entries.items() if now - e.created_at <= self._ttl_s
+            }
+            entry = self._entries[domain] = _DomainEntry(created_at=now)
         return entry
 
 
@@ -141,7 +155,7 @@ async def fetch_page(urls: list[str], offset: int = 0) -> str:
         offset: Character offset into each page's text, to continue a truncated page.
     """
     browser = _browser_client()
-    pages = await asyncio.gather(*[fetch_url(url, browser) for url in urls])
+    pages = await asyncio.gather(*[_fetch_contained(url, browser) for url in urls])
     return "\n\n---\n\n".join(render(page, offset) for page in pages)
 
 
@@ -168,7 +182,9 @@ async def fetch_url(url: str, browser: StealthBrowserClient | None) -> FetchedPa
     if browser and browser_failure is None:
         page, browser_failure = await _browser_tier(url, domain, browser, started)
         if page:
-            if strategy is Strategy.CHEAP:
+            # Only a page the browser got and the cheap tier did not changes the
+            # domain's strategy: a page thin in both is just a short page.
+            if strategy is Strategy.CHEAP and page.classification is Classification.OK:
                 domains.set_strategy(
                     domain,
                     Strategy.BROWSER_FIRST
@@ -209,12 +225,13 @@ def render(page: FetchedPage, offset: int = 0) -> str:
 
 
 def registrable_domain(url: str) -> str:
-    """The domain a site's cookies and bot protection belong to: www2.hm.com → hm.com."""
+    """The domain a site's cookies and bot protection belong to: www2.hm.com → hm.com.
+
+    By the Public Suffix List, so sites under a shared host (alice.github.io) stay
+    apart.  An IP address or a host off the list (localhost) is its own domain.
+    """
     host = (urlparse(url).hostname or "").lower().rstrip(".")
-    labels = host.split(".")
-    if len(labels) >= 3 and labels[-2] in _SECOND_LEVEL and len(labels[-1]) == 2:
-        return ".".join(labels[-3:])
-    return ".".join(labels[-2:])
+    return get_fld(f"https://{host}/", fail_silently=True) or host
 
 
 # --- Private ---
@@ -233,16 +250,27 @@ class _Response:
 
 
 async def _cheap_tier(url: str, domain: str, started: float) -> FetchedPage:
-    """Chrome and Safari impersonations at once; Chrome's answer wins when both are good."""
+    """Chrome and Safari impersonations at once; the first good answer wins."""
     cookies = domains.cookies(domain)
-    chrome = asyncio.create_task(_cheap_attempt(url, "chrome", cookies, domain, started))
-    safari = asyncio.create_task(_cheap_attempt(url, "safari", cookies, domain, started))
-    first = await chrome
-    if first.classification is Classification.OK:
-        safari.cancel()
-        return first
-    second = await safari
-    return min((first, second), key=lambda p: _CHEAP_PREFERENCE.index(p.classification))
+    attempts = [
+        asyncio.create_task(_cheap_attempt(url, impersonate, cookies, domain, started))
+        for impersonate in ("chrome", "safari")
+    ]
+    pending = set(attempts)
+    try:
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                if task.result().classification is Classification.OK:
+                    return task.result()
+    finally:
+        for task in pending:
+            task.cancel()
+    # Neither is good: keep the more useful failure, Chrome's on a tie.
+    return min(
+        (t.result() for t in attempts),
+        key=lambda p: _CHEAP_PREFERENCE.index(p.classification),
+    )
 
 
 async def _cheap_attempt(
@@ -272,7 +300,8 @@ async def _cheap_attempt(
             retryable=True,
         )
     domains.add_cookies(domain, response.cookies)
-    return _page_from_response(url, response, started)
+    # Parsing a page of up to 5 MB is CPU work: off the event loop.
+    return await asyncio.to_thread(_page_from_response, url, response, started)
 
 
 async def _get(url: str, impersonate: str, cookies: dict[str, str]) -> _Response:
@@ -287,7 +316,7 @@ async def _get(url: str, impersonate: str, cookies: dict[str, str]) -> _Response
         )
         try:
             content_type = (response.headers.get("content-type") or "").lower()
-            readable = not content_type or content_type.startswith(_HTML_TYPES + _TEXT_TYPES)
+            readable = _is_html(content_type) or _is_text(content_type)
             body = b""
             if readable:
                 chunks = []
@@ -316,7 +345,7 @@ async def _get(url: str, impersonate: str, cookies: dict[str, str]) -> _Response
 def _page_from_response(url: str, response: _Response, started: float) -> FetchedPage:
     content_type = response.content_type
     common = dict(url=url, tier="cheap", status=response.status, final_url=response.final_url)
-    if content_type and not content_type.startswith(_HTML_TYPES + _TEXT_TYPES):
+    if not _is_html(content_type) and not _is_text(content_type):
         kind = content_type.split(";")[0]
         size = f"{response.size:,} bytes" if response.size else "unknown size"
         return FetchedPage(
@@ -325,15 +354,16 @@ def _page_from_response(url: str, response: _Response, started: float) -> Fetche
             elapsed_s=_since(started),
             note=f"[binary content: {kind}, {size}; not extracted]",
         )
-    text = response.body.decode(response.charset or "utf-8", errors="replace")
-    if content_type and not content_type.startswith(_HTML_TYPES):  # JSON, plain text…
+    text = _decode(response.body, response.charset)
+    if not _is_html(content_type):  # JSON, plain text…
         return FetchedPage(
             **common,
             classification=_by_status(response.status),
             elapsed_s=_since(started),
             text=text,
         )
-    classification = classify(response.status, text)
+    visible = visible_text(text)
+    classification = classify(response.status, text, visible)
     if classification is Classification.BLOCKED:
         vendor = bot_vendor(text, response.server)
         return FetchedPage(
@@ -342,7 +372,7 @@ def _page_from_response(url: str, response: _Response, started: float) -> Fetche
             elapsed_s=_since(started),
             note=f"blocked by bot protection{f' ({vendor})' if vendor else ''}",
         )
-    page = extract(text, response.final_url or url)
+    page = extract(text, response.final_url or url, visible)
     return FetchedPage(
         **common,
         classification=classification,
@@ -364,14 +394,21 @@ async def _browser_tier(
     _remember_browser_cookies(result)
     if result.outcome == "error":
         return None, f"stealth browser failed: {result.error or 'unknown error'}"
+    return await asyncio.to_thread(_page_from_browser, url, result, started)
+
+
+def _page_from_browser(
+    url: str, result: BrowserPage, started: float
+) -> tuple[FetchedPage | None, str | None]:
     # The browser judged the page by its content once the challenge was waited out: a
     # 403 left on a document whose challenge was solved in place is not a block.
     solved = result.outcome == "ok" and result.status in BLOCK_STATUS
-    classification = classify(200 if solved else result.status, result.html)
+    visible = visible_text(result.html)
+    classification = classify(200 if solved else result.status, result.html, visible)
     if classification is Classification.BLOCKED:
         vendor = bot_vendor(result.html)
         return None, f"stealth browser also blocked{f' ({vendor})' if vendor else ''}"
-    page = extract(result.html, result.final_url or url)
+    page = extract(result.html, result.final_url or url, visible)
     return (
         FetchedPage(
             url=url,
@@ -414,10 +451,50 @@ def _failure_note(page: FetchedPage, reason: str) -> str:
 
 
 def _by_status(status: int) -> Classification:
-    """How to judge a response that is not HTML (JSON, plain text, a PDF): by status alone."""
-    if status in BLOCK_STATUS:
-        return Classification.BLOCKED
+    """How to judge a response that is not HTML (JSON, plain text, a PDF): by status alone.
+
+    A 401 or 429 here is an API's own answer, kept for the model to read: bot protection
+    serves HTML.
+    """
     return Classification.HTTP_ERROR if status >= 400 else Classification.OK
+
+
+async def _fetch_contained(url: str, browser: StealthBrowserClient | None) -> FetchedPage:
+    """fetch_url(), with any surprise kept to its own URL."""
+    started = time.monotonic()
+    try:
+        return await fetch_url(url, browser)
+    except Exception as e:
+        logger.exception("fetch_page failed url=%s", url)
+        return FetchedPage(
+            url=url,
+            tier=None,
+            classification=Classification.NETWORK_ERROR,
+            status=0,
+            elapsed_s=_since(started),
+            note=f"[FAILED — {type(e).__name__}: {e}. The page content was NOT retrieved.]",
+        )
+
+
+def _media_type(content_type: str) -> str:
+    return content_type.split(";")[0].strip()
+
+
+def _is_html(content_type: str) -> bool:
+    """No Content-Type at all is treated as HTML."""
+    return not content_type or _media_type(content_type) in _HTML_TYPES
+
+
+def _is_text(content_type: str) -> bool:
+    kind = _media_type(content_type)
+    return kind.startswith("text/") or kind in _TEXT_TYPES or kind.endswith(("+json", "+xml"))
+
+
+def _decode(body: bytes, charset: str | None) -> str:
+    try:
+        return body.decode(charset or "utf-8", errors="replace")
+    except LookupError:  # a charset Python does not know ("utf8mb4", "none")
+        return body.decode("utf-8", errors="replace")
 
 
 def _logged(page: FetchedPage) -> FetchedPage:

@@ -51,6 +51,7 @@ _MAX_PRODUCTS = 10
 _LINK = re.compile(r"\[((?:[^\[\]]|\[[^\]]*\])*)\]\(([^)\s]+)\)")
 # An in-page anchor as trafilatura writes it, bare or resolved to the host alone.
 _ANCHOR = re.compile(r"^(?:https?://[^/#\s]+/?)?#")
+_XML_DECLARATION = re.compile(r"^\s*<\?xml[^>]*\?>")
 
 
 class Classification(StrEnum):
@@ -67,12 +68,18 @@ class PageText:
     text: str  # markdown: title, product summary, body
 
 
-def classify(status: int, html: str) -> Classification:
-    """What an HTTP response is, from its status and HTML."""
-    text_len = len(visible_text(html))
+def classify(status: int, html: str, visible: str | None = None) -> Classification:
+    """What an HTTP response is, from its status and HTML.
+
+    *visible*: the page's visible_text(), when the caller already has it.
+    """
+    text_len = len(visible_text(html) if visible is None else visible)
     challenge = bool(_CHALLENGE.search(html[:_SCAN_CHARS])) and text_len < _CHALLENGE_MAX_TEXT
-    # AWS WAF answers a bot with an empty 202 and a JavaScript challenge.
-    if status in BLOCK_STATUS or challenge or (status == 202 and text_len < MIN_TEXT):
+    # A blocking status on a page with next to no text is bot protection; with a real
+    # page behind it (a login or maintenance page) it is a genuine error.  AWS WAF
+    # answers a bot with an empty 202 and a JavaScript challenge.
+    short = text_len < MIN_TEXT
+    if challenge or (short and (status in BLOCK_STATUS or status == 202)):
         return Classification.BLOCKED
     if status >= 400:
         return Classification.HTTP_ERROR
@@ -87,10 +94,14 @@ def bot_vendor(html: str, server_header: str = "") -> str | None:
     return next((name for name, pattern in _VENDORS if pattern.search(haystack)), None)
 
 
-def extract(html: str, url: str) -> PageText:
-    """The page as markdown: '# title', a JSON-LD product summary, then the body."""
+def extract(html: str, url: str, visible: str | None = None) -> PageText:
+    """The page as markdown: '# title', a JSON-LD product summary, then the body.
+
+    *visible*: the page's visible_text(), when the caller already has it.
+    """
     title = page_title(html)
-    visible = visible_text(html)
+    if visible is None:
+        visible = visible_text(html)
     markdown = trafilatura.extract(
         html,
         url=url,
@@ -122,9 +133,8 @@ def visible_text(html: str) -> str:
     """The page's text without scripts, styles and templates, whitespace collapsed."""
     if not html.strip():
         return ""
-    try:
-        doc = lxml.html.fromstring(html)
-    except (etree.LxmlError, ValueError):
+    doc = _parse(html)
+    if doc is None:
         return ""
     for node in doc.xpath("//script|//style|//noscript|//template"):
         node.drop_tree()
@@ -133,9 +143,8 @@ def visible_text(html: str) -> str:
 
 def product_summary(html: str) -> str:
     """A compact list of the JSON-LD Products on the page (name, price, availability)."""
-    try:
-        doc = lxml.html.fromstring(html)
-    except (etree.LxmlError, ValueError):
+    doc = _parse(html)
+    if doc is None:
         return ""
     lines: list[str] = []
     for script in doc.xpath('//script[@type="application/ld+json"]'):
@@ -155,6 +164,14 @@ def product_summary(html: str) -> str:
 
 
 # --- Private ---
+
+
+def _parse(html: str) -> lxml.html.HtmlElement | None:
+    # lxml refuses a str that starts with an XML declaration (XHTML pages).
+    try:
+        return lxml.html.fromstring(_XML_DECLARATION.sub("", html, count=1))
+    except (etree.LxmlError, ValueError):
+        return None
 
 
 def _absolute_links(markdown: str, url: str) -> str:

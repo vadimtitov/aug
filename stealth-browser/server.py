@@ -42,6 +42,8 @@ _CHALLENGE = re.compile(
     re.I,
 )
 
+_XML_DECLARATION = re.compile(r"^\s*<\?xml[^>]*\?>")
+
 Outcome = Literal["ok", "blocked", "error"]
 
 
@@ -86,21 +88,30 @@ class StealthBrowser:
         return self._browser is not None and self._browser.is_connected()
 
     async def fetch(self, url: str, timeout_s: int) -> FetchResponse:
+        """Load *url*.  *timeout_s* covers the whole request, waiting for a slot included,
+        so a caller that gives up after it is never left with work still running."""
         started = time.monotonic()
-        async with self._slots:
-            self._in_flight += 1
-            try:
-                return await asyncio.wait_for(self._fetch(url, started), timeout=timeout_s)
-            except TimeoutError:
-                return _error(url, started, f"timed out after {timeout_s}s")
-            except Exception as e:
-                logger.exception("fetch failed url=%s", url)
-                if not self.running:
-                    await self.close()  # crashed: the next request relaunches
-                return _error(url, started, f"{type(e).__name__}: {e}")
-            finally:
-                self._in_flight -= 1
-                self._last_used = time.monotonic()
+        try:
+            async with asyncio.timeout(timeout_s):
+                async with self._slots:
+                    return await self._fetch_in_slot(url, started)
+        except TimeoutError:
+            return _error(url, started, f"timed out after {timeout_s}s")
+
+    async def _fetch_in_slot(self, url: str, started: float) -> FetchResponse:
+        self._in_flight += 1
+        try:
+            return await self._fetch(url, started)
+        except TimeoutError:
+            raise
+        except Exception as e:
+            logger.exception("fetch failed url=%s", url)
+            if not self.running:
+                await self.close()  # crashed: the next request relaunches
+            return _error(url, started, f"{type(e).__name__}: {e}")
+        finally:
+            self._in_flight -= 1
+            self._last_used = time.monotonic()
 
     async def close_when_idle(self) -> None:
         """Run forever, closing the browser after _IDLE_CLOSE_S without requests."""
@@ -251,7 +262,9 @@ async def _content(page: Page) -> str:
 def _judge(status: int, html: str) -> str:
     text = _visible_text_len(html)
     challenge = bool(_CHALLENGE.search(html[:30_000])) and text < 3000
-    if status in _BLOCK_STATUS or challenge or (status == 202 and text < _MIN_TEXT):
+    # Same rule as page_content.classify().
+    short = text < _MIN_TEXT
+    if challenge or (short and (status in _BLOCK_STATUS or status == 202)):
         return "blocked"
     if status >= 400:
         return "http_error"
@@ -262,7 +275,8 @@ def _judge(status: int, html: str) -> str:
 
 def _visible_text_len(html: str) -> int:
     try:
-        doc = lxml.html.fromstring(html)
+        # lxml refuses a str that starts with an XML declaration (XHTML pages).
+        doc = lxml.html.fromstring(_XML_DECLARATION.sub("", html, count=1))
     except Exception:
         return 0
     for node in doc.xpath("//script|//style|//noscript|//template"):

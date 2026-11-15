@@ -4,6 +4,7 @@ The cheap tier is faked at curl_cffi's AsyncSession, the browser tier at the
 StealthBrowserClient (and the client itself at httpx's transport).  No network.
 """
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from unittest.mock import patch
@@ -74,6 +75,8 @@ class _Reply:
     set_cookies: dict[str, str] = field(default_factory=dict)
     error: Exception | None = None
     headers: dict[str, str] = field(default_factory=dict)
+    charset: str = "utf-8"
+    delay_s: float = 0.0
 
 
 class _FakeCurl:
@@ -100,7 +103,7 @@ class _FakeResponse:
         self.url = url
         self.status_code = reply.status
         self.headers = {"content-type": reply.content_type, **reply.headers}
-        self.charset_encoding = "utf-8"
+        self.charset_encoding = reply.charset
         self._body = reply.body.encode()
 
     async def aiter_content(self):
@@ -125,6 +128,7 @@ class _FakeSession:
     async def get(self, url: str, *, cookies: dict | None = None, **_) -> _FakeResponse:
         self._curl.calls.append((self._impersonate, url, cookies))
         reply = self._curl.replies[self._impersonate]
+        await asyncio.sleep(reply.delay_s)
         if reply.error:
             raise reply.error
         self.cookies = _FakeCookies({**(cookies or {}), **reply.set_cookies})
@@ -175,8 +179,20 @@ _URL = "https://www2.hm.com/en_gb/p.html"
 
 
 @pytest.mark.parametrize("status", [401, 403, 405, 429, 503])
-def test_blocking_statuses_are_blocked(status):
-    assert classify(status, _GOOD_HTML) is Classification.BLOCKED
+def test_a_blocking_status_with_no_page_behind_it_is_blocked(status):
+    assert classify(status, _SHELL_HTML) is Classification.BLOCKED
+
+
+@pytest.mark.parametrize("status", [401, 403, 405, 429, 503])
+def test_a_blocking_status_on_a_real_page_is_a_genuine_error(status):
+    # A login or maintenance page: the browser would get the same, the model reads it.
+    assert classify(status, _GOOD_HTML) is Classification.HTTP_ERROR
+
+
+def test_an_xhtml_page_with_an_xml_declaration_is_read():
+    xhtml = '<?xml version="1.0" encoding="UTF-8"?>\n' + _GOOD_HTML
+    assert classify(200, xhtml) is Classification.OK
+    assert "Paragraph 29" in extract(xhtml, "https://example.com/").text
 
 
 def test_akamai_and_cloudflare_challenges_are_blocked_with_their_vendor():
@@ -206,6 +222,28 @@ def test_registrable_domain():
     assert registrable_domain("https://www2.hm.com/x") == "hm.com"
     assert registrable_domain("https://www.bbc.co.uk/news") == "bbc.co.uk"
     assert registrable_domain("https://en.wikipedia.org/wiki/A") == "wikipedia.org"
+
+
+def test_sites_on_a_shared_host_and_ip_addresses_are_kept_apart():
+    assert registrable_domain("https://alice.github.io/") == "alice.github.io"
+    assert registrable_domain("https://bob.github.io/") == "bob.github.io"
+    assert registrable_domain("http://10.0.1.10:8000/") == "10.0.1.10"
+    assert registrable_domain("http://192.168.1.10/") == "192.168.1.10"
+    assert registrable_domain("http://localhost:3000/") == "localhost"
+
+
+def test_domain_memory_lasts_a_day_from_the_first_fetch_however_often_it_is_used():
+    clock = [1000.0]
+    with patch.object(fp.time, "monotonic", lambda: clock[0]):
+        memory = fp.DomainMemory(ttl_s=100)
+        memory.set_strategy("hm.com", Strategy.BROWSER_FIRST)
+        memory.add_cookies("other.com", {"a": "1"})
+        for _ in range(3):
+            clock[0] += 40
+            memory.add_cookies("hm.com", {"b": "2"})  # use does not extend it
+
+        assert memory.strategy("hm.com") is Strategy.CHEAP
+        assert "other.com" not in memory._entries  # expired domains are dropped
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +316,15 @@ async def test_thin_page_goes_browser_first_next_time():
     assert domains.strategy("example.com") is Strategy.BROWSER_FIRST
 
 
+async def test_a_page_short_even_in_the_browser_leaves_the_domain_on_the_cheap_path():
+    browser = _FakeBrowser(_browser_page(html=_SHELL_HTML))
+    with patch.object(fp, "AsyncSession", _curl(_Reply(body=_SHELL_HTML))):
+        page = await fetch_url("https://spa.example.com/", browser)
+
+    assert page.tier == "browser" and page.classification is Classification.THIN
+    assert domains.strategy("example.com") is Strategy.CHEAP
+
+
 async def test_browser_down_returns_an_explicit_failure():
     browser = _FakeBrowser(down=True)
     blocked = _curl(_Reply(status=403, body=_AKAMAI_HTML))
@@ -324,6 +371,14 @@ async def test_safari_wins_when_chrome_is_blocked():
     assert page.tier == "cheap" and page.classification is Classification.OK
 
 
+async def test_a_good_safari_answer_does_not_wait_for_a_slow_chrome():
+    curl = _curl(_Reply(delay_s=5), _Reply())
+    with patch.object(fp, "AsyncSession", curl):
+        page = await asyncio.wait_for(fetch_url(_URL, None), timeout=1)
+
+    assert page.classification is Classification.OK
+
+
 async def test_dns_failure_is_not_retried_in_the_browser_but_timeout_is():
     browser = _FakeBrowser(_browser_page())
     with patch.object(fp, "AsyncSession", _curl(_Reply(error=DNSError("could not resolve")))):
@@ -348,6 +403,50 @@ async def test_json_is_returned_raw_and_binary_as_a_notice():
     with patch.object(fp, "AsyncSession", _curl(pdf)):
         page = await fetch_url("https://example.com/a.pdf", None)
     assert "binary content: application/pdf, 2,048 bytes" in render(page)
+
+
+@pytest.mark.parametrize(
+    "content_type", ["application/rss+xml", "application/vnd.api+json", "text/csv"]
+)
+async def test_feeds_and_structured_text_are_returned_as_text(content_type):
+    with patch.object(fp, "AsyncSession", _curl(_Reply(body="<rss/>", content_type=content_type))):
+        page = await fetch_url("https://blog.example.com/feed", None)
+    assert page.text == "<rss/>"
+
+
+async def test_an_apis_own_error_is_returned_for_the_model_to_read():
+    reply = _Reply(status=401, body='{"message": "Requires auth"}', content_type="application/json")
+    browser = _FakeBrowser(_browser_page())
+    with patch.object(fp, "AsyncSession", _curl(reply)):
+        page = await fetch_url("https://api.example.com/x", browser)
+
+    assert page.classification is Classification.HTTP_ERROR
+    assert "Requires auth" in render(page)
+    assert browser.calls == []
+
+
+async def test_an_unknown_charset_is_read_as_utf8():
+    with patch.object(fp, "AsyncSession", _curl(_Reply(charset="utf8mb4"))):
+        page = await fetch_url(_URL, None)
+    assert page.classification is Classification.OK
+
+
+def _fails_on_a_com(html: str, url: str, visible: str | None = None):
+    if "a.com" in url:
+        raise RuntimeError("boom")
+    return extract(html, url, visible)
+
+
+async def test_a_failure_on_one_url_leaves_the_others_in_the_tool_output():
+    with (
+        patch.object(fp, "AsyncSession", _curl(_Reply())),
+        patch.object(fp, "_browser_client", return_value=None),
+        patch.object(fp, "extract", side_effect=_fails_on_a_com),
+    ):
+        out = await fp.fetch_page.ainvoke({"urls": ["https://a.com/", "https://b.com/"]})
+
+    assert "RuntimeError: boom" in out and "NOT retrieved" in out
+    assert "Paragraph 29" in out
 
 
 async def test_the_tool_fetches_urls_in_parallel_and_joins_them():
