@@ -131,9 +131,11 @@ the CLI comes inside it, so both move together.
   turn's `ToolContext`, so tools don't know which harness runs them. Events use
   canonical names (the `mcp__aug_core__` / `mcp__aug__` prefix stripped), so moving a
   tool between the two changes nothing outside Claude's own session. Claude's own
-  tools are an allowlist (`_CLAUDE_BUILTIN_TOOLS`) and run without approval
-  (`permission_mode="dontAsk"`): anything not listed, including a tool a new CLI adds,
-  is refused. Approvals stay on AUG's tools that ask for them.
+  tools are an allowlist (`_CLAUDE_BUILTIN_TOOLS`, passed as `tools`): anything not
+  listed, including a tool a new CLI adds, is not available. They run with the CLI's
+  permission checks off (`permission_mode="bypassPermissions"`): under `dontAsk` its
+  own Bash heuristics refused ordinary commands unpredictably. The guard hook below is
+  the only check left. Approvals stay on AUG's tools that ask for them.
 - **Guard.** A PreToolUse hook refuses the blocked paths (`blocked_paths`) in Bash,
   Read, Write and Edit, and rewrites every shell command to run through hushed, as
   `run_bash` does. The CLI starts through `cli.sh`, which keeps only the
