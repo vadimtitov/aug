@@ -337,7 +337,7 @@ async def test_the_session_starts_with_aug_prompt_skills_and_no_filesystem_setti
     assert "get_skill" not in options.system_prompt["append"]  # Claude lists skills itself
     assert options.setting_sources == []
     assert options.skills == ["aug:weather"]
-    assert options.permission_mode == "dontAsk"
+    assert options.permission_mode == "bypassPermissions"
     assert options.allowed_tools == ["Bash", "Read", "mcp__aug_core", "mcp__aug"]
     assert options.tools == ["Bash", "Read"]
     assert options.session_id is not None and options.resume is None

@@ -432,7 +432,10 @@ class ClaudeCodeHarness(Harness):
             setting_sources=[],
             tools=builtin,
             allowed_tools=[*builtin, *(f"mcp__{server}" for server in AUG_SERVERS)],
-            permission_mode="dontAsk",
+            # No CLI permission checks: under dontAsk its own Bash heuristics refused
+            # ordinary commands at random.  `tools` still caps the built-in set and
+            # the guard hook still refuses blocked paths.
+            permission_mode="bypassPermissions",
             mcp_servers=aug_mcp_servers(self.profile.tools, self.profile.always_loaded, calls),
             strict_mcp_config=True,
             plugins=[{"type": "local", "path": str(plugin)}],
