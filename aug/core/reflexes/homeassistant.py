@@ -27,6 +27,7 @@ aliases are given to the model as other names for them.
 import asyncio
 import logging
 import random
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -61,9 +62,10 @@ from aug.utils.homeassistant import Entity, HomeAssistantClient
 logger = logging.getLogger(__name__)
 
 MODEL = "gpt-6-luna"
-# How long both questions together may take; past it the reflex gives up.  Leaves the
-# service calls room inside REFLEX_TIMEOUT_SECONDS.
-DECIDE_SECONDS = 3.0
+# How long both questions together may take; past it the reflex gives up.  The first
+# call after a quiet spell can take a couple of seconds.  Leaves the service calls room
+# inside REFLEX_TIMEOUT_SECONDS.
+DECIDE_SECONDS = 5.0
 # The Decisions API's limit per request; a home with more questions than this is not
 # asked at all.
 MAX_QUESTIONS = 400
@@ -392,12 +394,24 @@ async def _decide(
     ha: HomeAssistantClient, decisions: DecisionsClient, query: str, history: Sequence[Exchange]
 ) -> list[ServiceCall]:
     conversation = _conversation(query, history)
-    gate = (await decisions.decide(conversation, [Predicate("gate", HA_REFLEX_GATE)]))["gate"]
-    if gate.probability is None or gate.probability < GATE_THRESHOLD:
-        logger.info("ha_reflex_skip reason=not_a_request p=%s", gate.probability)
-        return []
     label = load_settings().reflexes.homeassistant.entity_label
-    devices = [d for d in await ha.get_entities(label or None) if _questions(d, 0)]
+    # Read alongside layer 1 so it is off the path when the answer is yes; a read only,
+    # and usually served from the client's cache.
+    entities = asyncio.create_task(ha.get_entities(label or None))
+    try:
+        started = time.monotonic()
+        gate = (await decisions.decide(conversation, [Predicate("gate", HA_REFLEX_GATE)]))["gate"]
+        gate_ms = (time.monotonic() - started) * 1000
+        if gate.probability is None or gate.probability < GATE_THRESHOLD:
+            logger.info(
+                "ha_reflex_skip reason=not_a_request p=%s gate_ms=%.0f", gate.probability, gate_ms
+            )
+            return []
+        devices = [d for d in await entities if _questions(d, 0)]
+    finally:
+        entities.cancel()
+        if entities.done() and not entities.cancelled():
+            entities.exception()  # retrieved: a failed read only matters on a yes
     questions = [q for i, d in enumerate(devices) for q in _questions(d, i)]
     if not devices or len(questions) > MAX_QUESTIONS:
         logger.warning(
@@ -408,7 +422,15 @@ async def _decide(
         )
         return []
     catalog = InputMessage("developer", _catalog(devices))
-    return plan(devices, await decisions.decide([catalog, *conversation], questions))
+    started = time.monotonic()
+    answers = await decisions.decide([catalog, *conversation], questions)
+    logger.info(
+        "ha_reflex_decided gate_ms=%.0f layer2_ms=%.0f questions=%d",
+        gate_ms,
+        (time.monotonic() - started) * 1000,
+        len(questions),
+    )
+    return plan(devices, answers)
 
 
 async def _execute(ha: HomeAssistantClient, calls: list[ServiceCall]) -> ReflexOutput:

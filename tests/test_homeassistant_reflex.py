@@ -547,12 +547,11 @@ _SOFA_TO_20 = _light(0, b="20")
 
 
 @pytest.mark.parametrize("gate", [GATE_THRESHOLD - 0.01, None])
-async def test_a_message_that_is_not_a_request_never_reaches_home_assistant(gate):
+async def test_a_message_that_is_not_a_request_changes_nothing(gate):
     decisions = _FakeDecisions(gate=gate)
     reflex, ha = _reflex(decisions, [SOFA])
 
     assert await reflex("what's the weather?", []) is None
-    ha.get_entities.assert_not_awaited()
     ha.call_service.assert_not_awaited()
     assert len(decisions.calls) == 1
 
@@ -576,6 +575,12 @@ async def test_a_failed_service_call_is_reported_as_failed():
     assert output is not None and output.display and "(1/2 succeeded)" in output.display
     assert "- FAILED: light.turn_on on light.sofa" in output.note
     assert "- done: light.turn_off on light.lamp" in output.note
+
+
+async def test_a_failed_device_read_does_not_matter_when_the_answer_is_no():
+    reflex, ha = _reflex(_FakeDecisions(gate=0.1), [SOFA])
+    ha.get_entities = AsyncMock(side_effect=RuntimeError("HA down"))
+    assert await reflex("what's the weather?", []) is None
 
 
 async def test_deciding_too_slowly_does_nothing():

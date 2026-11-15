@@ -24,7 +24,7 @@ from typing import Literal
 logger = logging.getLogger(__name__)
 
 # A reflex past this is dropped and the turn goes ahead without it.
-REFLEX_TIMEOUT_SECONDS = 10.0
+REFLEX_TIMEOUT_SECONDS = 12.0
 
 
 @dataclass(frozen=True)
