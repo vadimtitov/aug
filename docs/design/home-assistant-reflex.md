@@ -78,7 +78,7 @@ calls are sent at the same time and always reported. The whole reflex is capped 
 - **Synthetic messages:** 22 phrases covering two things the history lacks:
   - multi-device requests ("make the lamp red and the light 20%");
   - look-alikes that must not act ("I'll switch the kitchen light off myself").
-- **Devices:** a snapshot of the 15 labelled devices.
+- **Devices:** a snapshot of the devices labelled for AUG.
 - **No Home Assistant calls.** The evaluation only asked the model. Service calls were
   computed by the same `plan()` code and compared with the labels, never sent.
 
@@ -87,14 +87,14 @@ calls are sent at the same time and always reported. The whole reflex is capped 
 - a set of service calls;
 - nothing;
 - or "either is acceptable", for genuinely ambiguous requests such as "close the curtains"
-  in a home with two sets of curtains.
+  when more than one room has curtains.
 
 | Real messages | Count |
 |---|---:|
 | Not a device request | 928 |
 | Clear device request | 37 |
 | Ambiguous device request (acting or not both acceptable) | 12 |
-| Device request for something the reflex doesn't control (sleep mode, vacuum…) | 15 |
+| Device request for something the reflex doesn't control | 15 |
 
 ### Layer 1 prompt
 
@@ -129,8 +129,8 @@ text:
 
 Without history, follow-ups ("now turn them all on") are missed. Messages written while
 designing an automation also look like commands. With more history, older context starts
-to pull the model towards acting. The one false alarm at 2 is a borderline case: "not
-approved yet, make it brighter", written while tuning a scene.
+to pull the model towards acting. The one false alarm at 2 is a borderline case: a request
+to make the lights brighter, written while tuning a scene.
 
 ### End to end (shipped code)
 
@@ -141,15 +141,15 @@ approved yet, make it brighter", written while tuning a scene.
 | 12 ambiguous requests | left to the agent |
 | 15 requests for devices outside the reflex | 0 actions |
 
-Both wrong actions come from naming. "The lamp in the living room" also matched the sofa
-light, whose Home Assistant name is "Living Room Dimmer Living Room Light". Aliases in
+Both wrong actions come from naming: a request for one lamp in a room also matched a
+second light in that room whose Home Assistant name doesn't say what it is. Aliases in
 Home Assistant fix this without code changes.
 
 The synthetic set gave the following results:
 
 - **12 look-alikes:** no action.
 - **9 requests:** 6 done correctly. 3 were left to the agent, including the red-lamp/20%
-  example, because the TV backlight's targeting fell in the unsure band. One of those 3
+  example, because a third light's targeting fell in the unsure band. One of those 3
   asked for a relative white tone ("warmer"), which the reflex leaves to the agent by
   design.
 - **"Turn everything off in the living room"** also closed the curtains. Whether

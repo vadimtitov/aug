@@ -220,8 +220,8 @@ async def test_get_entities_by_label_returns_empty_when_no_match():
 async def test_get_entities_by_label_carries_aliases_and_attributes():
     client = HomeAssistantClient("http://ha:8123", "tok")
     registry = [_reg_entry("light.lamp", ["aug"])]
-    entries = {"light.lamp": {"aliases": ["Торшер", None]}}
-    states = [_state("light.lamp", "on", "Lamp Right", supported_color_modes=["rgb"])]
+    entries = {"light.lamp": {"aliases": ["Лампа", None]}}
+    states = [_state("light.lamp", "on", "Floor Lamp", supported_color_modes=["rgb"])]
 
     with (
         patch(
@@ -232,14 +232,14 @@ async def test_get_entities_by_label_carries_aliases_and_attributes():
     ):
         (lamp,) = await client.get_entities(label="aug")
 
-    assert lamp.aliases == ("Торшер",)
+    assert lamp.aliases == ("Лампа",)
     assert lamp.attributes["supported_color_modes"] == ["rgb"]
 
 
 async def test_entities_still_load_when_their_aliases_cannot_be_read():
     client = HomeAssistantClient("http://ha:8123", "tok")
     registry = [_reg_entry("light.lamp", ["aug"])]
-    states = [_state("light.lamp", "on", "Lamp Right")]
+    states = [_state("light.lamp", "on", "Floor Lamp")]
 
     with (
         patch(
@@ -292,10 +292,10 @@ async def test_call_service_strips_entity_id_from_service_data():
 
 LAMP = Entity(
     "light.lamp",
-    "Lamp Right",
+    "Floor Lamp",
     "on",
     area_name="Living Room",
-    aliases=("Торшер",),
+    aliases=("Лампа",),
     attributes={
         "supported_color_modes": ["color_temp", "rgb"],
         "min_color_temp_kelvin": 2000,
@@ -354,7 +354,7 @@ def test_devices_the_reflex_must_not_operate_get_no_questions(device):
 def test_a_devices_aliases_and_room_are_part_of_its_question():
     target = _questions(LAMP, 3)[0]
     assert isinstance(target, Predicate) and target.name == "t3"
-    assert "Lamp Right" in target.instructions and "Торшер" in target.instructions
+    assert "Floor Lamp" in target.instructions and "Лампа" in target.instructions
     assert "in the Living Room" in target.instructions
     assert " in the " not in _questions(PLUG, 0)[0].instructions
 
