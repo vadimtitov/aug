@@ -614,35 +614,109 @@ in your response. It is for you to know, not for the user to read."""
 # Home Assistant reflex
 # ---------------------------------------------------------------------------
 
-HA_REFLEX_SYSTEM_PROMPT = """\
-You are a Home Assistant controller. Decide if a user query is a direct, unambiguous \
-command to control smart home devices, and if so, return the exact service calls.
+# Added to the user's message when a reflex already acted on it, before the agent's turn.
+REFLEX_NOTE = "[An automatic reflex acted on this message before it reached you:\n{note}]"
 
-Return an empty actions list unless ALL of these are true:
-- The query is an explicit command, not a question, status check, or expression of state
-- You can confidently identify which entities to act on from the provided list
-- You are certain about the service to call
+# Layer 1: asked of every message someone is there for.  Has to keep away from anything
+# that only mentions a device; layer 2 only runs when this says yes.
+HA_REFLEX_GATE = """\
+Is the user's LAST message an instruction for the ASSISTANT to operate a home device \
+IMMEDIATELY: switch a light, curtain, heater, TV or switch on or off, or change its \
+brightness, colour, position or temperature?
+True: an imperative or polite request addressed to the assistant ('turn off the kitchen \
+light', 'can you close the curtains', 'make the lamp 20%'), or a short follow-up that only \
+repeats or reverses the device action just discussed ('now turn it on', 'all of them').
+False, even when devices are mentioned:
+- the user says what they did, are doing or will do themselves ('I'll press a button on \
+the TV', 'I'm turning it off', 'I switched it on via Alexa');
+- discussing how something should be done, or agreeing on an approach ('let's do it via \
+remote emulation');
+- building or editing automations, scenes, scripts, button mappings, reminders or \
+schedules, including 'and also when everything is off' while designing one;
+- prohibitions ('don't touch the bedroom TV');
+- questions, status checks, reports, complaints, a later time ('at 7 am');
+- figurative language, or devices that are not part of the home (bike lights, a phone)."""
 
-Return empty actions for:
-- Questions ("are the lights on?", "what's the temperature?")
-- Ambiguous intent ("I'm cold", "it's dark in here", "I'm going to bed", "on")
-- Commands targeting entities not in the list
-
-Scope conservatism — this is critical:
-- Only act on entities that are explicitly and unambiguously identified in the query
-- When unsure whether to act on 1 entity or many, return empty actions
-- Never expand scope beyond what the query literally states
-- A query with no clear target entity is ambiguous — return empty actions
-- It is always safer to do nothing; the main agent will ask for clarification
-
-Return one action per entity for:
-- "turn on the kitchen lights" → light.turn_on on each matching kitchen light entity
-- "turn off all lights" → light.turn_off on every light entity
-- "set living room to 22 degrees" → climate.set_temperature with temperature in service_data
-- "close the blinds" → cover.close_cover on each cover entity
-
-When in doubt, return empty actions. The main agent will handle it.\
-"""
+# Layer 2: the home's devices, given as context, then the same questions per device.
+HA_REFLEX_DEVICES = "Devices in the home:\n{devices}"
+HA_REFLEX_DEVICE_LINE = "- {name} ({kind}{where}){aliases}"
+HA_REFLEX_WHERE = " in the {area}"
+HA_REFLEX_ALIASES = "; also called {aliases}"
+HA_REFLEX_TARGET = (
+    'Does the user\'s LAST message ask to change the device "{name}" ({kind}{where}'
+    "{aliases}) right now? A device named explicitly, or implied by room and type, "
+    "counts: 'the light in <room>' covers every light in that room, 'all lights' covers "
+    "every light. False if the request is about another device or not a request to act now."
+)
+HA_REFLEX_ACTION = 'What should happen to "{name}" according to the user\'s last message?'
+HA_REFLEX_BRIGHTNESS = 'What brightness does the user\'s last message ask for "{name}"?'
+HA_REFLEX_COLOR = 'What colour does the user\'s last message ask for "{name}"?'
+HA_REFLEX_COLOR_TEMP = 'What white tone does the user\'s last message ask for "{name}"?'
+HA_REFLEX_POSITION = (
+    'What position does the user\'s last message ask for "{name}" (0 closed, 100 open)?'
+)
+HA_REFLEX_TEMPERATURE = 'What target temperature does the user\'s last message ask for "{name}"?'
+HA_REFLEX_NOT_SPECIFIED = "The message does not say."
+HA_REFLEX_OTHER = "Something not listed here."
+# What each device is called, by (domain, device_class); (domain, None) covers a class
+# not listed.  Covers have no fallback: a garage door or a gate is never offered.
+HA_REFLEX_KINDS = {
+    ("light", None): "a light",
+    ("switch", "outlet"): "a socket",
+    ("switch", None): "a switch",
+    ("cover", "curtain"): "a curtain",
+    ("cover", "blind"): "a blind",
+    ("cover", "shade"): "a shade",
+    ("cover", "shutter"): "a shutter",
+    ("cover", "awning"): "an awning",
+    ("climate", None): "a heating thermostat",
+    ("media_player", "tv"): "a TV",
+    ("media_player", "speaker"): "a speaker",
+    ("media_player", "receiver"): "an AV receiver",
+    ("media_player", None): "a TV or media player",
+}
+HA_REFLEX_ACTIONS = {
+    "light": {"turn_on": "Switch on, or change brightness or colour.", "turn_off": "Switch off."},
+    "switch": {"turn_on": "Switch on.", "turn_off": "Switch off."},
+    "cover": {
+        "open": "Open fully.",
+        "close": "Close fully.",
+        "set_position": "Move to a given position.",
+        "stop": "Stop moving.",
+    },
+    "climate": {
+        "heat": "Turn heating on.",
+        "turn_off": "Turn heating off.",
+        "set_temperature": "Set a target temperature.",
+    },
+    "media_player": {
+        "turn_on": "Turn on.",
+        "turn_off": "Turn off.",
+        "play": "Play.",
+        "pause": "Pause.",
+        "volume_up": "Louder.",
+        "volume_down": "Quieter.",
+    },
+}
+HA_REFLEX_RELATIVE_BRIGHTNESS = {"brighter": "brighter than now", "dimmer": "dimmer than now"}
+HA_REFLEX_COLORS = {
+    "red": "red",
+    "orange": "orange",
+    "yellow": "yellow",
+    "green": "green",
+    "cyan": "cyan, turquoise",
+    "blue": "blue",
+    "purple": "purple, violet, lilac (фиолетовый, сиреневый)",
+    "pink": "pink",
+    "white": "plain white",
+}
+HA_REFLEX_TONES = {
+    "warmest": "the warmest white",
+    "warmer": "warmer than now",
+    "neutral": "neutral white",
+    "colder": "colder than now",
+    "coldest": "the coldest white",
+}
 
 
 def _section(tag: str, content: str) -> str:

@@ -1,8 +1,8 @@
 """AUG's own append-only record of every turn, one JSONL file per conversation.
 
 Written by ``Harness.run()`` whatever the harness, so the record looks the same on
-every harness.  It is never fed back to a model: compaction does not touch it, and
-only search and the memory jobs read it.
+every harness.  It is never fed back to the agent: compaction does not touch it, and
+only search, the memory jobs and reflexes (for the last few messages) read it.
 """
 
 import asyncio
@@ -17,6 +17,8 @@ from aug.utils.data import DATA_DIR
 from aug.utils.storage import file_sha256
 
 TRANSCRIPTS_DIR = DATA_DIR / "transcripts"
+# How much of a transcript's end recent() reads.
+_TAIL_BYTES = 256 * 1024
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,43 @@ class Transcript:
             await asyncio.to_thread(self._write, line)
         except OSError:
             logger.warning("transcript write failed path=%s", self.path, exc_info=True)
+
+    async def recent(self, context_id: str, n: int) -> list[dict[str, Any]]:
+        """The last *n* messages of session *context_id*, oldest first: the text of its
+        ``turn_started`` and ``turn_ended`` records, from turns someone was there for
+        (a push's or a job's prompt is not something the user said).  Reads only the
+        file's tail, so a long transcript costs no more than a short one.  [] when the
+        file can't be read."""
+        try:
+            lines = await asyncio.to_thread(self._tail)
+        except OSError:
+            logger.warning("transcript read failed path=%s", self.path, exc_info=True)
+            return []
+        found: list[dict[str, Any]] = []
+        attended = True  # of the turn the records being read belong to
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue  # the first line of the tail is usually cut
+            if not isinstance(record, dict) or record.get("context_id") != context_id:
+                continue
+            if record.get("event") == "turn_started":
+                attended = record.get("attended", True) is not False
+            if (
+                attended
+                and record.get("event") in ("turn_started", "turn_ended")
+                and record.get("text")
+            ):
+                found.append(record)
+        return found[-n:] if n else []
+
+    def _tail(self) -> list[str]:
+        if not self.path.exists():
+            return []
+        with self.path.open("rb") as f:
+            f.seek(max(0, f.seek(0, 2) - _TAIL_BYTES))
+            return f.read().decode("utf-8", errors="replace").splitlines()
 
     def _write(self, line: str) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

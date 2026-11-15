@@ -85,8 +85,8 @@ class _RestContext:
 class RestApiInterface(BaseInterface[_RestContext]):
     """REST API frontend — runs every request through the full BaseInterface pipeline.
 
-    Both /chat/invoke and /chat/stream benefit from reflexes, structured logging,
-    run lifecycle management, and error handling defined in BaseInterface.
+    Both /chat/invoke and /chat/stream get structured logging, run lifecycle
+    management and error handling from BaseInterface, and reflexes from the harness.
     """
 
     # Clients get the context on every turn_ended event; a warning in the chat would

@@ -2,14 +2,14 @@
 
 Owns everything LangGraph-specific about a turn: the stream loop across
 ``interrupt_after=["call_tools"]`` pauses, mid-run injection, the stop flag, the tools'
-ToolContext, reflexes, compaction, and mapping model/graph exceptions onto HarnessError
+ToolContext, compaction, and mapping model/graph exceptions onto HarnessError
 kinds.  Interfaces only ever see harness events from here.
 """
 
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import aclosing, suppress
 from dataclasses import replace
 
@@ -44,7 +44,6 @@ from aug.core.harness.types import (
     Message,
     ModelTier,
     SessionStatus,
-    StatusUpdate,
     TextPart,
     TurnContext,
     TurnEnded,
@@ -57,7 +56,7 @@ from aug.core.prompts import (
     MID_RUN_INJECTION_PREFIX,
     USER_FILE_HINT,
 )
-from aug.core.reflexes import Reflex, run_reflexes
+from aug.core.reflexes import Reflex
 from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, MessageContent, run_registry
 from aug.core.state import AgentState
 from aug.utils.media import MODEL_IMAGE_TYPES, image_marker
@@ -91,6 +90,10 @@ class LangGraphHarness(Harness):
         self._opened: dict[str, AgentRun] = {}
         self._tool_tokens: tuple[tuple[str, ...], int] | None = None  # (tool names, tokens)
 
+    @property
+    def reflexes(self) -> Sequence[Reflex]:
+        return self.agent.reflexes
+
     def _run(
         self, message: Message, context_id: str, turn: TurnContext
     ) -> AsyncIterator[HarnessEvent]:
@@ -99,9 +102,7 @@ class LangGraphHarness(Harness):
             thread_id=context_id,
             interface=turn.reply_to.interface,
         )
-        # Reflexes answer what the user just said; a follow-up turn's messages were
-        # injections (their own reflexes already ran), so it fires none.
-        return self._stream(graph_input, message, context_id, turn, reflexes=not turn.follow_up)
+        return self._stream(graph_input, message, context_id, turn)
 
     async def add_context(self, text: str, context_id: str) -> None:
         """Append *text* to an idle session's history without running a turn."""
@@ -206,8 +207,6 @@ class LangGraphHarness(Harness):
         message: Message,
         context_id: str,
         turn: TurnContext,
-        *,
-        reflexes: bool,
     ) -> AsyncIterator[HarnessEvent]:
         """Stream the graph across tool-round pauses, injecting queued messages."""
         run = run_registry.get(context_id)
@@ -227,29 +226,18 @@ class LangGraphHarness(Harness):
             }
         }
 
-        finished = False
         step_limited = False
         tool_rounds = 0
-        displays: list[str] = []  # reflex results to show the user, as they land
-        reflex_task: asyncio.Task[None] | None = None
-        if reflexes and self.agent.reflexes:
-            reflex_task = asyncio.create_task(
-                self._run_reflexes(self.agent.reflexes, message.text, context_id, run, displays)
-            )
         try:
             while True:
                 graph = self.agent.astream_events(graph_input, config, self._checkpointer)
                 async with aclosing(_until_stopped(graph, run.user_requested_stop)) as events:
                     async for event in events:
                         yield event
-                        while displays:
-                            yield StatusUpdate(text=displays.pop(0))
                 if run.user_requested_stop.is_set():
-                    finished = True
                     break
                 state = await self.agent.aget_state(config, self._checkpointer)
                 if not state.next:
-                    finished = True
                     break
                 tool_rounds += 1
                 cap = ATTENDED_MAX_TOOL_ROUNDS if turn.attended else UNATTENDED_MAX_TOOL_ROUNDS
@@ -281,21 +269,11 @@ class LangGraphHarness(Harness):
                 return
             # Failing on the way down after a /stop is still a stop, not an error.
             logger.info("error after stop context=%s: %s: %s", context_id, type(e).__name__, e)
-            finished = True
-        finally:
-            # A turn that didn't finish (error, step limit, consumer gone) drops its
-            # reflexes; one that did waits for them below so their inject is counted.
-            if reflex_task is not None and not reflex_task.done() and not finished:
-                reflex_task.cancel()
 
         if run.user_requested_stop.is_set():
             await self._record_stop(context_id)
         elif step_limited:
             await self._record_note(context_id, HARNESS_STEP_LIMIT_NOTE)
-        if reflex_task is not None:
-            await asyncio.gather(reflex_task, return_exceptions=True)
-        for text in displays:
-            yield StatusUpdate(text=text)
         # Stop taking injections before collecting what's queued: from here on a new
         # message gets a turn of its own instead of landing in a queue nobody reads.
         run.active = False
@@ -311,23 +289,6 @@ class LangGraphHarness(Harness):
             unconsumed=unconsumed,
             cancelled=run.user_requested_stop.is_set(),
         )
-
-    async def _run_reflexes(
-        self,
-        reflexes: list[Reflex],
-        query: str,
-        context_id: str,
-        run: AgentRun,
-        displays: list[str],
-    ) -> None:
-        """Run reflexes alongside the turn; each result is injected as soon as it lands,
-        so the agent can pick it up at its next tool-round pause, and its display text
-        is queued for the turn's event stream."""
-        history = await self._recent_history(context_id)
-        for result in await run_reflexes(reflexes, query, history):
-            run.inject_message(result.inject)
-            if result.display:
-                displays.append(result.display)
 
     async def _record_stop(self, context_id: str) -> None:
         """Tell the history the user stopped this turn, so the next turn knows.
@@ -354,29 +315,6 @@ class LangGraphHarness(Harness):
             )
         except Exception:
             logger.warning("record_note_failed context=%s", context_id, exc_info=True)
-
-    async def _recent_history(self, context_id: str, n: int = 3) -> list[MessageContent]:
-        """The last *n* user/assistant messages, as labelled strings, for reflexes."""
-        try:
-            snapshot = await self.agent.aget_state(_config(context_id), self._checkpointer)
-        except Exception:
-            logger.warning("history_fetch_failed context=%s", context_id, exc_info=True)
-            return []
-        messages = (snapshot.values or {}).get("messages", [])
-        result: list[MessageContent] = []
-        for msg in [m for m in messages if isinstance(m, (HumanMessage, AIMessage))][-n:]:
-            prefix = "User" if isinstance(msg, HumanMessage) else "Assistant"
-            if isinstance(msg.content, str):
-                result.append(f"{prefix}: {msg.content}")
-            elif isinstance(msg.content, list):
-                texts = [
-                    b["text"]
-                    for b in msg.content
-                    if isinstance(b, dict) and b.get("type") == "text"
-                ]
-                if texts:
-                    result.append(f"{prefix}: {' '.join(texts)}")
-        return result
 
 
 def _tool_tokens(tools: list[BaseTool]) -> int:

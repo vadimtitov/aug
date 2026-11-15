@@ -1,29 +1,34 @@
-"""Unit tests for the Home Assistant reflex and client."""
+"""The Home Assistant reflex (Decisions API answers → service calls) and the HA client."""
 
+import asyncio
 import json
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from aug.core.reflexes.homeassistant import (
-    _decide,
-    _format_entities,
-    _HAAction,
-)
-from aug.core.reflexes.homeassistant import (
-    homeassistant_reflex as _homeassistant_reflex_factory,
-)
-from aug.utils.file_settings import AppSettings
-from aug.utils.homeassistant import Entity, HomeAssistantClient
+import pytest
 
-homeassistant_reflex = _homeassistant_reflex_factory()
+from aug.core.reflexes import Exchange
+from aug.core.reflexes.homeassistant import (
+    GATE_THRESHOLD,
+    HomeAssistantReflex,
+    ServiceCall,
+    _questions,
+    plan,
+)
+from aug.utils.decisions import Answer, Choice, DecisionsError, Predicate
+from aug.utils.homeassistant import Entity, HomeAssistantClient
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
 
-def _state(entity_id: str, state: str, friendly_name: str) -> dict:
-    return {"entity_id": entity_id, "state": state, "attributes": {"friendly_name": friendly_name}}
+def _state(entity_id: str, state: str, friendly_name: str, **attributes) -> dict:
+    return {
+        "entity_id": entity_id,
+        "state": state,
+        "attributes": {"friendly_name": friendly_name, **attributes},
+    }
 
 
 _FAKE_STATES = [
@@ -72,7 +77,11 @@ def _mock_http_client(states: list[dict]) -> MagicMock:
 
 
 def _mock_ws(
-    registry: list[dict], areas: list[dict], devices: list[dict] | None = None
+    registry: list[dict],
+    areas: list[dict],
+    devices: list[dict] | None = None,
+    entries: dict | None = None,
+    entries_ok: bool = True,
 ) -> MagicMock:
     messages = [
         '{"type": "auth_required"}',
@@ -80,6 +89,7 @@ def _mock_ws(
         json.dumps({"id": 1, "success": True, "result": registry}),
         json.dumps({"id": 2, "success": True, "result": areas}),
         json.dumps({"id": 3, "success": True, "result": devices or []}),
+        json.dumps({"id": 4, "success": entries_ok, "result": entries or {}}),
     ]
     ws = AsyncMock()
     ws.__aenter__ = AsyncMock(return_value=ws)
@@ -207,6 +217,42 @@ async def test_get_entities_by_label_returns_empty_when_no_match():
     assert result == []
 
 
+async def test_get_entities_by_label_carries_aliases_and_attributes():
+    client = HomeAssistantClient("http://ha:8123", "tok")
+    registry = [_reg_entry("light.lamp", ["aug"])]
+    entries = {"light.lamp": {"aliases": ["Лампа", None]}}
+    states = [_state("light.lamp", "on", "Floor Lamp", supported_color_modes=["rgb"])]
+
+    with (
+        patch(
+            "aug.utils.homeassistant.websockets.connect",
+            return_value=_mock_ws(registry, [], entries=entries),
+        ),
+        patch("aug.utils.homeassistant.httpx.AsyncClient", return_value=_mock_http_client(states)),
+    ):
+        (lamp,) = await client.get_entities(label="aug")
+
+    assert lamp.aliases == ("Лампа",)
+    assert lamp.attributes["supported_color_modes"] == ["rgb"]
+
+
+async def test_entities_still_load_when_their_aliases_cannot_be_read():
+    client = HomeAssistantClient("http://ha:8123", "tok")
+    registry = [_reg_entry("light.lamp", ["aug"])]
+    states = [_state("light.lamp", "on", "Floor Lamp")]
+
+    with (
+        patch(
+            "aug.utils.homeassistant.websockets.connect",
+            return_value=_mock_ws(registry, [], entries_ok=False),
+        ),
+        patch("aug.utils.homeassistant.httpx.AsyncClient", return_value=_mock_http_client(states)),
+    ):
+        (lamp,) = await client.get_entities(label="aug")
+
+    assert lamp.aliases == ()
+
+
 # ---------------------------------------------------------------------------
 # HomeAssistantClient.call_service
 # ---------------------------------------------------------------------------
@@ -241,146 +287,372 @@ async def test_call_service_strips_entity_id_from_service_data():
 
 
 # ---------------------------------------------------------------------------
-# _format_entities
+# The reflex: devices
+# ---------------------------------------------------------------------------
+
+LAMP = Entity(
+    "light.lamp",
+    "Floor Lamp",
+    "on",
+    area_name="Living Room",
+    aliases=("Лампа",),
+    attributes={
+        "supported_color_modes": ["color_temp", "rgb"],
+        "min_color_temp_kelvin": 2000,
+        "max_color_temp_kelvin": 6500,
+    },
+)
+SOFA = Entity(
+    "light.sofa",
+    "Sofa Light",
+    "off",
+    area_name="Living Room",
+    attributes={"supported_color_modes": ["brightness"]},
+)
+PLUG = Entity("light.plug", "Plug Light", "off", attributes={"supported_color_modes": ["onoff"]})
+CURTAIN = Entity(
+    "cover.curtain",
+    "Curtain",
+    "open",
+    area_name="Workroom",
+    attributes={"device_class": "curtain", "supported_features": 15},
+)
+HEATING = Entity(
+    "climate.thermostat",
+    "Thermostat",
+    "off",
+    attributes={"hvac_modes": ["off", "heat"], "min_temp": 5, "max_temp": 30},
+)
+TV = Entity("media_player.tv", "TV", "off", area_name="Living Room")
+SENSOR = Entity("sensor.temp", "Temp", "21")
+GONE = Entity("switch.humidifier", "Humidifier", "unavailable")
+GARAGE = Entity("cover.garage", "Garage", "closed", attributes={"device_class": "garage"})
+UNKNOWN_COVER = Entity("cover.thing", "Thing", "closed")
+AIRCON = Entity("climate.ac", "AC", "off", attributes={"hvac_modes": ["off", "cool"]})
+
+
+def _names(device: Entity, i: int = 0) -> dict[str, list[str] | None]:
+    return {
+        q.name: (sorted(q.options) if isinstance(q, Choice) else None)
+        for q in _questions(device, i)
+    }
+
+
+def test_each_device_gets_the_questions_of_its_kind():
+    for light in (LAMP, SOFA, PLUG):  # every light, so a request it can't do is seen
+        assert set(_names(light)) == {"t0", "a0", "b0", "c0", "k0"}
+    assert set(_names(CURTAIN)) == {"t0", "a0", "p0"}
+    assert set(_names(HEATING)) == {"t0", "a0", "h0"}
+    assert set(_names(TV)) == {"t0", "a0"}
+
+
+@pytest.mark.parametrize("device", [SENSOR, GONE, GARAGE, UNKNOWN_COVER, AIRCON])
+def test_devices_the_reflex_must_not_operate_get_no_questions(device):
+    assert _questions(device, 0) == []
+
+
+def test_a_devices_aliases_and_room_are_part_of_its_question():
+    target = _questions(LAMP, 3)[0]
+    assert isinstance(target, Predicate) and target.name == "t3"
+    assert "Floor Lamp" in target.instructions and "Лампа" in target.instructions
+    assert "in the Living Room" in target.instructions
+    assert " in the " not in _questions(PLUG, 0)[0].instructions
+
+
+def test_temperatures_offered_stay_within_the_thermostats_range():
+    narrow = Entity(
+        "climate.t", "T", "off", attributes={"hvac_modes": ["heat"], "min_temp": 18, "max_temp": 20}
+    )
+    assert _names(narrow)["h0"] == sorted(["not_specified", "18", "19", "20", "other"])
+
+
+# ---------------------------------------------------------------------------
+# The reflex: answers -> service calls
 # ---------------------------------------------------------------------------
 
 
-def test_format_entities_includes_id_and_name():
-    text = _format_entities([Entity("light.kitchen", "Kitchen Light", "off")])
-    assert "light.kitchen" in text
-    assert "Kitchen Light" in text
-    assert "off" not in text  # state omitted — cache may be stale
+def _target(p: float) -> Answer:
+    return Answer(probability=p)
 
 
-def test_format_entities_includes_area_when_present():
-    text = _format_entities([Entity("light.workroom", "Workroom", "on", area_name="Workroom")])
-    assert "in Workroom" in text
+def _pick(value: str, confidence: float = 0.95) -> Answer:
+    return Answer(choice=value, confidence=confidence)
 
 
-def test_format_entities_omits_area_when_absent():
-    text = _format_entities([Entity("light.kitchen", "Kitchen", "off")])
-    assert " in " not in text
+def _unspecified(*names: str) -> dict[str, Answer]:
+    return {n: _pick("not_specified") for n in names}
 
 
-# ---------------------------------------------------------------------------
-# homeassistant_reflex — integration
-# ---------------------------------------------------------------------------
+def _light(i: int, action: str = "turn_on", **params: str) -> dict[str, Answer]:
+    answers = {f"t{i}": _target(0.95), f"a{i}": _pick(action)}
+    for key in ("b", "c", "k"):
+        answers[f"{key}{i}"] = _pick(params.get(key, "not_specified"))
+    return answers
 
 
-async def test_reflex_returns_none_when_not_configured():
-    with patch(
-        "aug.core.reflexes.homeassistant.get_settings",
-        return_value=MagicMock(ha_url=None, ha_token=None),
-    ):
-        assert await homeassistant_reflex("turn on lights", []) is None
-
-
-async def test_reflex_returns_none_when_no_entities():
-    mock_client = AsyncMock()
-    mock_client.get_entities = AsyncMock(return_value=[])
-
-    with (
-        patch("aug.core.reflexes.homeassistant._get_client", return_value=mock_client),
-        patch("aug.core.reflexes.homeassistant.load_settings", return_value=AppSettings()),
-    ):
-        result = await homeassistant_reflex("turn on lights", [])
-
-    assert result is None
-
-
-async def test_reflex_returns_none_when_llm_finds_no_action():
-    mock_client = AsyncMock()
-    mock_client.get_entities = AsyncMock(return_value=_FAKE_ENTITIES)
-
-    with (
-        patch("aug.core.reflexes.homeassistant._get_client", return_value=mock_client),
-        patch("aug.core.reflexes.homeassistant.load_settings", return_value=AppSettings()),
-        patch("aug.core.reflexes.homeassistant._decide", new=AsyncMock(return_value=[])),
-    ):
-        result = await homeassistant_reflex("are the lights on?", [])
-
-    assert result is None
-
-
-async def test_reflex_calls_service_and_returns_output():
-    actions = [_HAAction(service="light.turn_on", entity_id="light.kitchen", service_data={})]
-    mock_client = AsyncMock()
-    mock_client.get_entities = AsyncMock(return_value=_FAKE_ENTITIES)
-    mock_client.call_service = AsyncMock()
-
-    with (
-        patch("aug.core.reflexes.homeassistant._get_client", return_value=mock_client),
-        patch("aug.core.reflexes.homeassistant.load_settings", return_value=AppSettings()),
-        patch("aug.core.reflexes.homeassistant._decide", new=AsyncMock(return_value=actions)),
-    ):
-        result = await homeassistant_reflex("turn on the kitchen light", [])
-
-    assert result is not None
-    assert "light.turn_on" in result.inject
-    assert "light.kitchen" in result.inject
-    assert result.display.startswith("🪄 ")
-    mock_client.call_service.assert_awaited_once_with("light.turn_on", "light.kitchen", {})
-
-
-async def test_reflex_reports_partial_failure():
-    actions = [
-        _HAAction(service="light.turn_off", entity_id="light.a"),
-        _HAAction(service="light.turn_off", entity_id="light.b"),
+def test_one_message_can_set_two_devices_differently():
+    # "turn the living room lamp red and the light to 20%"
+    answers = {
+        **_light(0, c="red"),
+        **_light(1, b="20"),
+        "t2": _target(0.02), "a2": _pick("open"), **_unspecified("p2"),
+    }  # fmt: skip
+    assert plan([LAMP, SOFA, CURTAIN], answers) == [
+        ServiceCall("light.turn_on", "light.lamp", {"rgb_color": [255, 0, 0]}),
+        ServiceCall("light.turn_on", "light.sofa", {"brightness_pct": 20}),
     ]
-    mock_client = AsyncMock()
-    mock_client.get_entities = AsyncMock(return_value=_FAKE_ENTITIES)
-    mock_client.call_service = AsyncMock(side_effect=[None, Exception("timeout")])
 
-    with (
-        patch("aug.core.reflexes.homeassistant._get_client", return_value=mock_client),
-        patch("aug.core.reflexes.homeassistant.load_settings", return_value=AppSettings()),
-        patch("aug.core.reflexes.homeassistant._decide", new=AsyncMock(return_value=actions)),
-    ):
-        result = await homeassistant_reflex("turn off all lights", [])
 
-    assert result is not None
-    assert "1/2" in result.display
-    assert "light.a" in result.inject
-    assert "light.b" not in result.inject
+@pytest.mark.parametrize(
+    ("device", "answers", "call"),
+    [
+        (SOFA, _light(0, "turn_off"), ServiceCall("light.turn_off", "light.sofa", {})),
+        (
+            SOFA,
+            _light(0, b="brighter"),
+            ServiceCall("light.turn_on", "light.sofa", {"brightness_step_pct": 20}),
+        ),
+        (
+            LAMP,
+            _light(0, k="warmest"),
+            ServiceCall("light.turn_on", "light.lamp", {"color_temp_kelvin": 2000}),
+        ),
+        (PLUG, _light(0), ServiceCall("light.turn_on", "light.plug", {})),
+        (
+            CURTAIN,
+            {"a0": _pick("close"), **_unspecified("p0")},
+            ServiceCall("cover.close_cover", "cover.curtain", {}),
+        ),
+        (
+            CURTAIN,
+            {"a0": _pick("close"), "p0": _pick("50")},
+            ServiceCall("cover.set_cover_position", "cover.curtain", {"position": 50}),
+        ),
+        (
+            CURTAIN,
+            {"a0": _pick("set_position"), "p0": _pick("0")},
+            ServiceCall("cover.close_cover", "cover.curtain", {}),
+        ),
+        (
+            HEATING,
+            {"a0": _pick("set_temperature"), "h0": _pick("21")},
+            ServiceCall("climate.set_temperature", "climate.thermostat", {"temperature": 21}),
+        ),
+        (
+            HEATING,
+            {"a0": _pick("heat"), "h0": _pick("22")},
+            ServiceCall(
+                "climate.set_temperature",
+                "climate.thermostat",
+                {"temperature": 22, "hvac_mode": "heat"},
+            ),
+        ),
+        (
+            HEATING,
+            {"a0": _pick("turn_off"), **_unspecified("h0")},
+            ServiceCall("climate.set_hvac_mode", "climate.thermostat", {"hvac_mode": "off"}),
+        ),
+        (
+            TV,
+            {"a0": _pick("pause")},
+            ServiceCall("media_player.media_pause", "media_player.tv", {}),
+        ),
+    ],
+)
+def test_answers_become_the_matching_service_call(device, answers, call):
+    assert plan([device], {"t0": _target(0.9), **answers}) == [call]
+
+
+@pytest.mark.parametrize(
+    ("device", "answers"),
+    [
+        # targeting neither clearly yes nor clearly no
+        (SOFA, {**_light(0), "t0": _target(0.5)}),
+        # unsure answers
+        (SOFA, {**_light(0), "a0": _pick("turn_on", 0.4)}),
+        (SOFA, {**_light(0), "b0": _pick("20", 0.3)}),
+        # refused or missing answers
+        (SOFA, {**_light(0), "a0": Answer()}),
+        (SOFA, {**_light(0), "t0": Answer()}),
+        (SOFA, {k: v for k, v in _light(0).items() if k != "t0"}),
+        # a value not on offer ("35%", "21.5 degrees")
+        (SOFA, _light(0, b="other")),
+        (HEATING, {"t0": _target(0.9), "a0": _pick("set_temperature"), "h0": _pick("other")}),
+        # parameters that contradict the action
+        (SOFA, _light(0, "turn_off", b="50")),
+        (LAMP, _light(0, c="red", k="warmest")),
+        (CURTAIN, {"t0": _target(0.9), "a0": _pick("close"), "p0": _pick("100")}),
+        # something the device can't do: must not be half done
+        (PLUG, _light(0, b="20")),
+        (PLUG, _light(0, c="red")),
+        (SOFA, _light(0, c="red")),
+        (SOFA, _light(0, k="warmest")),
+        (
+            Entity("cover.c", "C", "open", attributes={"device_class": "curtain"}),
+            {"t0": _target(0.9), "a0": _pick("set_position"), "p0": _pick("50")},
+        ),
+        # relative white tones are the agent's to judge
+        (LAMP, _light(0, k="warmer")),
+        # a value outside what the reflex knows
+        (LAMP, _light(0, c="ultraviolet")),
+    ],
+)
+def test_anything_unclear_or_impossible_means_doing_nothing(device, answers):
+    assert plan([device], answers) == []
+
+
+def test_one_unclear_device_stops_the_whole_request():
+    answers = {**_light(0), **_light(1), "t1": _target(0.4)}
+    assert plan([SOFA, LAMP], answers) == []
 
 
 # ---------------------------------------------------------------------------
-# _decide — history in prompt
+# The reflex end to end (Decisions API and HA mocked)
 # ---------------------------------------------------------------------------
 
 
-async def test_decide_includes_history_in_llm_prompt():
-    captured: list = []
-    mock_structured = MagicMock()
-    mock_structured.ainvoke = AsyncMock(
-        side_effect=lambda msgs: captured.extend(msgs) or MagicMock(actions=[])
-    )
-    history = ["User: turn on kitchen light", "Assistant: Done."]
+class _FakeDecisions:
+    """Answers the gate with *gate*, then layer 2 with *details*; records what it saw."""
 
-    with patch(
-        "aug.core.reflexes.homeassistant.build_chat_model",
-        return_value=MagicMock(with_structured_output=MagicMock(return_value=mock_structured)),
-    ):
-        await _decide("now turn it off", "light.kitchen (Kitchen) [on]", history, "test-model")
+    def __init__(self, gate: float | None, details: dict[str, Answer] | None = None, delay=0.0):
+        self.gate = gate
+        self.details = details or {}
+        self.delay = delay
+        self.calls: list[tuple[list, list]] = []
 
-    human = next(m for m in captured if hasattr(m, "content") and "Query" in m.content)
-    assert "User: turn on kitchen light" in human.content
-    assert "Assistant: Done." in human.content
-    assert "now turn it off" in human.content
+    async def decide(self, conversation, questions):
+        self.calls.append((list(conversation), list(questions)))
+        await asyncio.sleep(self.delay)
+        if [q.name for q in questions] == ["gate"]:
+            return {"gate": Answer(probability=self.gate)}
+        return self.details
 
 
-async def test_decide_omits_history_section_when_empty():
-    captured: list = []
-    mock_structured = MagicMock()
-    mock_structured.ainvoke = AsyncMock(
-        side_effect=lambda msgs: captured.extend(msgs) or MagicMock(actions=[])
-    )
+def _reflex(decisions, devices: list[Entity], fail: frozenset[str] = frozenset(), delay=0.0):
+    ha = MagicMock()
+    ha.get_entities = AsyncMock(return_value=devices)
 
-    with patch(
-        "aug.core.reflexes.homeassistant.build_chat_model",
-        return_value=MagicMock(with_structured_output=MagicMock(return_value=mock_structured)),
-    ):
-        await _decide("turn on kitchen", "light.kitchen (Kitchen) [off]", [], "test-model")
+    async def call_service(service, entity_id, data):
+        await asyncio.sleep(delay)
+        if entity_id in fail:
+            raise RuntimeError("HA said no")
 
-    human = next(m for m in captured if hasattr(m, "content") and "Query" in m.content)
-    assert "Recent conversation" not in human.content
+    ha.call_service = AsyncMock(side_effect=call_service)
+    reflex = HomeAssistantReflex()
+    reflex._clients = lambda: (ha, decisions)  # type: ignore[method-assign]
+    return reflex, ha
+
+
+_SOFA_TO_20 = _light(0, b="20")
+
+
+@pytest.mark.parametrize("gate", [GATE_THRESHOLD - 0.01, None])
+async def test_a_message_that_is_not_a_request_changes_nothing(gate):
+    decisions = _FakeDecisions(gate=gate)
+    reflex, ha = _reflex(decisions, [SOFA])
+
+    assert await reflex("what's the weather?", []) is None
+    ha.call_service.assert_not_awaited()
+    assert len(decisions.calls) == 1
+
+
+async def test_a_request_is_carried_out_and_reported():
+    reflex, ha = _reflex(_FakeDecisions(gate=0.99, details=_SOFA_TO_20), [SOFA])
+
+    output = await reflex("sofa light to 20%", [])
+
+    ha.call_service.assert_awaited_once_with("light.turn_on", "light.sofa", {"brightness_pct": 20})
+    assert output is not None and output.display
+    assert "- done: light.turn_on on light.sofa (brightness_pct=20)" in output.note
+
+
+async def test_a_failed_service_call_is_reported_as_failed():
+    details = {**_SOFA_TO_20, **_light(1, "turn_off")}
+    reflex, _ = _reflex(_FakeDecisions(0.99, details), [SOFA, LAMP], fail=frozenset({"light.sofa"}))
+
+    output = await reflex("sofa to 20% and lamp off", [])
+
+    assert output is not None and output.display and "(1/2 succeeded)" in output.display
+    assert "- FAILED: light.turn_on on light.sofa" in output.note
+    assert "- done: light.turn_off on light.lamp" in output.note
+
+
+async def test_a_failed_device_read_does_not_matter_when_the_answer_is_no():
+    reflex, ha = _reflex(_FakeDecisions(gate=0.1), [SOFA])
+    ha.get_entities = AsyncMock(side_effect=RuntimeError("HA down"))
+    assert await reflex("what's the weather?", []) is None
+
+
+async def test_deciding_too_slowly_does_nothing():
+    reflex, ha = _reflex(_FakeDecisions(0.99, _SOFA_TO_20, delay=0.2), [SOFA])
+    with patch("aug.core.reflexes.homeassistant.DECIDE_SECONDS", 0.05):
+        assert await reflex("sofa light to 20%", []) is None
+    ha.call_service.assert_not_awaited()
+
+
+async def test_once_decided_the_calls_finish_and_are_reported_whatever_the_deadline():
+    reflex, ha = _reflex(_FakeDecisions(0.99, _SOFA_TO_20), [SOFA], delay=0.2)
+    with patch("aug.core.reflexes.homeassistant.DECIDE_SECONDS", 0.05):
+        output = await reflex("sofa light to 20%", [])
+    ha.call_service.assert_awaited_once()
+    assert output is not None and "- done:" in output.note
+
+
+async def test_the_model_sees_recent_messages_and_the_devices():
+    decisions = _FakeDecisions(gate=0.99, details={**_light(0), "t0": _target(0.01)})
+    reflex, _ = _reflex(decisions, [SOFA])
+    history = [
+        Exchange("user", "old"),
+        Exchange("user", "turn off the sofa light"),
+        Exchange("assistant", "Done." + "x" * 1000),
+    ]
+
+    assert await reflex("now turn it on", history) is None
+
+    gate_input, _ = decisions.calls[0]
+    assert [(m.role, m.text[:23]) for m in gate_input] == [
+        ("user", "turn off the sofa light"),
+        ("assistant", "Done.xxxxxxxxxxxxxxxxxx"),
+        ("user", "now turn it on"),
+    ]
+    assert len(gate_input[1].text) == 300
+    detail_input, _ = decisions.calls[1]
+    assert detail_input[0].role == "developer" and "Sofa Light" in detail_input[0].text
+
+
+async def test_too_many_devices_to_ask_about_does_nothing():
+    many = [Entity(f"light.l{i}", f"L{i}", "off") for i in range(100)]
+    decisions = _FakeDecisions(gate=0.99)
+    reflex, ha = _reflex(decisions, many)
+
+    assert await reflex("turn on the lights", []) is None
+    assert len(decisions.calls) == 1
+    ha.call_service.assert_not_awaited()
+
+
+async def test_a_decisions_api_failure_surfaces_to_run_reflexes():
+    class _Down:
+        async def decide(self, conversation, questions):
+            raise DecisionsError("HTTP 503")
+
+    reflex, _ = _reflex(_Down(), [SOFA])
+    with pytest.raises(DecisionsError):
+        await reflex("turn on the sofa light", [])
+
+
+async def test_not_configured_does_nothing():
+    with patch("aug.core.reflexes.homeassistant.get_settings") as settings:
+        settings.return_value.ha_url = None
+        settings.return_value.ha_token = None
+        assert await HomeAssistantReflex()("turn on the light", []) is None
+
+
+async def test_clients_follow_the_settings():
+    reflex = HomeAssistantReflex()
+    with patch("aug.core.reflexes.homeassistant.get_settings") as settings:
+        settings.return_value.ha_url = "http://ha-1"
+        settings.return_value.ha_token = "t"
+        first = reflex._clients()
+        assert reflex._clients() == first
+        settings.return_value.ha_url = "http://ha-2"
+        assert reflex._clients() != first
