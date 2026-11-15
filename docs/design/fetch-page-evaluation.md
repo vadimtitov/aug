@@ -1,7 +1,7 @@
 # fetch_page evaluation
 
 How much each layer of `fetch_page` adds when reading real, often bot-protected web pages.
-Code: `aug/core/tools/fetch_page.py`, `aug/core/tools/page_content.py`,
+Code: `aug/core/tools/fetch_page/tool.py`, `aug/core/tools/fetch_page/page_content.py`,
 `stealth-browser/server.py`.
 
 ## Setup

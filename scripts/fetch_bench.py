@@ -22,7 +22,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from aug.core.tools.fetch_page import FetchedPage, fetch_url
-from aug.core.tools.page_content import Classification
+from aug.core.tools.fetch_page.page_content import Classification
 from aug.utils.stealth_browser import StealthBrowserClient
 
 

@@ -31,7 +31,7 @@ from langchain_core.tools import tool
 from tld import get_fld
 
 from aug.config import get_settings
-from aug.core.tools.page_content import (
+from aug.core.tools.fetch_page.page_content import (
     BLOCK_STATUS,
     Classification,
     bot_vendor,

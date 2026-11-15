@@ -38,8 +38,9 @@ aug/
 │   │   │   └── fake_agent.py   ← Hardcoded response, no LLM (for testing)
 │   │   └── tools/
 │   │       ├── brave_search.py ← Web search via Brave API
-│   │       ├── fetch_page.py   ← Reads web pages: curl_cffi, then the stealth browser when blocked
-│       ├── page_content.py ← Page classification (ok/blocked/thin) + markdown extraction
+│   │       ├── fetch_page/     ← Reads web pages: curl_cffi, then the stealth browser when blocked
+│   │       │   ├── tool.py         ← the tool: tiers, domain memory, rendering
+│   │       │   └── page_content.py ← page classification (ok/blocked/thin) + markdown extraction
 │   │       ├── run_bash.py     ← Shell access with secret injection + blocklist
 │   │       ├── note.py         ← Mid-conversation memory capture
 │   │       └── memory.py       ← Legacy key-value memory tools (remember/recall/forget)
@@ -289,6 +290,12 @@ only when there is a clear, immediate reason.
 - **No unnecessary abstractions** — three similar lines beat a premature helper.
 
 ## Module and class design
+
+- **A folder's name is a promise about every file in it.** In `tools/`, each file is a
+  tool. Never put a helper module next to the things a folder is named for: a tool that
+  needs its own helpers becomes a package (`tools/fetch_page/` with `__init__.py`,
+  `tool.py`, `page_content.py`), and code shared by several tools goes where its layer
+  belongs, not loose in `tools/`.
 
 - **Separate concerns by layer.** Client code (how to talk to an API) belongs in `utils/`. Orchestration code (what to do with the data) belongs in `core/`. When both live in the same file, neither is clean. See `aug/utils/homeassistant.py` + `aug/core/reflexes/homeassistant.py` as the canonical example.
 

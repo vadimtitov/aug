@@ -13,8 +13,15 @@ import httpx
 import pytest
 from curl_cffi.requests.exceptions import DNSError, Timeout
 
-from aug.core.tools import fetch_page as fp
-from aug.core.tools.fetch_page import (
+from aug.core.tools.fetch_page import tool as fp
+from aug.core.tools.fetch_page.page_content import (
+    Classification,
+    bot_vendor,
+    classify,
+    extract,
+    product_summary,
+)
+from aug.core.tools.fetch_page.tool import (
     MAX_CHARS_PER_PAGE,
     FetchedPage,
     Strategy,
@@ -22,13 +29,6 @@ from aug.core.tools.fetch_page import (
     fetch_url,
     registrable_domain,
     render,
-)
-from aug.core.tools.page_content import (
-    Classification,
-    bot_vendor,
-    classify,
-    extract,
-    product_summary,
 )
 from aug.utils.stealth_browser import (
     BrowserCookie,

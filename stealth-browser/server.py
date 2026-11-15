@@ -32,7 +32,7 @@ _TRIES = 5
 _RELOAD_AFTER_TRY = 2
 _BLOCK_STATUS = {401, 403, 405, 429, 503}
 # Bot-protection interstitials (Akamai, Cloudflare, DataDome, PerimeterX, Imperva,
-# Kasada, AWS WAF).  Keep in step with aug/core/tools/page_content.py.
+# Kasada, AWS WAF).  Keep in step with aug/core/tools/fetch_page/page_content.py.
 _CHALLENGE = re.compile(
     r"sec-if-cpt-container|errors\.edgesuite\.net|Just a moment\.\.\.|cf-chl-|"
     r"Attention Required! \| Cloudflare|captcha-delivery\.com|px-captcha|Press &amp; Hold|"
