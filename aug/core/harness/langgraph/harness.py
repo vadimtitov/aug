@@ -35,7 +35,7 @@ from aug.core.agents.base_agent import BaseAgent
 from aug.core.compaction import compact_thread, count_tokens
 from aug.core.harness.base import Harness
 from aug.core.harness.langgraph.events import dispatch
-from aug.core.harness.tool_context import TOOL_CONTEXT_CONFIG_KEY, ToolContext
+from aug.core.harness.tool_context import ToolContext
 from aug.core.harness.types import (
     ContextUsage,
     FilePart,
@@ -57,7 +57,7 @@ from aug.core.prompts import (
     USER_FILE_HINT,
 )
 from aug.core.reflexes import Reflex
-from aug.core.run import AGENT_RUN_CONFIG_KEY, AgentRun, MessageContent, run_registry
+from aug.core.run import AGENT_RUN_CONFIG_KEY, MessageContent, run_registry
 from aug.core.state import AgentState
 from aug.utils.media import MODEL_IMAGE_TYPES, image_marker
 
@@ -87,7 +87,6 @@ class LangGraphHarness(Harness):
         self.agent = agent
         self._checkpointer = checkpointer
         self._models = dict(models or {})
-        self._opened: dict[str, AgentRun] = {}
         self._tool_tokens: tuple[tuple[str, ...], int] | None = None  # (tool names, tokens)
 
     @property
@@ -185,22 +184,6 @@ class LangGraphHarness(Harness):
             self._tool_tokens = (names, _tool_tokens(self.agent.tools))
         return self._tool_tokens[1]
 
-    def _open_turn(self, context_id: str, turn: TurnContext) -> None:
-        existing = run_registry.get(context_id)
-        if existing is not None and existing.active:
-            existing.request_stop()  # the run lock should rule this out; never leave two
-        run = AgentRun(accepts_injection=turn.attended)
-        run_registry.set(context_id, run)
-        self._opened[context_id] = run
-
-    def _close_turn(self, context_id: str) -> None:
-        run = self._opened.pop(context_id, None)
-        if run is None:
-            return
-        run.active = False
-        if run_registry.get(context_id) is run:  # never drop a turn this one didn't open
-            run_registry.pop(context_id)
-
     async def _stream(
         self,
         graph_input: AgentState | Command | None,
@@ -210,22 +193,16 @@ class LangGraphHarness(Harness):
     ) -> AsyncIterator[HarnessEvent]:
         """Stream the graph across tool-round pauses, injecting queued messages."""
         run = run_registry.get(context_id)
-        assert run is not None, "_open_turn registers the run before the stream starts"
-        config: RunnableConfig = {
-            "configurable": {
-                "thread_id": context_id,
-                "interface": turn.reply_to.interface,
-                "sender_id": turn.reply_to.chat_id,
-                AGENT_RUN_CONFIG_KEY: run,
-                TOOL_CONTEXT_CONFIG_KEY: ToolContext(
-                    context_id=context_id,
-                    turn=turn,
-                    stopped=run.user_requested_stop,
-                    _emit=dispatch,
-                    _oneshot=self.oneshot,
-                ),
-            }
-        }
+        assert run is not None, "Harness._turn registers the run before the stream starts"
+        tool_context = ToolContext(
+            context_id=context_id,
+            turn=turn,
+            stopped=run.user_requested_stop,
+            _emit=dispatch,
+            _oneshot=self.oneshot,
+        )
+        config = tool_context.runnable_config()
+        config["configurable"][AGENT_RUN_CONFIG_KEY] = run
 
         step_limited = False
         tool_rounds = 0

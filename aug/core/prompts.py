@@ -488,6 +488,9 @@ HARNESS_RETRY_AT_SUFFIX = " The limit resets at {time} UTC."
 
 # Told after /stop ended a turn.  Whatever already ran is not undone.
 HARNESS_STOPPED_MESSAGE = "⏹ Stopped."
+# Told when a /compact was stopped, or ran too long and was stopped.
+HARNESS_COMPACT_STOPPED = "⏹ Compaction stopped."
+HARNESS_COMPACT_TIMED_OUT = "⏹ Compaction took too long and was stopped. Try again later."
 
 # Sent once a turn leaves the context past a warning level (see BaseInterface).
 CONTEXT_FULL_WARNING = "⚠️ Context is {percent}% full. /compact or /clear frees it."
@@ -549,13 +552,13 @@ VOICE_TRANSCRIPT_TEMPLATE = "[Voice message, already transcribed]\n{transcript}"
 # An image the model can see gets the hint next to the image itself.
 # What a tool that printed or returned nothing gives the model.
 TOOL_NO_OUTPUT = "(no output)"
-# Claude Code: an AUG tool that raised, as its result.
-CLAUDE_TOOL_ERROR_RESULT = "Tool error: {error}"
-# Claude Code: the transcript's text for a turn Claude started by itself (background
-# work finishing after its turn ended).
-CLAUDE_BACKGROUND_TURN = "(background work finished)"
-# Claude Code: the status line for a /compact that finished.
-CLAUDE_COMPACTED_STATUS = "Conversation compacted."
+# An AUG tool that raised, as its result, on a harness that runs an agent CLI.
+HARNESS_TOOL_ERROR_RESULT = "Tool error: {error}"
+# The transcript's text for a turn the agent started by itself (background work
+# finishing after the turn that started it ended).
+HARNESS_BACKGROUND_TURN = "(background work finished)"
+# The status line for a compaction that finished.
+HARNESS_COMPACTED_STATUS = "Conversation compacted."
 
 USER_IMAGE_HINT = "[Image from user: {path}]"
 # Stands in for an image a tool returned, for a model that cannot take images.

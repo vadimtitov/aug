@@ -34,6 +34,10 @@ class Harness(ABC):
 - `oneshot()` is a bare model call (no tools, no history) for jobs. The caller asks for
   a tier; each harness maps tiers to its own models (`LangGraphHarness(models=...)`, from
   `_TIER_MODELS` in the registry).
+- The base `run()` registers each turn's `AgentRun` (what `/stop` and `inject()` find)
+  and drops it when the turn ends; a harness adds its own bookkeeping in the
+  `_open_turn` / `_close_turn` hooks. A turn the agent started by itself
+  (`unsolicited`) registers none.
 - The base `run()` logs every turn and tool call and appends it to AUG's own
   transcript, `data/transcripts/<conversation_id>.jsonl`, the same way on every
   harness. Files appear in it as path, media type, filename, size and sha256, never
@@ -112,7 +116,9 @@ the CLI comes inside it, so both move together.
   work running is never closed. A closed session resumes from Claude's own session file
   on the next message.
 - **Records.** `/app/data/claude/aug-sessions/` keeps one record per `context_id`: the
-  Claude session id, the address, and the prompt and skills the session started with.
+  Claude session id, the address, and the prompt and skills the session started with
+  (`RecordStore`, `aug/core/harness/records.py`, shared with any harness that runs an
+  agent CLI).
   A resumed session gets them back unchanged, so `/prompt` and the cache hold across
   restarts. `CLAUDE_CONFIG_DIR` is `/app/data/claude`, so Claude's session files survive
   a redeploy.
@@ -128,16 +134,18 @@ the CLI comes inside it, so both move together.
   in-process MCP servers: `aug_core` with the profile's `always_loaded` tools, which
   are in every request (`alwaysLoad`), and `aug` with the rest, which Claude looks up
   through ToolSearch when it needs them. Each call runs the LangChain tool with the
-  turn's `ToolContext`, so tools don't know which harness runs them. Events use
-  canonical names (the `mcp__aug_core__` / `mcp__aug__` prefix stripped), so moving a
-  tool between the two changes nothing outside Claude's own session. Claude's own
+  turn's `ToolContext` (`invoke_tool`, `aug/core/harness/tool_bridge.py`), so tools
+  don't know which harness runs them. Events use canonical names (the
+  `mcp__aug_core__` / `mcp__aug__` prefix stripped), so moving a tool between the two
+  changes nothing outside Claude's own session. Claude's own
   tools are an allowlist (`_CLAUDE_BUILTIN_TOOLS`) and run without approval
   (`permission_mode="dontAsk"`): anything not listed, including a tool a new CLI adds,
   is refused. Approvals stay on AUG's tools that ask for them.
-- **Guard.** A PreToolUse hook refuses the blocked paths (`blocked_paths`) in Bash,
-  Read, Write and Edit, and rewrites every shell command to run through hushed, as
-  `run_bash` does. The CLI starts through `cli.sh`, which keeps only the
-  allowlisted environment variables (`_ENV_KEEP`): AUG's own secrets never reach it.
+- **Guard.** A PreToolUse hook (`claude_code/guard.py`) refuses the blocked paths
+  (`blocked_paths`) in Bash, Read, Write, Edit, NotebookEdit, Glob and Grep, and
+  rewrites every shell command to run through hushed, as `run_bash` does. The CLI
+  starts through `cli.sh`, which keeps only the allowlisted environment variables
+  (`_ENV_KEEP`): AUG's own secrets never reach it.
 - **Login.** A one-year `claude setup-token` token, the `CLAUDE_CODE_OAUTH_TOKEN`
   secret in hushed. It never refreshes, so it can't die on a failed refresh, and any
   number of processes share it. `/claude_login` in Telegram renews it
@@ -153,8 +161,10 @@ the CLI comes inside it, so both move together.
   still belongs to it. When background work finishes after the turn, the CLI starts a
   turn by itself; it is delivered through `running(on_unsolicited)` to
   `dispatch.deliver_unsolicited`, which sends it like an agent push under the chat's
-  run lock. Claude's cron is off: scheduling stays with `create_task` and
-  `set_reminder`.
+  run lock. `/stop` ends any turn in flight, one no run owns (a self-started turn, a
+  `/compact`) included; a `/compact` that takes over 10 minutes is stopped, and the
+  user is told either way. Claude's cron is off: scheduling stays with `create_task`
+  and `set_reminder`.
 - **Errors.** Assistant errors, rate-limit events and error results map onto
   `HarnessError` kinds (`authentication_failed` and 401/403 are `login`); a rejected rate limit carries its reset time, and a warning
   becomes a status line.

@@ -23,25 +23,24 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
-from contextvars import ContextVar
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 import claude_agent_sdk
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
 from langchain_core.tools import BaseTool
 
 from aug.core.harness.base import Harness
+from aug.core.harness.claude_code.guard import guard_hooks
 from aug.core.harness.claude_code.session import ChatSession, Content
 from aug.core.harness.claude_code.tools import (
     AUG_SERVERS,
     ToolCalls,
     aug_mcp_servers,
-    guard_hooks,
     tool_fingerprint,
 )
+from aug.core.harness.records import RecordStore, SessionRecord
 from aug.core.harness.tool_context import ToolContext, pending_approvals
 from aug.core.harness.types import (
     Address,
@@ -59,11 +58,17 @@ from aug.core.harness.types import (
     TurnEnded,
     UnsolicitedSink,
 )
-from aug.core.prompts import CLAUDE_BACKGROUND_TURN, USER_FILE_HINT, USER_IMAGE_HINT
+from aug.core.prompts import (
+    HARNESS_BACKGROUND_TURN,
+    HARNESS_COMPACT_STOPPED,
+    HARNESS_COMPACT_TIMED_OUT,
+    USER_FILE_HINT,
+    USER_IMAGE_HINT,
+)
 from aug.core.reflexes import Reflex
-from aug.core.run import AgentRun, run_registry
+from aug.core.run import run_registry
 from aug.core.workspace import session_prompt
-from aug.utils.data import DATA_DIR, SKILLS_DIR, WORKSPACE_DIR
+from aug.utils.data import CLAUDE_DIR, SKILLS_DIR, WORKSPACE_DIR
 from aug.utils.hushed import HushedError, read_secret
 from aug.utils.media import MODEL_IMAGE_TYPES
 from aug.utils.skills import load_skills
@@ -72,9 +77,10 @@ from aug.utils.state import load_state
 logger = logging.getLogger(__name__)
 _cli_logger = logging.getLogger("aug.claude_cli")
 
-CLAUDE_DIR = DATA_DIR / "claude"
 # Closed once idle this long: Claude's prompt cache lives an hour, refreshed on each hit.
 IDLE_SECONDS = 60 * 60
+# How long a /compact may take before it is stopped.
+COMPACT_SECONDS = 10 * 60
 # Idle processes kept at most; busy ones never count.
 MAX_IDLE_PROCESSES = 8
 _EVICT_EVERY_SECONDS = 60
@@ -125,9 +131,6 @@ _CLI_ENV = {
 # chats).
 _CLI_SETTINGS = {"crossSessionInbound": "refuse"}
 
-# Set inside a turn the CLI started by itself, which registers no AgentRun.
-_UNSOLICITED: ContextVar[bool] = ContextVar("claude_unsolicited", default=False)
-
 
 @dataclass(frozen=True)
 class ClaudeCodeProfile:
@@ -155,25 +158,14 @@ class ClaudeCodeProfile:
             raise ValueError(f"always_loaded names tools the profile lacks: {sorted(unknown)}")
 
 
-@dataclass
-class _Record:
-    """What AUG keeps about one chat's Claude session, so it resumes as it started."""
+@dataclass(frozen=True, kw_only=True)
+class _Record(SessionRecord):
+    """A chat's Claude session: its id, the skills it loaded, and whether Claude has
+    its file yet (``started``: resume it, rather than start it under that id)."""
 
-    context_id: str
     session_id: str
-    interface: str
-    prompt: str
     skills: list[str]
     started: bool = False
-    conversation_id: str = ""
-    chat_id: str = ""
-    context: dict[str, Any] | None = None  # the last ContextUsage seen, for a closed process
-
-    @property
-    def reply_to(self) -> Address:
-        return Address(
-            interface=self.interface, conversation_id=self.conversation_id, chat_id=self.chat_id
-        )
 
 
 class ClaudeCodeHarness(Harness):
@@ -187,13 +179,12 @@ class ClaudeCodeHarness(Harness):
     ) -> None:
         self.profile = profile
         self._config_dir = config_dir
-        self._records_dir = config_dir / "aug-sessions"
+        self._records = RecordStore(config_dir / "aug-sessions", _Record)
         self._idle_seconds = idle_seconds
         self._max_idle = max_idle
         self._sessions: dict[str, ChatSession] = {}
         self._opening: dict[str, asyncio.Lock] = {}
         self._early: dict[str, list[Content]] = {}  # injected before the session took it
-        self._opened: dict[str, AgentRun] = {}
         self._sink: UnsolicitedSink | None = None
         self._limits: dict[str, LimitUsage] = {}  # the plan's usage windows, latest seen
 
@@ -243,9 +234,9 @@ class ClaudeCodeHarness(Harness):
         run = run_registry.get(context_id)
         session = self._sessions.get(context_id)
         if run is None or not run.active:
-            # A turn the CLI started by itself registers no run, and stops all the same.
-            if session is not None and session.running_unsolicited:
-                logger.info("cancel context=%s (self-started turn)", context_id)
+            # A turn no run owns (one the CLI started, a /compact) stops all the same.
+            if session is not None and session.turn_open:
+                logger.info("cancel context=%s (no run)", context_id)
                 return await session.interrupt()
             return False
         logger.info("cancel context=%s run=%s", context_id, run.id)
@@ -256,7 +247,7 @@ class ClaudeCodeHarness(Harness):
         return True
 
     async def compact(self, context_id: str) -> bool:
-        record = self._load(context_id)
+        record = await self._records.load(context_id)
         if record is None or not record.started:
             return False
         session = await self._session(context_id, record.reply_to)
@@ -266,17 +257,27 @@ class ClaudeCodeHarness(Harness):
             _oneshot=self.oneshot,
         )
         ended: TurnEnded | None = None
-        events = await session.start([{"type": "text", "text": "/compact"}], ctx, verbatim=False)
-        async for event in events:
-            if isinstance(event, TurnEnded):
-                ended = event
+        try:
+            async with asyncio.timeout(COMPACT_SECONDS):
+                events = await session.start(
+                    [{"type": "text", "text": "/compact"}], ctx, verbatim=False
+                )
+                async for event in events:
+                    if isinstance(event, TurnEnded):
+                        ended = event
+        except TimeoutError:
+            logger.warning("claude /compact timed out context=%s", context_id)
+            await session.interrupt()
+            raise ValueError(HARNESS_COMPACT_TIMED_OUT) from None
+        if ended is not None and ended.cancelled:
+            raise ValueError(HARNESS_COMPACT_STOPPED)
         ok = ended is not None and ended.error is None
         if ok:
-            self._remember(context_id, None)  # what was stored is from before
+            await self._remember(context_id, None)  # what was stored is from before
         return ok
 
     async def session_prompt(self, context_id: str, interface: str) -> str:
-        record = self._load(context_id)
+        record = await self._records.load(context_id)
         if record is not None:
             return record.prompt
         return await asyncio.to_thread(_new_prompt, interface)
@@ -284,15 +285,15 @@ class ClaudeCodeHarness(Harness):
     async def session_status(self, context_id: str) -> SessionStatus:
         """The context comes from the warm process; once that is closed, from what it
         last reported.  Limits are the plan's, the latest any session heard of."""
-        record = self._load(context_id)
+        record = await self._records.load(context_id)
         session = self._sessions.get(context_id)
         context: ContextUsage | None = None
         if record is not None and record.started:
             context = await session.context_usage() if session is not None else None
             if context is not None:
-                self._remember(context_id, context)
+                await self._remember(context_id, context)
             else:
-                context = _stored_context(record)
+                context = record.context
         now = datetime.now(UTC)
         limits = sorted(
             (lim for lim in self._limits.values() if lim.resets_at is None or lim.resets_at > now),
@@ -354,30 +355,14 @@ class ClaudeCodeHarness(Harness):
         report = await session.context_usage() if session.needs_report else None
         context = report or session.context
         if context is not None:
-            self._remember(context_id, context)
+            await self._remember(context_id, context)
         return context
 
     def _open_turn(self, context_id: str, turn: TurnContext) -> None:
-        if _UNSOLICITED.get():
-            return
         self._early[context_id] = []  # inject() works from TurnStarted on
-        existing = run_registry.get(context_id)
-        if existing is not None and existing.active:
-            existing.request_stop()  # the run lock should rule this out; never leave two
-        run = AgentRun(accepts_injection=turn.attended)
-        run_registry.set(context_id, run)
-        self._opened[context_id] = run
 
     def _close_turn(self, context_id: str) -> None:
-        if _UNSOLICITED.get():
-            return
         self._early.pop(context_id, None)
-        run = self._opened.pop(context_id, None)
-        if run is None:
-            return
-        run.active = False
-        if run_registry.get(context_id) is run:
-            run_registry.pop(context_id)
 
     # -- sessions ----------------------------------------------------------------------
 
@@ -385,7 +370,9 @@ class ClaudeCodeHarness(Harness):
         """The chat's warm process: opened, or restarted when its setup changed."""
         lock = self._opening.setdefault(context_id, asyncio.Lock())
         async with lock:
-            record = self._load(context_id) or await self._new_record(context_id, reply_to)
+            record = await self._records.load(context_id) or await self._new_record(
+                context_id, reply_to
+            )
             fingerprint = self._fingerprint(record)
             session = self._sessions.get(context_id)
             changed = session is not None and session.fingerprint != fingerprint
@@ -404,9 +391,13 @@ class ClaudeCodeHarness(Harness):
                     logger.warning(
                         "claude session file gone, starting afresh context=%s", context_id
                     )
-                    record.session_id, record.started = str(uuid.uuid4()), False
-                    record.context = None
-                    self._save(record)
+                    new_id = str(uuid.uuid4())
+                    fresh = await self._records.update(
+                        context_id,
+                        lambda r: replace(r, session_id=new_id, started=False, context=None),
+                    )
+                    assert fresh is not None, "the record was read or made just above"
+                    record = fresh
                 calls = ToolCalls()
                 session = ChatSession(
                     context_id,
@@ -497,12 +488,12 @@ class ClaudeCodeHarness(Harness):
             return
         reply_to = session.reply_to
         message = Message(
-            parts=[TextPart(text=CLAUDE_BACKGROUND_TURN)],
+            parts=[TextPart(text=HARNESS_BACKGROUND_TURN)],
             sender=Sender(interface=reply_to.interface, user_id=""),
         )
-        _UNSOLICITED.set(True)
         turn = TurnContext(reply_to=reply_to, attended=False)
-        await self._sink(reply_to, context_id, self._turn(message, context_id, turn, events))
+        events = self._turn(message, context_id, turn, events, unsolicited=True)
+        await self._sink(reply_to, context_id, events)
 
     async def _evict_forever(self) -> None:
         while True:
@@ -558,58 +549,21 @@ class ClaudeCodeHarness(Harness):
             conversation_id=reply_to.conversation_id,
             chat_id=reply_to.chat_id,
         )
-        self._save(record)
+        await self._records.save(record)
         return record
 
     async def _mark_started(self, context_id: str) -> None:
-        record = self._load(context_id)
         session = self._sessions.get(context_id)
-        if record is None or session is None or session.session_id is None:
+        if session is None or session.session_id is None:
             return
-        if not record.started or record.session_id != session.session_id:
-            record.started = True
-            record.session_id = session.session_id
-            self._save(record)
+        session_id = session.session_id
+        await self._records.update(
+            context_id, lambda r: replace(r, started=True, session_id=session_id)
+        )
 
-    def _remember(self, context_id: str, context: ContextUsage | None) -> None:
+    async def _remember(self, context_id: str, context: ContextUsage | None) -> None:
         """Keep *context* for when the process is closed; None forgets a stale one."""
-        record = self._load(context_id)
-        # As it reads back: lists, not tuples.
-        stored = json.loads(json.dumps(asdict(context))) if context is not None else None
-        if record is not None and record.context != stored:
-            record.context = stored
-            self._save(record)
-
-    def _record_path(self, context_id: str) -> Path:
-        return self._records_dir / f"{hashlib.sha256(context_id.encode()).hexdigest()[:32]}.json"
-
-    def _load(self, context_id: str) -> _Record | None:
-        try:
-            return _Record(**json.loads(self._record_path(context_id).read_text()))
-        except FileNotFoundError:
-            return None
-        except (ValueError, TypeError):
-            logger.warning("unreadable claude session record context=%s", context_id)
-            return None
-
-    def _save(self, record: _Record) -> None:
-        path = self._record_path(record.context_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        partial = path.with_suffix(".partial")
-        partial.write_text(json.dumps(asdict(record)))
-        partial.replace(path)
-
-
-def _stored_context(record: _Record) -> ContextUsage | None:
-    if record.context is None:
-        return None
-    try:
-        stored = dict(record.context)
-        stored["breakdown"] = tuple((str(n), int(t)) for n, t in stored.get("breakdown") or ())
-        return ContextUsage(**stored)
-    except (TypeError, ValueError):
-        logger.warning("unreadable stored context context=%s", record.context_id)
-        return None
+        await self._records.update(context_id, lambda r: replace(r, context=context))
 
 
 def _new_prompt(interface: str) -> str:

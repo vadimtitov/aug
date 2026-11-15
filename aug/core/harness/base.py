@@ -35,6 +35,7 @@ from aug.core.harness.types import (
 )
 from aug.core.prompts import HARNESS_ERROR_MESSAGES, HARNESS_RETRY_AT_SUFFIX, REFLEX_NOTE
 from aug.core.reflexes import Exchange, Reflex, ReflexOutput, run_reflexes
+from aug.core.run import AgentRun, run_registry
 from aug.core.transcript import Transcript, file_record
 
 logger = logging.getLogger(__name__)
@@ -101,7 +102,8 @@ class Harness(ABC):
     @abstractmethod
     async def compact(self, context_id: str) -> bool:
         """Summarise the session's history.  False if there was nothing to compact.
-        The caller holds the run lock."""
+        Raises ValueError with what to tell the user when the compaction was stopped
+        (/stop, or a time limit).  The caller holds the run lock."""
 
     @abstractmethod
     async def session_prompt(self, context_id: str, interface: str) -> str:
@@ -159,10 +161,11 @@ class Harness(ABC):
         return await run_reflexes(self.reflexes, message.text, history)
 
     def _open_turn(self, context_id: str, turn: TurnContext) -> None:  # noqa: B027 — optional hook
-        """Called before TurnStarted: from here on inject() must reach this turn."""
+        """Called before TurnStarted, once the turn's AgentRun is registered: from here
+        on inject() must reach this turn.  Not called for an unsolicited turn."""
 
     def _close_turn(self, context_id: str) -> None:  # noqa: B027 — optional hook
-        """Called once the turn is over, however it ended."""
+        """Called once the turn is over, however it ended, before its AgentRun goes."""
 
     async def _turn(
         self,
@@ -172,17 +175,24 @@ class Harness(ABC):
         inner: AsyncIterator[HarnessEvent],
         *,
         reflexed: Sequence[ReflexOutput] = (),
+        unsolicited: bool = False,
     ) -> AsyncIterator[HarnessEvent]:
         """Wrap a harness's own event stream in the run() contract.  *reflexed*: what
-        the reflexes did before the turn, shown and recorded once it starts."""
+        the reflexes did before the turn, shown and recorded once it starts.
+
+        The turn registers an AgentRun for its context (what /stop and inject() find),
+        unless *unsolicited*: a turn the agent started by itself, which nobody asked
+        for and nobody can inject into."""
         transcript = Transcript(turn.reply_to.conversation_id)
         started = time.monotonic()
         tool_started: dict[str, float] = {}
         not_granted: set[str] = set()  # tool ids whose approval was not granted
         text = ""
         ended: TurnEnded | None = None
-        self._open_turn(context_id, turn)
+        run = None if unsolicited else _register_run(context_id, turn)
         try:
+            if run is not None:
+                self._open_turn(context_id, turn)
             yield TurnStarted(context_id=context_id)
             logger.info(
                 "turn_start context=%s interface=%s attended=%s",
@@ -274,7 +284,11 @@ class Harness(ABC):
             )
             yield ended
         finally:
-            self._close_turn(context_id)
+            if run is not None:
+                try:
+                    self._close_turn(context_id)
+                finally:
+                    _release_run(context_id, run)
 
 
 def error_text(error: HarnessError) -> str:
@@ -291,3 +305,18 @@ def _log_tool_end(name: str, error: bool, started: float | None) -> None:
         logger.warning("tool_end tool=%s duration=%.2fs error=True", name, elapsed)
     else:
         logger.info("tool_end tool=%s duration=%.2fs", name, elapsed)
+
+
+def _register_run(context_id: str, turn: TurnContext) -> AgentRun:
+    existing = run_registry.get(context_id)
+    if existing is not None and existing.active:
+        existing.request_stop()  # the run lock should rule this out; never leave two
+    run = AgentRun(accepts_injection=turn.attended)
+    run_registry.set(context_id, run)
+    return run
+
+
+def _release_run(context_id: str, run: AgentRun) -> None:
+    run.active = False
+    if run_registry.get(context_id) is run:  # never drop a turn this one didn't open
+        run_registry.pop(context_id)
