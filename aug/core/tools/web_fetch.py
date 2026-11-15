@@ -15,8 +15,8 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from urllib.parse import urlparse, urlunparse
+from dataclasses import dataclass, replace
+from urllib.parse import urldefrag, urlparse, urlunparse
 
 from langchain_core.tools import tool
 
@@ -28,7 +28,7 @@ from aug.core.prompts import (
     WEB_FETCH_TRUNCATED,
 )
 from aug.core.tools.context import current_tool_context
-from aug.utils.fetching.fetcher import FetchedPage, browser_client, fetch_url
+from aug.utils.fetching.fetcher import FetchedPage, browser_client, fetch_url, url_problem
 from aug.utils.fetching.page_content import Classification, full_markdown
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 MAX_CONTENT_CHARS = 100_000  # what the small model reads per call
 RAW_MAX_CHARS = 40_000  # what raw=True returns per call
 CACHE_TTL_S = 15 * 60
+MAX_CACHED_PAGES = 64
 MAX_URL_CHARS = 2000
 
 # Reads a prompt, returns the model's answer.
@@ -60,7 +61,8 @@ async def web_fetch(url: str, prompt: str, offset: int = 0, raw: bool = False) -
     - raw=true returns the page's own text (markdown) instead of an answer, up to
       40,000 characters per call. Use it only when you need the page verbatim.
     - Pages are kept for 15 minutes, so asking again about the same URL is fast.
-    - Fails on private or logged-in pages and on hosts without a dot (localhost).
+    - Fails on logged-in pages. Refuses localhost, private IP addresses and hosts
+      without a dot.
 
     Args:
         url: The URL to fetch content from.
@@ -95,12 +97,17 @@ async def read_page(
     url = url.strip()
     if problem := _url_problem(url):
         return f"Cannot fetch {url!r}: {problem}."
-    url = _https(url)
+    url = _https(urldefrag(url).url)
     offset = max(offset, 0)
 
     page = pages.get(url)
     if page is None:
         page = await fetch_url(url, browser_client(), redirects="same_site")
+        if page.html:
+            # The whole page, as WebFetch converts it: the main-content extraction (the
+            # page's text) drops table columns and scrambles inline code.
+            markdown = await asyncio.to_thread(full_markdown, page.html, page.final_url or url)
+            page = replace(page, text=markdown or page.text, html="")
         if _cacheable(page):
             pages.put(url, page)
 
@@ -109,17 +116,13 @@ async def read_page(
     if failure := _failure(page):
         return failure
 
-    # The whole page, as WebFetch converts it: the main-content extraction drops table
-    # columns and scrambles inline code.  Not HTML (JSON, plain text): the text as is.
     text = page.text
-    if page.html:
-        text = await asyncio.to_thread(full_markdown, page.html, page.final_url or url)
     if offset and offset >= len(text):
         return (
             f"Nothing left to read from offset {offset}: this page's text is "
             f"{len(text)} characters long."
         )
-    lead = f"[web_fetch note: {page.note}]\n" if page.note else ""
+    lead = f"[web_fetch note: the page came with a warning: {page.note}]\n" if page.note else ""
     if raw:
         return lead + _raw(page.url, page.status, text, offset)
 
@@ -158,18 +161,14 @@ async def read_page(
     return lead + answer
 
 
-@dataclass(frozen=True)
-class _Cached:
-    page: FetchedPage
-    at: float
-
-
 class PageCache:
-    """Fetched pages by URL, for CACHE_TTL_S: a second question about a page, or reading
-    on with an offset, does not fetch it again."""
+    """Fetched pages (their text, not their HTML) by URL, for CACHE_TTL_S and at most
+    MAX_CACHED_PAGES of them: a second question about a page, or reading on with an
+    offset, does not fetch it again."""
 
-    def __init__(self, ttl_s: float = CACHE_TTL_S) -> None:
+    def __init__(self, ttl_s: float = CACHE_TTL_S, max_pages: int = MAX_CACHED_PAGES) -> None:
         self._ttl_s = ttl_s
+        self._max_pages = max_pages
         self._pages: dict[str, _Cached] = {}
 
     def get(self, url: str) -> FetchedPage | None:
@@ -180,7 +179,11 @@ class PageCache:
 
     def put(self, url: str, page: FetchedPage) -> None:
         now = time.monotonic()
-        self._pages = {u: c for u, c in self._pages.items() if now - c.at <= self._ttl_s}
+        self._pages = {
+            u: c for u, c in self._pages.items() if u != url and now - c.at <= self._ttl_s
+        }
+        while len(self._pages) >= self._max_pages:
+            del self._pages[next(iter(self._pages))]  # the oldest
         self._pages[url] = _Cached(page, now)
 
     def clear(self) -> None:
@@ -193,19 +196,18 @@ pages = PageCache()
 # --- Private ---
 
 
+@dataclass(frozen=True)
+class _Cached:
+    page: FetchedPage
+    at: float
+
+
 def _url_problem(url: str) -> str | None:
     if len(url) > MAX_URL_CHARS:
         return f"the URL is longer than {MAX_URL_CHARS} characters"
-    try:
-        parsed = urlparse(url)
-        host = parsed.hostname or ""
-    except ValueError:
-        return "not a valid URL"
-    if parsed.scheme not in ("http", "https"):
-        return "only http and https URLs can be fetched"
-    if parsed.username or parsed.password:
-        return "URLs with credentials cannot be fetched"
-    if "." not in host:
+    if problem := url_problem(url):
+        return problem
+    if "." not in (urlparse(url).hostname or ""):
         return "the host has no dot (localhost and local names cannot be fetched)"
     return None
 
@@ -216,8 +218,10 @@ def _https(url: str) -> str:
 
 
 def _cacheable(page: FetchedPage) -> bool:
+    """A redirect or a page read in full: not a failure, nor a thin page that the browser,
+    back up, might read in full."""
     return page.classification is Classification.REDIRECT or (
-        page.classification in (Classification.OK, Classification.THIN) and bool(page.text)
+        page.classification is Classification.OK and bool(page.text) and not page.note
     )
 
 
@@ -244,6 +248,8 @@ def _failure(page: FetchedPage) -> str | None:
     if page.classification is Classification.HTTP_ERROR:
         return f"Failed to fetch {page.url}: {status}. The page content was NOT retrieved."
     why = page.note or page.classification.value
+    if "NOT retrieved" in why:
+        return f"Failed to fetch {page.url} ({status}): {why}"
     return f"Failed to fetch {page.url} ({status}): {why}. The page content was NOT retrieved."
 
 

@@ -1,5 +1,5 @@
 # Stealth browser sidecar: Camoufox (a hardened Firefox) behind a tiny HTTP API.
-# fetch_page escalates to it when a plain request is blocked by bot protection or the
+# AUG's fetching escalates to it when a plain request is blocked by bot protection or the
 # page only renders with JavaScript.  Internal network only — no host port.
 FROM python:3.12-slim-bookworm
 

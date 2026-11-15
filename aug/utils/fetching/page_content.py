@@ -131,11 +131,12 @@ def extract(html: str, url: str, visible: str | None = None) -> PageText:
 
 
 def full_markdown(html: str, url: str) -> str:
-    """The whole page as markdown: everything but scripts, styles and frames."""
+    """The whole page as markdown: everything but scripts, styles and frames, under the
+    page's title as a heading."""
     doc = _parse(html)
     if doc is None:
         return ""
-    for node in doc.xpath("//script|//style|//noscript|//iframe|//template"):
+    for node in doc.xpath("//script|//style|//noscript|//iframe|//template|//title"):
         node.drop_tree()
     body = markdownify(lxml.html.tostring(doc, encoding="unicode"), heading_style="ATX")
     body = _BLANK_LINES.sub("\n\n", _absolute_links(body, url)).strip()

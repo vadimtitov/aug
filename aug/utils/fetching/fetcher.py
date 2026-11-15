@@ -10,11 +10,16 @@ Per URL, two tiers:
 
 A genuine HTTP error (404, 410…) is returned as is: a browser would get it too.
 
+Only public http(s) URLs are fetched (url_problem): no file://, no credentials, no
+localhost or private IP address.
+
 fetch_url() never raises: whatever goes wrong comes back as a FetchedPage with a note.
 """
 
 import asyncio
+import ipaddress
 import logging
+import socket
 import time
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -153,6 +158,15 @@ async def fetch_url(
 ) -> FetchedPage:
     """Fetch *url* through the tiers.  *browser* None: the stealth browser is not configured."""
     started = time.monotonic()
+    if problem := url_problem(url):
+        return FetchedPage(
+            url=url,
+            tier=None,
+            classification=Classification.NETWORK_ERROR,
+            status=0,
+            elapsed_s=0.0,
+            note=f"[FAILED — {problem}. The page content was NOT retrieved.]",
+        )
     try:
         return await _fetch_tiers(url, browser, redirects, started)
     except Exception as e:  # one URL's surprise must not fail its caller
@@ -187,6 +201,29 @@ def is_same_site(url: str, target: str) -> bool:
         and not (b.username or b.password)
         and _bare_host(a.hostname) == _bare_host(b.hostname)
     )
+
+
+def url_problem(url: str) -> str | None:
+    """Why *url* must not be fetched, or None.  Only http(s), without credentials, to a
+    host that is not localhost or a private, loopback, link-local or reserved IP address.
+    A name that resolves to a private address is not caught."""
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").rstrip(".").lower()
+    except ValueError:
+        return "not a valid URL"
+    if parsed.scheme not in ("http", "https"):
+        return "only http and https URLs can be fetched"
+    if parsed.username or parsed.password:
+        return "URLs with credentials cannot be fetched"
+    if not host:
+        return "the URL has no host"
+    if host == "localhost" or host.endswith(".localhost"):
+        return "local addresses cannot be fetched"
+    ip = _ip_address(host)
+    if ip is not None and not ip.is_global:
+        return "local and private IP addresses cannot be fetched"
+    return None
 
 
 def registrable_domain(url: str) -> str:
@@ -316,8 +353,8 @@ async def _cheap_attempt(
 
 
 async def _get(url: str, impersonate: str, cookies: dict[str, str], same_site: bool) -> _Response:
-    """GET *url*.  *same_site*: follow redirects by hand, only within the site; one off
-    it comes back with redirect_to set and no body."""
+    """GET *url*, following redirects by hand so each hop passes url_problem.  *same_site*:
+    only within the site; a redirect off it comes back with redirect_to set and no body."""
     async with AsyncSession(impersonate=impersonate) as session:
         current = url
         for _ in range(_MAX_REDIRECTS + 1):
@@ -325,19 +362,19 @@ async def _get(url: str, impersonate: str, cookies: dict[str, str], same_site: b
                 current,
                 cookies=cookies or None,
                 timeout=_CHEAP_TIMEOUT_S,
-                allow_redirects=not same_site,
-                max_redirects=_MAX_REDIRECTS,
+                allow_redirects=False,
                 stream=True,
             )
             try:
                 location = response.headers.get("location") or ""
-                if same_site and response.status_code in _REDIRECT_STATUS and location:
-                    target = urljoin(current, location)
-                    if is_same_site(current, target):
-                        current = target
-                        continue
+                if response.status_code not in _REDIRECT_STATUS or not location:
+                    return await _read(response, session)
+                target = urljoin(current, location)
+                if problem := url_problem(target):
+                    raise InvalidURL(f"redirect to {target}: {problem}")
+                if same_site and not is_same_site(current, target):
                     return _response(response, session, b"", 0, redirect_to=target)
-                return await _read(response, session)
+                current = target
             finally:
                 await response.aclose()
         raise TooManyRedirects(f"more than {_MAX_REDIRECTS} redirects")
@@ -564,6 +601,19 @@ _CHEAP_PREFERENCE = (
 )
 # A cheap attempt that ends the race: the page, or a redirect off the site.
 _CHEAP_FINAL = (Classification.OK, Classification.REDIRECT)
+
+
+def _ip_address(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """*host* as an IP address, including the forms curl also reads as one (2130706433,
+    0x7f.1, 0177.0.0.1); None for a name."""
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    try:
+        return ipaddress.IPv4Address(socket.inet_aton(host))
+    except OSError:
+        return None
 
 
 def _bare_host(host: str | None) -> str:

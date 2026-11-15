@@ -79,7 +79,7 @@ services:
       - aug
 
   stealth-browser:
-    # fetch_page's stealth browser (Camoufox).  Internal only: no host port.
+    # fetch_page and web_fetch's stealth browser (Camoufox).  Internal only: no host port.
     build: ./stealth-browser
     shm_size: 1g
     mem_limit: 3g

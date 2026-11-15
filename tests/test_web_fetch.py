@@ -152,6 +152,64 @@ async def test_a_redirect_off_the_site_tells_the_agent_how_to_call_again():
     assert model.prompts == []
 
 
+async def test_the_model_reads_the_whole_page_as_markdown():
+    html = (
+        "<html><head><title>Plans</title><script>var t=1</script></head><body>"
+        "<table><tr><th>Plan</th><th>Price</th></tr><tr><td>Pro</td><td>$10</td></tr></table>"
+        '<a href="/buy">Buy</a></body></html>'
+    )
+    model = _Model()
+    page = _page("Pro", html=html, final_url="https://a.com/pricing")
+    with patch.object(wf, "fetch_url", _fetched(page)):
+        await wf.read_page("https://a.com/pricing", "q", model)
+
+    assert "# Plans" in model.prompts[0]
+    assert "| Pro | $10 |" in model.prompts[0]
+    assert "[Buy](https://a.com/buy)" in model.prompts[0]
+    assert "var t" not in model.prompts[0]
+
+
+async def test_html_that_converts_to_nothing_falls_back_to_the_extracted_text():
+    model = _Model()
+    page = _page("The extracted text.", html="<html><body><iframe>x</iframe></body></html>")
+    with patch.object(wf, "fetch_url", _fetched(page)):
+        await wf.read_page("https://a.com/", "q", model)
+
+    assert "---\nThe extracted text.\n---" in model.prompts[0]
+
+
+async def test_a_page_is_converted_once_and_kept_without_its_html():
+    page = _page("x", html="<html><body><p>" + "word " * 100 + "</p></body></html>")
+    with (
+        patch.object(wf, "fetch_url", _fetched(page)),
+        patch.object(wf, "full_markdown", wraps=wf.full_markdown) as convert,
+    ):
+        await wf.read_page("https://a.com/", "q", _Model(), max_chars=100)
+        await wf.read_page("https://a.com/", "q", _Model(), offset=100, max_chars=100)
+
+    assert convert.call_count == 1
+    assert wf.pages.get("https://a.com/").html == ""
+
+
+async def test_a_fragment_is_not_part_of_the_page():
+    fetch = _fetched(_page())
+    with patch.object(wf, "fetch_url", fetch):
+        await wf.read_page("https://a.com/doc#intro", "q", _Model())
+        await wf.read_page("https://a.com/doc#usage", "q", _Model())
+
+    assert fetch.await_count == 1
+    assert fetch.call_args.args[0] == "https://a.com/doc"
+
+
+async def test_a_failure_says_not_retrieved_once():
+    note = "[FAILED — network error: x. The page content was NOT retrieved.]"
+    page = _page("", classification=Classification.NETWORK_ERROR, status=0, note=note)
+    with patch.object(wf, "fetch_url", _fetched(page)):
+        out = await wf.read_page("https://a.com/", "q", _Model())
+
+    assert out.count("NOT retrieved") == 1
+
+
 @pytest.mark.parametrize(
     ("page", "expected"),
     [
@@ -172,12 +230,17 @@ async def test_a_page_that_could_not_be_read_fails_plainly_without_a_model_call(
     assert model.prompts == []
 
 
-async def test_a_thin_page_is_read_with_its_note():
+async def test_a_thin_page_is_read_with_its_warning_and_not_kept():
     page = _page("Little.", classification=Classification.THIN, note="[page has little text]")
-    with patch.object(wf, "fetch_url", _fetched(page)):
+    fetch = _fetched(page)
+    with patch.object(wf, "fetch_url", fetch):
         out = await wf.read_page("https://a.com/", "q", _Model("Hardly anything."))
+        await wf.read_page("https://a.com/", "q", _Model())
 
-    assert out == "[web_fetch note: [page has little text]]\nHardly anything."
+    assert out == (
+        "[web_fetch note: the page came with a warning: [page has little text]]\nHardly anything."
+    )
+    assert fetch.await_count == 2  # the stealth browser, back up, may read it in full
 
 
 async def test_a_model_that_fails_is_reported_as_not_read():
@@ -198,7 +261,10 @@ async def test_an_empty_answer_is_reported():
 @pytest.mark.parametrize(
     ("url", "problem"),
     [
-        ("http://localhost:8000/", "no dot"),
+        ("http://localhost:8000/", "local addresses"),
+        ("http://intranet/", "no dot"),
+        ("http://192.168.1.10/admin", "private IP"),
+        ("file:///proc/self/environ", "only http and https"),
         ("ftp://a.com/file", "only http and https"),
         ("https://user:pw@a.com/", "credentials"),
         ("https://a.com/" + "x" * 2000, "longer than 2000"),
@@ -237,6 +303,15 @@ async def test_a_failed_fetch_is_not_kept():
         await wf.read_page("https://a.com/", "q", _Model())
 
     assert fetch.await_count == 2
+
+
+def test_the_cache_keeps_at_most_its_limit_dropping_the_oldest():
+    cache = wf.PageCache(max_pages=2)
+    for name in ("a", "b", "c"):
+        cache.put(f"https://{name}.com/", _page())
+
+    assert cache.get("https://a.com/") is None
+    assert cache.get("https://b.com/") and cache.get("https://c.com/")
 
 
 def test_the_cache_forgets_a_page_after_its_ttl():

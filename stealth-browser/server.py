@@ -1,9 +1,9 @@
 """Stealth browser sidecar — fetches a page in Camoufox and returns its HTML and cookies.
 
-AUG's fetch_page calls POST /fetch when a plain request is blocked by bot protection or
-the page only renders with JavaScript.  One browser, launched on the first request and
-closed after five idle minutes, with one shared context so cookies (bot-protection
-clearance included) accumulate across requests.
+AUG's fetching (fetch_page, web_fetch) calls POST /fetch when a plain request is blocked
+by bot protection or the page only renders with JavaScript.  One browser, launched on the
+first request and closed after five idle minutes, with one shared context so cookies
+(bot-protection clearance included) accumulate across requests.  Only http(s) URLs.
 """
 
 import asyncio
@@ -32,7 +32,7 @@ _TRIES = 5
 _RELOAD_AFTER_TRY = 2
 _BLOCK_STATUS = {401, 403, 405, 429, 503}
 # Bot-protection interstitials (Akamai, Cloudflare, DataDome, PerimeterX, Imperva,
-# Kasada, AWS WAF).  Keep in step with aug/core/tools/fetch_page/page_content.py.
+# Kasada, AWS WAF).  Keep in step with aug/utils/fetching/page_content.py.
 _CHALLENGE = re.compile(
     r"sec-if-cpt-container|errors\.edgesuite\.net|Just a moment\.\.\.|cf-chl-|"
     r"Attention Required! \| Cloudflare|captcha-delivery\.com|px-captcha|Press &amp; Hold|"
@@ -242,6 +242,8 @@ async def health() -> dict:
 
 @app.post("/fetch")
 async def fetch(request: FetchRequest) -> FetchResponse:
+    if not request.url.lower().startswith(("http://", "https://")):
+        return _error(request.url, time.monotonic(), "only http and https URLs can be fetched")
     return await _browser.fetch(request.url, request.timeout_s)
 
 

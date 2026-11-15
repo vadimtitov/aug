@@ -24,12 +24,14 @@ from aug.utils.fetching.fetcher import (
     fetch_url,
     is_same_site,
     registrable_domain,
+    url_problem,
 )
 from aug.utils.fetching.page_content import (
     Classification,
     bot_vendor,
     classify,
     extract,
+    full_markdown,
     product_summary,
 )
 from aug.utils.stealth_browser import (
@@ -705,3 +707,92 @@ async def test_a_browser_that_ended_on_another_site_is_a_redirect():
     assert page.classification is Classification.REDIRECT
     assert page.redirect_to == "https://elsewhere.com/landing"
     assert not page.text
+
+
+async def test_any_redirect_is_followed_by_hand_across_sites():
+    reply = _Reply(redirects={"https://bit.ly/x": (302, "https://shop.com/item")})
+    with patch.object(fp, "AsyncSession", _curl(reply)):
+        page = await fetch_url("https://bit.ly/x", None)
+
+    assert page.classification is Classification.OK
+    assert page.final_url == "https://shop.com/item"
+
+
+@pytest.mark.parametrize("redirects", ["any", "same_site"])
+async def test_a_redirect_to_a_private_address_is_not_followed(redirects):
+    reply = _Reply(redirects={"https://a.com/": (302, "http://169.254.169.254/latest/")})
+    curl = _curl(reply)
+    browser = _FakeBrowser(_browser_page())
+    with patch.object(fp, "AsyncSession", curl):
+        page = await fetch_url("https://a.com/", browser, redirects=redirects)
+
+    assert page.classification is Classification.NETWORK_ERROR
+    assert "private IP" in (page.note or "")
+    assert all(url == "https://a.com/" for _, url, _ in curl.calls)
+    assert browser.calls == []  # not retried in the browser
+
+
+@pytest.mark.parametrize(
+    ("url", "problem"),
+    [
+        ("file:///proc/self/environ", "only http and https"),
+        ("ftp://a.com/f", "only http and https"),
+        ("https://user:pw@a.com/", "credentials"),
+        ("http://localhost:8000/", "local addresses"),
+        ("http://127.0.0.1/", "private IP"),
+        ("http://10.1.2.3/", "private IP"),
+        ("http://192.168.0.1/", "private IP"),
+        ("http://169.254.169.254/", "private IP"),
+        ("http://[::1]/", "private IP"),
+        ("http://2130706433/", "private IP"),  # 127.0.0.1, as curl reads it
+        ("http://0x7f.1/", "private IP"),
+        ("https://example.com/", None),
+        ("https://8.8.8.8/dns", None),
+    ],
+)
+def test_url_problem(url, problem):
+    found = url_problem(url)
+    assert (found is None) if problem is None else (problem in (found or ""))
+
+
+async def test_a_url_that_must_not_be_fetched_is_refused_without_a_request():
+    curl = _curl(_Reply())
+    browser = _FakeBrowser(_browser_page())
+    with patch.object(fp, "AsyncSession", curl):
+        page = await fetch_url("file:///app/data/settings.json", browser)
+
+    assert page.classification is Classification.NETWORK_ERROR
+    assert "NOT retrieved" in (page.note or "") and not page.text
+    assert curl.calls == [] and browser.calls == []
+
+
+_FULL_PAGE_HTML = """<html><head><title>Bank holidays</title>
+<style>.x{color:red}</style><script>var tracking = 1;</script></head>
+<body><nav><a href="/about">About</a></nav><h1>Holidays</h1>
+<table><tr><th>Date</th><th>Holiday</th></tr><tr><td>1 Jan</td><td>New Year</td></tr></table>
+<p>Call <code>len(x)</code>, see <a href="#cite-1">[1]</a>.</p>
+<noscript>Enable JavaScript</noscript><iframe src="https://ads.example">ad</iframe>
+<template><p>template text</p></template></body></html>"""
+
+
+def test_full_markdown_keeps_the_whole_page_as_markdown():
+    md = full_markdown(_FULL_PAGE_HTML, "https://www.gov.uk/bank-holidays")
+
+    assert md.startswith("# Bank holidays\n\n")
+    assert md.count("Bank holidays") == 1
+    assert "[About](https://www.gov.uk/about)" in md  # navigation kept, links absolute
+    assert "# Holidays" in md
+    assert "| 1 Jan | New Year |" in md  # every table column
+    assert "`len(x)`" in md
+    assert "see [1]." in md  # an in-page anchor is just its text
+
+
+def test_full_markdown_drops_scripts_styles_and_frames():
+    md = full_markdown(_FULL_PAGE_HTML, "https://www.gov.uk/bank-holidays")
+
+    for gone in ("tracking", "color:red", "Enable JavaScript", "ads.example", "template text"):
+        assert gone not in md
+
+
+def test_full_markdown_of_nothing_is_empty():
+    assert full_markdown("", "https://a.com/") == ""
