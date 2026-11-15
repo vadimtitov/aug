@@ -184,9 +184,16 @@ def test_a_blocking_status_with_no_page_behind_it_is_blocked(status):
 
 
 @pytest.mark.parametrize("status", [401, 403, 405, 429, 503])
-def test_a_blocking_status_on_a_real_page_is_a_genuine_error(status):
-    # A login or maintenance page: the browser would get the same, the model reads it.
-    assert classify(status, _GOOD_HTML) is Classification.HTTP_ERROR
+def test_a_blocking_status_on_a_short_page_with_some_text_is_still_blocked(status):
+    # Akamai's block page: a reference number and a list of languages.
+    assert classify(status, _GOOD_HTML) is Classification.BLOCKED
+
+
+@pytest.mark.parametrize("status", [401, 403, 405, 429, 503])
+def test_a_blocking_status_on_a_substantial_page_is_a_genuine_error(status):
+    # A full login or maintenance page: the browser would get the same, the model reads it.
+    long_page = _ARTICLE.format("<p>Our service is down for maintenance today.</p>" * 80)
+    assert classify(status, long_page) is Classification.HTTP_ERROR
 
 
 def test_an_xhtml_page_with_an_xml_declaration_is_read():

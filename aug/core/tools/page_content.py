@@ -27,7 +27,8 @@ _CHALLENGE = re.compile(
     r"Attention Required! \| Cloudflare|captcha-delivery\.com|px-captcha|Press &amp; Hold|"
     r"_Incapsula_Resource|Pardon Our Interruption|KPSDK|awsWafCookieDomainList|"
     r"verify you are (a )?human|unusual traffic|Are you a robot|Access Denied|"
-    r"Request unsuccessful|bot detection|enable JavaScript and cookies",
+    r"Request unsuccessful|bot detection|enable JavaScript and cookies|unusual activity|"
+    r"unable to give you access|kein Roboter",
     re.I,
 )
 # A challenge page is short; a long page that merely mentions "Access Denied" is not one.
@@ -75,11 +76,12 @@ def classify(status: int, html: str, visible: str | None = None) -> Classificati
     """
     text_len = len(visible_text(html) if visible is None else visible)
     challenge = bool(_CHALLENGE.search(html[:_SCAN_CHARS])) and text_len < _CHALLENGE_MAX_TEXT
-    # A blocking status on a page with next to no text is bot protection; with a real
-    # page behind it (a login or maintenance page) it is a genuine error.  AWS WAF
-    # answers a bot with an empty 202 and a JavaScript challenge.
-    short = text_len < MIN_TEXT
-    if challenge or (short and (status in BLOCK_STATUS or status == 202)):
+    # A blocking status on a short page is bot protection (block pages carry a reference
+    # number, a language list…); only a substantial page behind it (a full login or
+    # maintenance page) is a genuine error.  AWS WAF answers a bot with an empty 202 and
+    # a JavaScript challenge.
+    blocking = status in BLOCK_STATUS and text_len < _CHALLENGE_MAX_TEXT
+    if challenge or blocking or (status == 202 and text_len < MIN_TEXT):
         return Classification.BLOCKED
     if status >= 400:
         return Classification.HTTP_ERROR

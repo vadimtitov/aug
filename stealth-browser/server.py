@@ -38,7 +38,8 @@ _CHALLENGE = re.compile(
     r"Attention Required! \| Cloudflare|captcha-delivery\.com|px-captcha|Press &amp; Hold|"
     r"_Incapsula_Resource|Pardon Our Interruption|KPSDK|awsWafCookieDomainList|"
     r"verify you are (a )?human|unusual traffic|Are you a robot|Access Denied|"
-    r"Request unsuccessful|bot detection|enable JavaScript and cookies",
+    r"Request unsuccessful|bot detection|enable JavaScript and cookies|unusual activity|"
+    r"unable to give you access|kein Roboter",
     re.I,
 )
 
@@ -263,8 +264,8 @@ def _judge(status: int, html: str) -> str:
     text = _visible_text_len(html)
     challenge = bool(_CHALLENGE.search(html[:30_000])) and text < 3000
     # Same rule as page_content.classify().
-    short = text < _MIN_TEXT
-    if challenge or (short and (status in _BLOCK_STATUS or status == 202)):
+    blocking = status in _BLOCK_STATUS and text < 3000
+    if challenge or blocking or (status == 202 and text < _MIN_TEXT):
         return "blocked"
     if status >= 400:
         return "http_error"
