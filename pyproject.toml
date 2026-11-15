@@ -40,6 +40,7 @@ dependencies = [
     "claude-agent-sdk==0.2.182",
     "curl-cffi>=0.17.0",
     "tld>=0.13",
+    "markdownify>=1.2",
 ]
 
 [project.optional-dependencies]
