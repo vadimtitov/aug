@@ -1,11 +1,10 @@
 """Agent registry: one entry per profile (agent version).
 
 ``v13_kimi`` (kimi-k3) and ``v13_glm`` (glm-5.3) run on LangGraph; ``v14_claude_code``
-(Claude Opus 5.5) runs on Claude Code.  ``v15_kimi``, ``v15_glm`` and ``v15_claude_code``
-are the same three with the Home Assistant reflex.  All are built by
-``_build_profiles()``, since
-their tool lists include whichever MCP servers connected at startup.  The ``browser``
-tool's code stays but no profile exposes it.
+(Claude Opus 5.5) runs on Claude Code.  ``v15_kimi``, ``v15_glm`` and
+``v15_claude_code`` are the same three with the Home Assistant reflex.  All are built
+by ``_build_profiles()``, since their tool lists include whichever MCP servers
+connected at startup.  The ``browser`` tool's code stays but no profile exposes it.
 """
 
 import logging

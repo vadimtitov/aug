@@ -7,7 +7,7 @@ Generated: 2026-04-03
 ## 1. `BaseInterface` god class
 **File:** `aug/api/interfaces/base.py` (458 lines)
 
-Handles message preprocessing, orchestration, streaming, reflex injection, history extraction — all in one class. Subclasses only implement 3–4 methods but inherit the entire responsibility graph. The streaming loop (`_agent_stream`) and reflex injection are untestable without a live LangGraph.
+Handles message preprocessing, orchestration, streaming, history extraction — all in one class. Subclasses only implement 3–4 methods but inherit the entire responsibility graph. The streaming loop (`_agent_stream`) is untestable without a live LangGraph.
 
 - **Category:** Shallow interface over complex implementation, coupled concerns
 - **Test impact:** Integration tests could replace the current untested orchestration paths

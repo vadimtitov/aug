@@ -615,7 +615,7 @@ in your response. It is for you to know, not for the user to read."""
 # ---------------------------------------------------------------------------
 
 # Added to the user's message when a reflex already acted on it, before the agent's turn.
-REFLEX_NOTE = "[Already done for this message, before it reached you: {note}]"
+REFLEX_NOTE = "[An automatic reflex acted on this message before it reached you:\n{note}]"
 
 # Layer 1: asked of every message someone is there for.  Has to keep away from anything
 # that only mentions a device; layer 2 only runs when this says yes.
@@ -639,11 +639,12 @@ schedules, including 'and also when everything is off' while designing one;
 
 # Layer 2: the home's devices, given as context, then the same questions per device.
 HA_REFLEX_DEVICES = "Devices in the home:\n{devices}"
-HA_REFLEX_DEVICE_LINE = "- {name} ({kind}, {area}){aliases}"
+HA_REFLEX_DEVICE_LINE = "- {name} ({kind}{where}){aliases}"
+HA_REFLEX_WHERE = " in the {area}"
 HA_REFLEX_ALIASES = "; also called {aliases}"
 HA_REFLEX_TARGET = (
-    'Does the user\'s LAST message ask to change the device "{name}" ({kind} in the '
-    "{area}{aliases}) right now? A device named explicitly, or implied by room and type, "
+    'Does the user\'s LAST message ask to change the device "{name}" ({kind}{where}'
+    "{aliases}) right now? A device named explicitly, or implied by room and type, "
     "counts: 'the light in <room>' covers every light in that room, 'all lights' covers "
     "every light. False if the request is about another device or not a request to act now."
 )
@@ -656,12 +657,23 @@ HA_REFLEX_POSITION = (
 )
 HA_REFLEX_TEMPERATURE = 'What target temperature does the user\'s last message ask for "{name}"?'
 HA_REFLEX_NOT_SPECIFIED = "The message does not say."
+HA_REFLEX_OTHER = "Something not listed here."
+# What each device is called, by (domain, device_class); (domain, None) covers a class
+# not listed.  Covers have no fallback: a garage door or a gate is never offered.
 HA_REFLEX_KINDS = {
-    "light": "a light",
-    "switch": "a switch",
-    "cover": "a curtain",
-    "climate": "the heating thermostat",
-    "media_player": "the TV",
+    ("light", None): "a light",
+    ("switch", "outlet"): "a socket",
+    ("switch", None): "a switch",
+    ("cover", "curtain"): "a curtain",
+    ("cover", "blind"): "a blind",
+    ("cover", "shade"): "a shade",
+    ("cover", "shutter"): "a shutter",
+    ("cover", "awning"): "an awning",
+    ("climate", None): "a heating thermostat",
+    ("media_player", "tv"): "a TV",
+    ("media_player", "speaker"): "a speaker",
+    ("media_player", "receiver"): "an AV receiver",
+    ("media_player", None): "a TV or media player",
 }
 HA_REFLEX_ACTIONS = {
     "light": {"turn_on": "Switch on, or change brightness or colour.", "turn_off": "Switch off."},

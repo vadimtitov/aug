@@ -1,6 +1,7 @@
 """DecisionsClient: the request it sends and how it reads the reply."""
 
 import json
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -14,20 +15,34 @@ from aug.utils.decisions import (
     Predicate,
 )
 
+_REAL_CLIENT = httpx.AsyncClient
 
-def _client(handler) -> tuple[DecisionsClient, list[httpx.Request]]:
-    seen: list[httpx.Request] = []
+
+@pytest.fixture
+def api():
+    """Serves the client's requests from ``api.handler``; ``api.seen`` lists them."""
+
+    class _Api:
+        handler = staticmethod(lambda request: httpx.Response(500))
+        seen: list[httpx.Request] = []
 
     def record(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        return handler(request)
+        _Api.seen.append(request)
+        return _Api.handler(request)
 
-    client = DecisionsClient("http://litellm:4000/v1", "sk-aug", model="gpt-6-luna")
-    client._http = httpx.AsyncClient(transport=httpx.MockTransport(record))
-    return client, seen
+    transport = httpx.MockTransport(record)
+    with patch(
+        "aug.utils.decisions.httpx.AsyncClient",
+        side_effect=lambda **kw: _REAL_CLIENT(transport=transport, **kw),
+    ):
+        yield _Api
 
 
-async def test_questions_go_to_the_proxys_pass_through_and_answers_come_back_by_name():
+def _client() -> DecisionsClient:
+    return DecisionsClient("http://litellm:4000/v1", "sk-aug", model="gpt-6-luna")
+
+
+async def test_questions_go_to_the_proxys_pass_through_and_answers_come_back_by_name(api):
     reply = {
         "answers": [
             {"type": "predicate", "name": "gate", "probability": 0.97},
@@ -36,9 +51,9 @@ async def test_questions_go_to_the_proxys_pass_through_and_answers_come_back_by_
             {"type": "refusal", "name": "colour"},
         ]
     }  # fmt: skip
-    client, seen = _client(lambda r: httpx.Response(200, json=reply))
+    api.handler = lambda r: httpx.Response(200, json=reply)
 
-    answers = await client.decide(
+    answers = await _client().decide(
         [InputMessage("assistant", "Kitchen is on."), InputMessage("user", "turn it off")],
         [
             Predicate("gate", "A request?"),
@@ -52,8 +67,7 @@ async def test_questions_go_to_the_proxys_pass_through_and_answers_come_back_by_
         "action": Answer(choice="turn_off", confidence=0.9),
         "colour": Answer(),
     }
-    assert answers["colour"].refused
-    (request,) = seen
+    (request,) = api.seen
     assert str(request.url) == "http://litellm:4000/openai_passthrough/v1/decisions"
     assert request.headers["Authorization"] == "Bearer sk-aug"
     assert json.loads(request.content) == {
@@ -91,16 +105,16 @@ async def test_questions_go_to_the_proxys_pass_through_and_answers_come_back_by_
         httpx.Response(200, json={"no": "answers"}),
     ],
 )
-async def test_a_failed_or_unreadable_reply_raises(response):
-    client, _ = _client(lambda r: response)
+async def test_a_failed_or_unreadable_reply_raises(api, response):
+    api.handler = lambda r: response
     with pytest.raises(DecisionsError):
-        await client.decide([InputMessage("user", "hi")], [Predicate("g", "?")])
+        await _client().decide([InputMessage("user", "hi")], [Predicate("g", "?")])
 
 
-async def test_an_unreachable_api_raises():
+async def test_an_unreachable_api_raises(api):
     def down(request):
         raise httpx.ConnectError("refused")
 
-    client, _ = _client(down)
+    api.handler = down
     with pytest.raises(DecisionsError):
-        await client.decide([InputMessage("user", "hi")], [Predicate("g", "?")])
+        await _client().decide([InputMessage("user", "hi")], [Predicate("g", "?")])

@@ -44,7 +44,7 @@ The `note` tool is the write mechanism during a conversation. A nightly job fold
 | Files | Send files to the agent, it saves them to disk, processes via shell tools, and can send files back |
 | Reminders | Set one-off or recurring reminders |
 | Skills | User-defined persistent instructions following the [agentskills.io](https://agentskills.io/specification) spec. See [design doc](docs/skills-design.md). |
-| Home Assistant | Control smart home devices via reflexes (runs in parallel with the agent) |
+| Home Assistant | The v15 profiles switch labelled devices the moment you ask, before the agent answers (a reflex on OpenAI's Decisions API) |
 | Portainer | List, inspect, and manage Docker containers and stacks. See [setup guide](docs/portainer-setup.md). |
 
 

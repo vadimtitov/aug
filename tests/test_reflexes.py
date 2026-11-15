@@ -209,6 +209,18 @@ async def test_recent_returns_the_sessions_last_messages_oldest_first(tmp_path) 
     assert [r["text"] for r in records] == ["a2", "q3", "a3"]
 
 
+async def test_recent_leaves_out_turns_nobody_was_there_for(tmp_path) -> None:
+    t = Transcript("tg-1", root=tmp_path)
+    await t.append("turn_started", "s1", text="turn off the hall light", attended=True)
+    await t.append("turn_ended", "s1", text="Done.")
+    await t.append("turn_started", "s1", text="Silent task: sync the neon strip", attended=False)
+    await t.append("turn_ended", "s1", text="Synced.")
+
+    records = await t.recent("s1", 4)
+
+    assert [r["text"] for r in records] == ["turn off the hall light", "Done."]
+
+
 async def test_recent_with_no_transcript_is_empty(tmp_path) -> None:
     assert await Transcript("tg-1", root=tmp_path).recent("s1", 3) == []
 

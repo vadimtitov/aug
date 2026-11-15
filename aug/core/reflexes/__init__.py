@@ -10,7 +10,9 @@ reflexes on every turn someone is there for, before the agent starts:
   display — shown to the user straight away (None to skip).
 
 The turn waits for its reflexes, so a reflex must decide quickly that a message is not
-for it.  One that takes longer than REFLEX_TIMEOUT_SECONDS is dropped.
+for it.  One that takes longer than REFLEX_TIMEOUT_SECONDS is dropped, so a reflex that
+acts on the world bounds its own deciding well inside that and leaves the rest for the
+action itself: one cut off mid-action would leave no note of what it did.
 """
 
 import asyncio
@@ -22,7 +24,7 @@ from typing import Literal
 logger = logging.getLogger(__name__)
 
 # A reflex past this is dropped and the turn goes ahead without it.
-REFLEX_TIMEOUT_SECONDS = 5.0
+REFLEX_TIMEOUT_SECONDS = 10.0
 
 
 @dataclass(frozen=True)

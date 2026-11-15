@@ -54,18 +54,13 @@ class Answer:
     choice: str | None = None
     confidence: float | None = None
 
-    @property
-    def refused(self) -> bool:
-        return self.probability is None and self.choice is None
-
 
 class DecisionsError(Exception):
     """The API could not be reached or returned an error."""
 
 
 class DecisionsClient:
-    """Asks a decisions model questions.  One HTTP client per instance, kept open so
-    consecutive calls skip the connection setup."""
+    """Asks a decisions model questions."""
 
     def __init__(self, base_url: str, api_key: str, model: str, timeout: float = 4.0) -> None:
         """*base_url*: the proxy's, with or without its ``/v1`` suffix."""
@@ -73,7 +68,6 @@ class DecisionsClient:
         self._headers = {"Authorization": f"Bearer {api_key}"}
         self._model = model
         self._timeout = timeout
-        self._http: httpx.AsyncClient | None = None
 
     async def decide(
         self, conversation: Sequence[InputMessage], questions: Sequence[Question]
@@ -88,10 +82,9 @@ class DecisionsClient:
             "input": [{"role": m.role, "content": m.text} for m in conversation],
             "questions": [_question(q) for q in questions],
         }
-        if self._http is None:
-            self._http = httpx.AsyncClient(timeout=self._timeout)
         try:
-            response = await self._http.post(self._url, headers=self._headers, json=body)
+            async with httpx.AsyncClient(timeout=self._timeout) as http:
+                response = await http.post(self._url, headers=self._headers, json=body)
         except httpx.HTTPError as e:
             raise DecisionsError(f"request failed: {e!r}") from e
         if response.is_error:

@@ -46,8 +46,9 @@ class Transcript:
             logger.warning("transcript write failed path=%s", self.path, exc_info=True)
 
     async def recent(self, context_id: str, n: int) -> list[dict[str, Any]]:
-        """The last *n* messages of session *context_id*, oldest first: its
-        ``turn_started`` and ``turn_ended`` records that carry text.  Reads only the
+        """The last *n* messages of session *context_id*, oldest first: the text of its
+        ``turn_started`` and ``turn_ended`` records, from turns someone was there for
+        (a push's or a job's prompt is not something the user said).  Reads only the
         file's tail, so a long transcript costs no more than a short one.  [] when the
         file can't be read."""
         try:
@@ -56,21 +57,23 @@ class Transcript:
             logger.warning("transcript read failed path=%s", self.path, exc_info=True)
             return []
         found: list[dict[str, Any]] = []
-        for line in reversed(lines):
+        attended = True  # of the turn the records being read belong to
+        for line in lines:
             try:
                 record = json.loads(line)
             except ValueError:
                 continue  # the first line of the tail is usually cut
+            if not isinstance(record, dict) or record.get("context_id") != context_id:
+                continue
+            if record.get("event") == "turn_started":
+                attended = record.get("attended", True) is not False
             if (
-                isinstance(record, dict)
-                and record.get("context_id") == context_id
+                attended
                 and record.get("event") in ("turn_started", "turn_ended")
                 and record.get("text")
             ):
                 found.append(record)
-                if len(found) == n:
-                    break
-        return found[::-1]
+        return found[-n:] if n else []
 
     def _tail(self) -> list[str]:
         if not self.path.exists():
