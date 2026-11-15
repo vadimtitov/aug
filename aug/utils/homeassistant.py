@@ -8,7 +8,9 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
 import websockets
@@ -24,6 +26,8 @@ class Entity:
     friendly_name: str
     state: str
     area_name: str | None = None
+    aliases: tuple[str, ...] = ()  # the names the user gave it in HA, besides its own
+    attributes: Mapping[str, Any] = field(default_factory=dict, hash=False)
 
     @property
     def domain(self) -> str:
@@ -121,13 +125,14 @@ class HomeAssistantClient:
                 entity_id=s["entity_id"],
                 friendly_name=s.get("attributes", {}).get("friendly_name") or s["entity_id"],
                 state=s.get("state", "unknown"),
+                attributes=s.get("attributes", {}),
             )
             for s in response.json()
             if s.get("entity_id")
         ]
 
     async def _fetch_by_label(self, label: str) -> list[Entity]:
-        matched_registry, device_area_map, area_map = await self._ws_fetch_registry(label)
+        matched_registry, device_area_map, area_map, aliases = await self._ws_fetch_registry(label)
         if not matched_registry:
             return []
         state_map = await self._fetch_states({e["entity_id"] for e in matched_registry})
@@ -144,14 +149,17 @@ class HomeAssistantClient:
                 area_name=area_map.get(
                     e.get("area_id") or device_area_map.get(e.get("device_id", ""), "")
                 ),
+                aliases=aliases.get(e["entity_id"], ()),
+                attributes=state_map.get(e["entity_id"], {}).get("attributes", {}),
             )
             for e in matched_registry
         ]
 
     async def _ws_fetch_registry(
         self, label: str
-    ) -> tuple[list[dict], dict[str, str], dict[str, str]]:
-        """Return (label-matched entries, device_id→area_id map, area_id→name map) via WebSocket."""
+    ) -> tuple[list[dict], dict[str, str], dict[str, str], dict[str, tuple[str, ...]]]:
+        """Return (label-matched entries, device_id→area_id map, area_id→name map,
+        entity_id→aliases map) via WebSocket."""
         ws_url = (
             ("wss://" if self._url.startswith("https://") else "ws://")
             + self._url.split("://", 1)[1]
@@ -177,15 +185,38 @@ class HomeAssistantClient:
                     raise RuntimeError(f"HA WebSocket command {msg['id']} failed: {msg}")
                 responses[msg["id"]] = msg.get("result", [])
 
-        label_lower = label.lower()
-        matched = [
-            e for e in responses[1] if label_lower in [lb.lower() for lb in e.get("labels", [])]
-        ]
+            label_lower = label.lower()
+            matched = [
+                e for e in responses[1] if label_lower in [lb.lower() for lb in e.get("labels", [])]
+            ]
+            aliases = await self._ws_aliases(ws, [e["entity_id"] for e in matched])
         area_map = {a["area_id"]: a["name"] for a in responses[2]}
         device_area_map = {
             d["id"]: d["area_id"] for d in responses[3] if d.get("id") and d.get("area_id")
         }
-        return matched, device_area_map, area_map
+        return matched, device_area_map, area_map, aliases
+
+    async def _ws_aliases(self, ws: Any, entity_ids: list[str]) -> dict[str, tuple[str, ...]]:
+        """Each entity's aliases.  The registry list leaves them out; get_entries has
+        them.  {} if it fails: aliases only help, they are never required."""
+        if not entity_ids:
+            return {}
+        await ws.send(
+            json.dumps(
+                {"id": 4, "type": "config/entity_registry/get_entries", "entity_ids": entity_ids}
+            )
+        )
+        while True:
+            msg = json.loads(await ws.recv())
+            if msg.get("id") == 4:
+                break
+        if not msg.get("success", True):
+            logger.warning("ha_aliases_failed error=%s", msg.get("error"))
+            return {}
+        return {
+            entity_id: tuple(a for a in (entry or {}).get("aliases", []) if a)
+            for entity_id, entry in (msg.get("result") or {}).items()
+        }
 
     async def _fetch_states(self, entity_ids: set[str]) -> dict[str, dict]:
         """Bulk-fetch current states for *entity_ids* via REST."""

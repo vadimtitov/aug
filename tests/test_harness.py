@@ -821,24 +821,24 @@ async def test_unattended_turn_takes_no_injections() -> None:
     await _collect(stream)
 
 
-def _reflexing_harness(display: str = "🪄 light on"):
+async def test_a_reflexs_note_reaches_the_model_and_its_display_the_user() -> None:
     harness, agent = _harness(AIMessage(content="ok"))
-    reflex = AsyncMock(return_value=ReflexOutput(inject="[reflex] done", display=display))
+    reflex = AsyncMock(return_value=ReflexOutput(note="light.turn_on on light.lamp", display="🪄"))
     agent.reflexes = [reflex]
-    return harness, reflex
 
-
-async def test_reflex_display_reaches_the_event_stream() -> None:
-    harness, reflex = _reflexing_harness()
-
-    events = await _collect(harness.run(_msg("turn on the light"), "c1", TURN))
+    events = await _collect(harness.run(_msg("turn on the lamp"), "c1", TURN))
 
     reflex.assert_awaited_once()
-    assert StatusUpdate(text="🪄 light on") in events
+    (human,) = [m for m in agent.seen[0] if isinstance(m, HumanMessage)]
+    assert "turn on the lamp" in str(human.content)
+    assert "light.turn_on on light.lamp" in str(human.content)
+    assert StatusUpdate(text="🪄") in events
 
 
 async def test_follow_up_turns_fire_no_reflexes() -> None:
-    harness, reflex = _reflexing_harness()
+    harness, agent = _harness(AIMessage(content="ok"))
+    reflex = AsyncMock(return_value=ReflexOutput(note="done"))
+    agent.reflexes = [reflex]
     follow_up = TurnContext(reply_to=TURN.reply_to, attended=True, follow_up=True)
 
     await _collect(harness.run(_msg("late message"), "c1", follow_up))

@@ -7,7 +7,7 @@ Generated: 2026-04-03
 ## 1. `BaseInterface` god class
 **File:** `aug/api/interfaces/base.py` (458 lines)
 
-Handles message preprocessing, orchestration, streaming, reflex injection, history extraction — all in one class. Subclasses only implement 3–4 methods but inherit the entire responsibility graph. The streaming loop (`_agent_stream`) and reflex injection are untestable without a live LangGraph.
+Handles message preprocessing, orchestration, streaming, history extraction — all in one class. Subclasses only implement 3–4 methods but inherit the entire responsibility graph. The streaming loop (`_agent_stream`) is untestable without a live LangGraph.
 
 - **Category:** Shallow interface over complex implementation, coupled concerns
 - **Test impact:** Integration tests could replace the current untested orchestration paths
@@ -64,16 +64,6 @@ Understanding memory consolidation requires bouncing between the file I/O code, 
 
 ---
 
-## 7. Reflex injection has non-deterministic semantics
-**File:** `aug/api/interfaces/base.py` (lines 186–260)
-
-A reflex finishing mid-run injects into the current run at the next interrupt; a reflex finishing after the run spawns a new run. The timing is non-deterministic and completely untested.
-
-- **Category:** Shared mutable state across async boundaries
-- **Test impact:** No tests cover the timing split; bugs here would be subtle and hard to reproduce
-
----
-
 ## 8. `app.state` as implicit, untyped dependency injection
 **Files:** `aug/app.py` + `aug/utils/notify.py`, `aug/utils/reminders.py`, routers, interfaces
 
@@ -92,6 +82,6 @@ Seven different subsystems set/read from `app.state` with no formal contract. In
 4. **Tools mixing business logic with I/O** (`set_reminder` opening DB connections) makes testing and reuse difficult
 5. **Scattered configuration and defaults** (model names hardcoded in 5+ files) makes it hard to change system behavior
 6. **Missing abstractions for cross-cutting concerns** (settings, notifications, skills) leads to duplicated integration logic
-7. **Untested integration paths** (reflex timing, interrupt loops, OAuth flows) are high-risk
+7. **Untested integration paths** (interrupt loops, OAuth flows) are high-risk
 8. **Implicit state shared across async boundaries** (`run.pending_agent_injection` queue, `app.state.interfaces` dict) with no structural enforcement
 9. **Data-driven behavior hard-coded** (agent registry, tool display names, interface prompts) requiring code edits for every change

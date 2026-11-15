@@ -10,6 +10,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from aug.core.agents.chat_agent import AugAgent
 from aug.core.harness.claude_code.harness import ClaudeCodeHarness
 from aug.core.harness.types import ModelTier
+from aug.core.reflexes.homeassistant import HomeAssistantReflex
 from aug.core.registry import (
     base_tool_names,
     configure_harnesses,
@@ -38,7 +39,27 @@ def _no_mcp_tools():
 
 
 def test_only_the_current_profiles_are_registered():
-    assert list_agents() == ["fake", *PROFILES, "v14_claude_code"]
+    assert list_agents() == [
+        "fake",
+        *PROFILES,
+        "v14_claude_code",
+        "v15_kimi",
+        "v15_glm",
+        "v15_claude_code",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "base"),
+    [("v15_kimi", "v13_kimi"), ("v15_glm", "v13_glm"), ("v15_claude_code", "v14_claude_code")],
+)
+def test_v15_is_its_base_profile_plus_the_home_assistant_reflex(name, base):
+    configure_harnesses(MemorySaver())
+    v15, earlier = get_agent(name), get_agent(base)
+    assert [type(r) for r in v15.reflexes] == [HomeAssistantReflex]
+    assert not earlier.reflexes
+    assert get_harness(name).reflexes == v15.reflexes
+    assert _tool_names(name) == _tool_names(base)
 
 
 def test_profile_models():
