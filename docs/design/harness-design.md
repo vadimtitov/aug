@@ -37,7 +37,9 @@ class Harness(ABC):
 - The base `run()` registers each turn's `AgentRun` (what `/stop` and `inject()` find)
   and drops it when the turn ends; a harness adds its own bookkeeping in the
   `_open_turn` / `_close_turn` hooks. A turn the agent started by itself
-  (`unsolicited`) registers none.
+  (`unsolicited`) registers none. Each `AgentRun` names its `owner`, the harness
+  that started it: `/stop` and a message typed mid-turn go to that harness, whichever
+  agent is selected now, and a harness acts only on its own runs (`_active_run`).
 - The base `run()` logs every turn and tool call and appends it to AUG's own
   transcript, `data/transcripts/<conversation_id>.jsonl`, the same way on every
   harness. Files appear in it as path, media type, filename, size and sha256, never

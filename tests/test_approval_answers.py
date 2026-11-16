@@ -29,6 +29,7 @@ from aug.core.harness import (
     TurnStarted,
     pending_approvals,
 )
+from aug.core.run import AgentRun, run_registry
 from aug.core.tools.approval import requires_approval
 from aug.utils.file_settings import AppSettings
 
@@ -123,9 +124,12 @@ async def test_a_typed_message_answers_a_waiting_approval_and_joins_the_turn() -
     ctx = _RestContext(
         request=ChatRequest(context_id="rest-1", message="no, wait"), agent_version="x"
     )
+    run_registry.set("rest-1", AgentRun(owner=harness))
 
-    with patch("aug.api.interfaces.base._harness_for", return_value=harness):
+    try:
         await iface.run(ctx)
+    finally:
+        run_registry.pop("rest-1")
 
     assert await waiter == ApprovalDecision.REPLIED
     harness.inject.assert_awaited_once()

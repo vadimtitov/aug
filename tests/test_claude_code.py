@@ -16,6 +16,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 from claude_agent_sdk import (
@@ -35,6 +36,7 @@ from claude_agent_sdk import (
 from langchain_core.tools import tool
 from mcp.types import ListToolsRequest
 
+from aug.api.interfaces.rest import RestApiInterface
 from aug.core.harness import (
     Address,
     ContextUsage,
@@ -56,9 +58,10 @@ from aug.core.harness.claude_code import harness as cc
 from aug.core.harness.claude_code.guard import guard_tool_use
 from aug.core.harness.claude_code.harness import ClaudeCodeHarness, ClaudeCodeProfile
 from aug.core.harness.claude_code.tools import ToolCalls, _adapt, canonical_name, mcp_content
+from aug.core.harness.langgraph.harness import LangGraphHarness
 from aug.core.harness.tool_bridge import ToolImage, ToolOutcome
 from aug.core.harness.tool_context import ToolContext
-from aug.core.run import run_registry
+from aug.core.run import AgentRun, run_registry
 from aug.core.tools.context import current_tool_context
 from aug.core.tools.run_bash import hushed_command
 from aug.utils.hushed import HushedError
@@ -684,6 +687,69 @@ async def test_cancel_interrupts_and_ends_cancelled(harness, fake_client):
     events = await turn
     assert fake_client.instances[0].interrupted
     assert events[-1].cancelled
+
+
+async def _claude_turn_running(harness, fake_client) -> asyncio.Task:
+    fake_client.on_query = lambda client, messages: client.send(_state("running"))
+    turn = asyncio.create_task(_turn(harness))
+    for _ in range(50):
+        if fake_client.instances and fake_client.instances[0].queries:
+            return turn
+        await asyncio.sleep(0.01)
+    turn.cancel()
+    raise AssertionError("the turn never reached the CLI")
+
+
+async def test_stop_interrupts_the_cli_past_a_langgraph_harness(harness, fake_client):
+    """/stop goes to the harness that runs the turn, whatever order harnesses are
+    listed in: a LangGraph harness listed first must not take it."""
+    langgraph = LangGraphHarness(MagicMock(), MagicMock())
+    turn = await _claude_turn_running(harness, fake_client)
+
+    with patch("aug.api.interfaces.base.harnesses", return_value=[langgraph, harness]):
+        assert await RestApiInterface().stop_run("ctx")
+
+    events = await asyncio.wait_for(turn, 3)
+    assert fake_client.instances[0].interrupted
+    assert events[-1].cancelled
+
+
+async def test_stop_goes_to_the_turn_owner_not_a_cli_started_turn(harness, fake_client):
+    """A turn the CLI started is open, but another harness's turn holds the chat:
+    /stop stops that turn and leaves the CLI alone."""
+
+    async def sink(reply_to, context_id, events):
+        async for _ in events:
+            pass
+
+    fake_client.on_query = _reply("ok")
+    async with harness.running(sink):
+        await _turn(harness)
+        client = fake_client.instances[0]
+        client.send(_state("running"), *_stream("working"))
+        await asyncio.sleep(0.01)
+        langgraph = LangGraphHarness(MagicMock(), MagicMock())
+        foreign = AgentRun(owner=langgraph)
+        run_registry.set("ctx", foreign)
+
+        try:
+            with patch("aug.api.interfaces.base.harnesses", return_value=[harness, langgraph]):
+                assert await RestApiInterface().stop_run("ctx")
+        finally:
+            run_registry.pop("ctx")
+
+        assert foreign.user_requested_stop.is_set()
+        assert not client.interrupted
+
+
+async def test_another_harness_cannot_take_a_message_for_this_turn(harness, fake_client):
+    langgraph = LangGraphHarness(MagicMock(), MagicMock())
+    turn = await _claude_turn_running(harness, fake_client)
+
+    assert not await langgraph.inject(_message("lost"), "ctx")
+
+    await harness.cancel("ctx")
+    await turn
 
 
 @pytest.mark.parametrize(

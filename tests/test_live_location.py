@@ -39,7 +39,7 @@ def clean_registry():
 
 @pytest.fixture(autouse=True)
 def langgraph_harness():
-    """Every agent version resolves to a LangGraph harness, so inject() reaches the run."""
+    """Every agent version resolves to a LangGraph harness, which starts the runs."""
     harness = LangGraphHarness(MagicMock(), MagicMock())
     with patch("aug.api.interfaces.base.get_harness", return_value=harness):
         yield harness
@@ -810,9 +810,11 @@ async def test_initial_share_is_saved_on_the_way_through_run(telegram_interface)
 
 
 @pytest.mark.asyncio
-async def test_active_run_receives_the_location_as_an_injection(telegram_interface):
+async def test_active_run_receives_the_location_as_an_injection(
+    telegram_interface, langgraph_harness
+):
     """With a run in flight, the update lands in its injection queue — no second run."""
-    run = AgentRun()
+    run = AgentRun(owner=langgraph_harness)
     run_registry.set("tg-123-0", run)
     state = _state(last_run_at=time.time(), throttle_seconds=300)  # would be throttled
 
@@ -916,10 +918,12 @@ async def test_a_run_started_after_the_gate_still_stamps_the_throttle(telegram_i
 
 
 @pytest.mark.asyncio
-async def test_an_injected_location_does_not_consume_the_throttle(telegram_interface):
+async def test_an_injected_location_does_not_consume_the_throttle(
+    telegram_interface, langgraph_harness
+):
     """Injecting into a running agent is free, so it must not push the next wake out."""
     state = _state(last_run_at=0.0, throttle_seconds=300)
-    run_registry.set("tg-123-0", AgentRun())
+    run_registry.set("tg-123-0", AgentRun(owner=langgraph_harness))
 
     await _run_update(telegram_interface, _edited_location(lat=51.5, lon=-0.12), state)
 
