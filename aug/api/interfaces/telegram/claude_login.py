@@ -126,14 +126,17 @@ class _ClaudeLoginMixin:
     """Mixin that adds /claude_login to TelegramInterface."""
 
     def build_claude_login_handlers(self, bot_app) -> None:
-        """Register the /claude_login handlers on *bot_app*, before the agent's."""
+        """Register the /claude_login handlers on *bot_app*, before the agent's.  The
+        interface's /cancel ends a sign-in waiting here (``claude_login_waiting``)."""
         self._claude_logins = _PendingLogins()
-        awaiting = _AwaitingCode(self._claude_logins)
+        self.claude_login_waiting = _AwaitingCode(self._claude_logins)
         bot_app.add_handler(CommandHandler("claude_login", self._claude_login_start))
-        bot_app.add_handler(CommandHandler("cancel", self._claude_login_cancel, filters=awaiting))
         bot_app.add_handler(
             MessageHandler(
-                filters.UpdateType.MESSAGE & filters.TEXT & ~filters.COMMAND & awaiting,
+                filters.UpdateType.MESSAGE
+                & filters.TEXT
+                & ~filters.COMMAND
+                & self.claude_login_waiting,
                 self._claude_login_code,
             )
         )
@@ -217,12 +220,9 @@ class _ClaudeLoginMixin:
             message_thread_id=thread,
         )
 
-    @restricted
-    async def _claude_login_cancel(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
-        message = update.message
-        if message is not None and await self._claude_logins.end(_key(message)):
+    async def cancel_claude_login(self, message: Message) -> None:
+        """End the sign-in waiting on *message*'s chat, topic and user, if any."""
+        if await self._claude_logins.end(_key(message)):
             await message.reply_text("Sign-in cancelled.")
 
 

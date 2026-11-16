@@ -12,7 +12,7 @@ from typing import Any
 from claude_agent_sdk import HookContext, HookMatcher
 
 from aug.core.tools.blocked_paths import command_block_reason, path_block_reason
-from aug.core.tools.run_bash import hushed_command
+from aug.utils.hushed import hushed_command
 
 # Claude's tools that read or write files, and the input field holding the path.
 _PATH_FIELDS = ("file_path", "path", "notebook_path")

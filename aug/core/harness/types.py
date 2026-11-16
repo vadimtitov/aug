@@ -76,12 +76,23 @@ ErrorKind = Literal[
     "context_full", "rate_limited", "auth", "login", "unavailable", "step_limit", "internal"
 ]
 # login: the model login itself is missing, expired or revoked; signing in again fixes it.
+# The logins a ``login`` error can name: the subscription an agent CLI runs on.
+LoginKind = Literal["claude", "codex"]
 
 
 @dataclass(frozen=True)
 class HarnessError:
+    """What ended a turn.
+
+    kind:       what the user is told (HARNESS_ERROR_MESSAGES).
+    retry_at:   when a rate limit resets, if known.
+    login_with: for ``login``, the login to renew, which picks how the user is told to
+                sign in again; None when the harness can't tell.
+    """
+
     kind: ErrorKind
     retry_at: datetime | None = None
+    login_with: LoginKind | None = None
 
 
 @dataclass(frozen=True)

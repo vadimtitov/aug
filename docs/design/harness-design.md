@@ -1,8 +1,9 @@
 # Harness design
 
 AUG's interfaces (Telegram, REST, pushes, jobs) talk to one contract, `Harness`, and
-never to the thing that runs a turn. Two harnesses implement it: `LangGraphHarness`
-(`v13_kimi`, `v13_glm`) and `ClaudeCodeHarness` (`v14_claude_code`, see below).
+never to the thing that runs a turn. Three harnesses implement it: `LangGraphHarness`
+(`v13_kimi`, `v13_glm`), `ClaudeCodeHarness` (`v14_claude_code`) and `CodexHarness`
+(`v14_codex`), both described below; the `v15_*` versions add the Home Assistant reflex.
 
 ## The contract (`aug/core/harness/`)
 
@@ -174,6 +175,93 @@ the CLI comes inside it, so both move together.
 
 Tests: `tests/test_claude_code.py` scripts the SDK's messages; `tests/test_claude_code_cli.py`
 runs the real CLI against a fake Messages API (`tests/claude_fake_api.py`), free.
+
+## Codex (`aug/core/harness/codex/`)
+
+`CodexHarness` runs a `CodexProfile` (model, effort, AUG's tools, oneshot models) on
+Codex, signed in with ChatGPT. `openai-codex-cli-bin` (the Codex binary) is pinned; AUG
+talks to its `app-server` over JSON-RPC itself (`aug/utils/codex_app_server.py`), so a
+tool call that waits half an hour for an approval holds nothing else up.
+
+- **One process.** Every Codex profile shares one app-server (`CodexRuntime`), because
+  the ChatGPT login refreshes by rotating its refresh token: two processes refreshing at
+  once would sign each other out. It starts on first use; if it dies, or leaves a
+  request unanswered past its deadline (it is stuck, and is stopped), the next use
+  starts it again and threads resume. Each chat is a Codex thread on it; idle threads
+  past `MAX_OPEN_THREADS` are unloaded, and resume on their next message.
+- **Records.** `/app/data/codex/aug-threads/` keeps one record per `context_id`
+  (`RecordStore`, as on Claude Code): the thread id, the address, the prompt the thread
+  started with, and the last context usage seen. `CODEX_HOME` is `/app/data/codex`, so
+  Codex's own thread files survive a redeploy, and a thread resumes with its prompt
+  unchanged.
+- **Prompt.** Codex's own prompt plus AUG's session prompt as developer instructions,
+  without the skills index. Nothing loads from `~/.codex`, and the workspace's AGENTS.md
+  is not read again as a project doc (it is in AUG's prompt). The workspace's skills are
+  Codex skills (an extra skills root); Codex's bundled ones are off.
+- **Tools.** AUG's tools (the MCP manager's included) are dynamic tools: the profile's
+  `always_loaded` ones plainly, the rest deferred in the `aug` namespace until Codex
+  looks them up. Codex asks AUG to run each call (`item/tool/call`); `invoke_tool` runs
+  it with the turn's `ToolContext`, as on Claude Code. AUG's tools are the same set as
+  Claude Code's: `web_fetch` reads pages, since Codex has no fetch tool of its own. A
+  thread keeps the tools it started with (Codex stores them with it): tools added later,
+  an MCP server installed say, reach a chat's next session; a call to a tool since
+  removed answers that it is gone. Codex's own memory, goals, apps, plugins and image
+  generation are off; its shell, patch, web search, image viewing and subagents stay,
+  without approval and without a sandbox (AUG's container is the boundary, as on Claude
+  Code).
+- **Guard.** Codex runs `aug/core/harness/codex/guard.py` (as a file, so a shell command
+  doesn't wait for the whole harness package to import) before its shell, patch and
+  image tools; shell commands from Codex's code mode reach it too. It refuses the
+  blocked paths (`blocked_paths`, which include all of `CODEX_HOME`: the login, the hook
+  config, every chat's thread), resolving a patch's and an image's relative paths
+  against the call's directory, and rewrites every shell command to run through hushed.
+  `write_stdin` reaches no hook, but only writes to a process that started through the
+  guard. Codex lets a call through when its hook crashes, prints what it can't read or
+  times out, so the guard fails closed by itself: a call of a shape it doesn't know is
+  refused, it gives up before Codex's time limit, and it runs behind a shell line that
+  turns any failure into exit 2, which Codex takes as a refusal. Codex only runs a hook
+  from `CODEX_HOME/config.toml` once it is trusted: AUG writes that file at each start
+  and trusts its own hook, and only it, then checks the trust took. Config files Codex
+  would rank above AUG's settings (`managed_config.toml`, `requirements.toml`) are
+  removed at each start. The app-server's environment keeps only `_ENV_KEEP` (AUG's own
+  secrets never reach it); commands also lose `CODEX_HOME`, and run in a plain shell,
+  since a login shell would reset `PATH` and lose AUG's venv.
+- **Login.** `/codex_login` in a private Telegram chat (its code signs AUG in to whoever
+  enters it first): a ChatGPT sign-in by device code. AUG sends the sign-in link as a
+  button and a short code; the user enters the code on the sign-in page, and the message
+  turns into "Codex is signed in as …". Nothing is pasted back into the chat. Codex
+  keeps the login and refreshes it; the runtime also refreshes it once a day, so it
+  never lapses for lack of use. A turn on a signed-out Codex, or a rejected login, is
+  the `login` error kind, whose message names `/codex_login`. `/cancel` ends a sign-in
+  in progress, Claude's or Codex's.
+- **Turns.** A turn is ours from the moment AUG asks for it (`thread.py`) and ends at
+  its `turn/completed`. `inject()` is `turn/steer` (a message steered in before the turn
+  could take it, and refused, comes back as `unconsumed`); `cancel()` is
+  `turn/interrupt`, which also cancels the AUG tool running. A stop that lands before
+  Codex has named the turn is sent once it does, and a stopped turn ends within ten
+  seconds even if Codex never says so; whatever Codex says later about a turn ended that
+  way is ignored. A turn also ends, as `unavailable`, once Codex has said nothing for
+  `SILENT_SECONDS` with no tool call or subagent running, and one whose reader stops
+  early is interrupted. `/stop` reaches a compaction or a turn Codex started by itself
+  too, and a compaction stops after `COMPACT_SECONDS`. What Codex says about a turn is
+  matched to it by its `turnId`: the late word of a turn ended here never reaches the
+  next, and a tool call for a stopped or ended turn never runs. Subagents run on
+  multi-agent v2 whatever the model's metadata says (v1 lets a thread drive any thread
+  whose id it knows), and a chat never takes over a thread another chat listens to. A
+  subagent runs on a thread of its own; each of its turns shows as one `subagent` call
+  with its work filed under it. A turn Codex starts by itself (a subagent's answer
+  arriving after its turn ended) is delivered like Claude's, through
+  `running(on_unsolicited)`.
+- **Errors.** `TurnError.codexErrorInfo` maps onto `HarnessError` kinds (`unauthorized`
+  and HTTP 401/403 are `login`); a used-up plan window is `rate_limited` with its reset
+  time. `/status` shows the plan's five-hour and weekly windows.
+- **`oneshot()`** is an ephemeral, read-only thread with Codex's tools and extra context
+  off and the caller's system prompt as its base instructions; it is unloaded once
+  answered, and interrupted if it takes too long.
+
+Tests: `tests/test_codex.py` scripts Codex's notifications; `tests/test_codex_cli.py`
+runs the real app-server against a fake Responses API (`tests/codex_fake_api.py`), free;
+`tests/test_codex_login.py` covers the sign-in.
 
 ## Names
 

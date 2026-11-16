@@ -63,6 +63,7 @@ from aug.api.interfaces.base import (
     store_file,
 )
 from aug.api.interfaces.telegram.claude_login import _ClaudeLoginMixin
+from aug.api.interfaces.telegram.codex_login import _CodexLoginMixin
 from aug.api.interfaces.telegram.ssh import _SshMixin
 from aug.api.interfaces.telegram.status import _StatusMixin
 from aug.api.interfaces.telegram.utils import (
@@ -219,7 +220,9 @@ _SECRET_NAME, _SECRET_VALUE = range(2)
 _no_draft_chats: set[int] = set()
 
 
-class TelegramInterface(_SshMixin, _ClaudeLoginMixin, _StatusMixin, BaseInterface[Update]):
+class TelegramInterface(
+    _SshMixin, _ClaudeLoginMixin, _CodexLoginMixin, _StatusMixin, BaseInterface[Update]
+):
     _debounce_window = 0.1  # 100ms — collects rapid-fire forwarded messages into one run
 
     def __init__(self) -> None:
@@ -952,6 +955,14 @@ class TelegramInterface(_SshMixin, _ClaudeLoginMixin, _StatusMixin, BaseInterfac
         self.build_ssh_handlers(bot_app)
         self.build_status_handlers(bot_app)
         self.build_claude_login_handlers(bot_app)
+        self.build_codex_login_handlers(bot_app)
+        bot_app.add_handler(
+            CommandHandler(
+                "cancel",
+                self._cancel_sign_ins,
+                filters=self.claude_login_waiting | self.codex_login_waiting,
+            )
+        )
         bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text))
         bot_app.add_handler(MessageHandler(filters.VOICE, self._handle_input))
         bot_app.add_handler(MessageHandler(filters.AUDIO, self._handle_input))
@@ -992,6 +1003,7 @@ class TelegramInterface(_SshMixin, _ClaudeLoginMixin, _StatusMixin, BaseInterfac
                 ("skills", "Inspect skill files"),
                 ("secret", "Store a secret"),
                 ("claude_login", "Sign in to Claude for the Claude agents"),
+                ("codex_login", "Sign in to ChatGPT for the Codex agents"),
                 ("prompt", "Export current system prompt as a file"),
                 ("consolidate", "Run memory consolidation now"),
                 ("consolidate_deep", "Run deep (weekly) memory consolidation now"),
@@ -1012,6 +1024,7 @@ class TelegramInterface(_SshMixin, _ClaudeLoginMixin, _StatusMixin, BaseInterfac
         await self._bot_app.updater.stop()
         await self._bot_app.stop()
         await self.end_claude_logins()  # after stop(): no handler can start one now
+        await self.end_codex_logins()
         await self._bot_app.shutdown()
         logger.info("Telegram bot stopped.")
 
@@ -1399,6 +1412,13 @@ class TelegramInterface(_SshMixin, _ClaudeLoginMixin, _StatusMixin, BaseInterfac
             logger.error("hushed add failed: %s", result.stderr)
             await update.effective_chat.send_message(f"Failed to store secret {name}.")  # type: ignore[union-attr]
         return ConversationHandler.END
+
+    @restricted
+    async def _cancel_sign_ins(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """/cancel from a user signing in there: ends the Claude and Codex sign-ins."""
+        if update.message is not None:
+            await self.cancel_claude_login(update.message)
+            await self.cancel_codex_login(update.message)
 
     async def _secret_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data.pop("secret_name", None)

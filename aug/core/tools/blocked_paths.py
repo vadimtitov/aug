@@ -12,18 +12,20 @@ import logging
 import re
 from pathlib import Path
 
-from aug.utils.data import DATA_DIR
+from aug.utils.data import CODEX_DIR, DATA_DIR
 from aug.utils.file_settings import load_settings
 
 logger = logging.getLogger(__name__)
 
 # SSH private keys, the hushed secret store (its age key sits next to it), OAuth client
-# secrets and Gmail tokens, and settings.json, which holds the saved approval rules.
+# secrets and Gmail tokens, Codex's home (its ChatGPT login, its hook config and every
+# chat's thread), and settings.json, which holds the saved approval rules.
 BLOCKED_PATHS = (
     DATA_DIR / "keys",
     DATA_DIR / ".hushed",
     DATA_DIR / "oauth_providers.json",
     DATA_DIR / "gmail_tokens",
+    CODEX_DIR,
     DATA_DIR / "settings.json",
 )
 

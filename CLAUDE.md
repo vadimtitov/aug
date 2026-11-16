@@ -24,11 +24,12 @@ aug/
 │   │   ├── workspace_template/ ← AGENTS.md a fresh install starts with
 │   │   ├── memory.py           ← Memory file init, append_note(), light + deep consolidation (the dream)
 │   │   ├── jobs.py             ← Background jobs: JOBS (which job, when, on which profile) + job_runner
-│   │   ├── registry.py         ← Profiles (v13_kimi, v13_glm, v14_claude_code) + get_harness(); moves chats off deleted versions
+│   │   ├── registry.py         ← Profiles (v13_kimi, v13_glm, v14_claude_code, v14_codex…) + get_harness(); moves chats off deleted versions
 │   │   ├── harness/            ← Harness ABC + types (Message, TurnContext, TurnEnded…), ToolContext,
 │   │   │                          records.py (agent CLI session records), tool_bridge.py (AUG tools for agent CLIs)
 │   │   │   ├── langgraph/      ← LangGraphHarness + LangGraph stream-event translation
-│   │   │   └── claude_code/    ← ClaudeCodeHarness: SDK session reader, MCP bridge, guard, CLI wrapper, login
+│   │   │   ├── claude_code/    ← ClaudeCodeHarness: SDK session reader, MCP bridge, guard, CLI wrapper, login
+│   │   │   └── codex/          ← CodexHarness: shared app-server runtime, thread events, dynamic tools, guard hook, login
 │   │   ├── run.py              ← run_registry: per-context run lock, routing lock, LangGraph AgentRuns
 │   │   ├── dispatch.py         ← fire_task / fire_push / broadcast — pushes run through the harness
 │   │   ├── transcript.py       ← AUG's own append-only turn log, data/transcripts/<conversation>.jsonl
@@ -57,6 +58,7 @@ aug/
 │       ├── data.py             ← DATA_DIR, WORKSPACE_DIR and the paths inside it, read_data_file() / write_data_file()
 │       ├── homeassistant.py    ← HomeAssistantClient: typed HA REST+WebSocket client with entity cache
 │       ├── stealth_browser.py  ← StealthBrowserClient: the stealth-browser sidecar's HTTP API
+│       ├── codex_app_server.py ← CodexAppServer: JSON-RPC client for `codex app-server`
 │       ├── fetching/           ← Fetching web pages for fetch_page and web_fetch
 │       │   ├── fetcher.py      ← tiers (curl_cffi, then the stealth browser), domain memory, redirects
 │       │   └── page_content.py ← page classification (ok/blocked/thin) + markdown extraction
@@ -157,7 +159,9 @@ behaviour change". Scripts and step formats: top of `scripts/fakes.py`.
 A Claude Code profile is a `ClaudeCodeProfile` in `_build_profiles()` instead: its
 model and effort, Claude's built-in tools it may use (an allowlist), AUG's tools, which
 of them Claude keeps loaded (`always_loaded`; the rest wait behind its ToolSearch), and
-its `oneshot()` models per tier (see `docs/design/harness-design.md`).
+its `oneshot()` models per tier (see `docs/design/harness-design.md`). A Codex profile
+is a `CodexProfile`: model and effort, AUG's tools, which of them Codex keeps loaded
+(the rest wait in its `aug` namespace), and its `oneshot()` models per tier.
 
 A deleted version needs no cleanup: at startup `migrate_conversations()` moves every
 chat set to it onto `v13_kimi` (`v13_glm` for a glm version).

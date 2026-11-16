@@ -172,8 +172,9 @@ async def test_a_new_login_restarts_claude_processes(tmp_path, monkeypatch):
 
 def test_a_rejected_claude_login_asks_for_a_new_one():
     result = MagicMock(subtype="error_during_execution", api_error_status=401, errors=[])
-    assert _result_error(result).kind == "login"
-    assert "/claude_login" in error_text(HarnessError(kind="login"))
+    error = _result_error(result)
+    assert error == HarnessError(kind="login", login_with="claude")
+    assert "/claude_login" in error_text(error)
 
 
 # -- Telegram --------------------------------------------------------------------------
@@ -269,7 +270,7 @@ async def test_telegram_cancel_ends_the_cli(stub_cli, bot):
     await bot._claude_login_start(_update(_message("/claude_login")), MagicMock())
     (pending,) = bot._claude_logins._by_key.values()
     cancel = _message("/cancel")
-    await bot._claude_login_cancel(_update(cancel), MagicMock())
+    await bot.cancel_claude_login(cancel)
     assert pending.attempt._setup._process.poll() is not None
     cancel.reply_text.assert_awaited_with("Sign-in cancelled.")
 

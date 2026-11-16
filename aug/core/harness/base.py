@@ -13,6 +13,7 @@ from contextlib import aclosing, asynccontextmanager
 from dataclasses import replace
 
 from aug.core.harness.types import (
+    Address,
     ApprovalRequested,
     ApprovalResolved,
     ContextUsage,
@@ -22,6 +23,7 @@ from aug.core.harness.types import (
     HarnessEvent,
     Message,
     ModelTier,
+    Sender,
     SessionStatus,
     StatusUpdate,
     TextDelta,
@@ -33,7 +35,13 @@ from aug.core.harness.types import (
     TurnStarted,
     UnsolicitedSink,
 )
-from aug.core.prompts import HARNESS_ERROR_MESSAGES, HARNESS_RETRY_AT_SUFFIX, REFLEX_NOTE
+from aug.core.prompts import (
+    HARNESS_BACKGROUND_TURN,
+    HARNESS_ERROR_MESSAGES,
+    HARNESS_LOGIN_MESSAGES,
+    HARNESS_RETRY_AT_SUFFIX,
+    REFLEX_NOTE,
+)
 from aug.core.reflexes import Exchange, Reflex, ReflexOutput, run_reflexes
 from aug.core.run import AgentRun, run_registry
 from aug.core.transcript import Transcript, file_record
@@ -52,6 +60,10 @@ class Harness(ABC):
     The caller makes sure two turns never share a context_id at once by holding
     ``run_registry.run_lock(context_id)`` for the whole turn.
     """
+
+    # Where turns the agent starts by itself go: set by running() in a harness whose
+    # agent starts them.
+    _sink: UnsolicitedSink | None = None
 
     async def run(
         self, message: Message, context_id: str, turn: TurnContext
@@ -166,6 +178,37 @@ class Harness(ABC):
 
     def _close_turn(self, context_id: str) -> None:  # noqa: B027 — optional hook
         """Called once the turn is over, however it ended, before its AgentRun goes."""
+
+    def _reply_to(self, context_id: str) -> Address | None:
+        """Where the chat *context_id* replies now, for a turn the agent started by
+        itself; None when the harness has no such chat open.  Default: None."""
+        return None
+
+    async def _deliver_unsolicited(
+        self, context_id: str, events: AsyncIterator[HarnessEvent]
+    ) -> None:
+        """Deliver a turn the agent started by itself through ``_sink``, to where the
+        chat replies (``_reply_to``) once it has begun, logged like any other.  One that
+        ended before anything happened (a user's turn took it over) is not sent."""
+        first = await anext(events)
+        if isinstance(first, TurnEnded):
+            return
+        events = _prepend(first, events)
+        address = self._reply_to(context_id)
+        sink = self._sink
+        if address is None or sink is None:
+            async for _ in events:
+                pass
+            logger.warning("self-started turn dropped context=%s: nowhere to send it", context_id)
+            return
+        message = Message(
+            parts=[TextPart(text=HARNESS_BACKGROUND_TURN)],
+            sender=Sender(interface=address.interface, user_id=""),
+        )
+        turn = TurnContext(reply_to=address, attended=False)
+        await sink(
+            address, context_id, self._turn(message, context_id, turn, events, unsolicited=True)
+        )
 
     def _active_run(self, context_id: str) -> AgentRun | None:
         """The AgentRun of this harness's turn in flight for *context_id*, if any: the
@@ -300,9 +343,19 @@ class Harness(ABC):
 def error_text(error: HarnessError) -> str:
     """What the user is told about *error*."""
     text = HARNESS_ERROR_MESSAGES[error.kind]
+    if error.kind == "login":
+        text = HARNESS_LOGIN_MESSAGES.get(error.login_with or "", text)
     if error.retry_at is not None:
         text += HARNESS_RETRY_AT_SUFFIX.format(time=error.retry_at.strftime("%H:%M"))
     return text
+
+
+async def _prepend(
+    first: HarnessEvent, rest: AsyncIterator[HarnessEvent]
+) -> AsyncIterator[HarnessEvent]:
+    yield first
+    async for event in rest:
+        yield event
 
 
 def _log_tool_end(name: str, error: bool, started: float | None) -> None:
