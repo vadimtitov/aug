@@ -6,8 +6,11 @@ eviction, injection, cancel and error kinds.  The real CLI is exercised by hand.
 """
 
 import asyncio
+import hashlib
+import json
 import os
 import subprocess
+import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -34,6 +37,7 @@ from mcp.types import ListToolsRequest
 
 from aug.core.harness import (
     Address,
+    ContextUsage,
     FileEmitted,
     FilePart,
     HarnessEvent,
@@ -49,14 +53,10 @@ from aug.core.harness import (
     TurnStarted,
 )
 from aug.core.harness.claude_code import harness as cc
+from aug.core.harness.claude_code.guard import guard_tool_use
 from aug.core.harness.claude_code.harness import ClaudeCodeHarness, ClaudeCodeProfile
-from aug.core.harness.claude_code.tools import (
-    ToolCalls,
-    _adapt,
-    canonical_name,
-    guard_tool_use,
-    mcp_content,
-)
+from aug.core.harness.claude_code.tools import ToolCalls, _adapt, canonical_name, mcp_content
+from aug.core.harness.tool_bridge import ToolImage, ToolOutcome
 from aug.core.harness.tool_context import ToolContext
 from aug.core.run import run_registry
 from aug.core.tools.context import current_tool_context
@@ -478,6 +478,33 @@ async def test_compact_sends_the_slash_command(harness, fake_client):
     assert "client_composed" not in sent
 
 
+async def test_stop_ends_a_compaction(harness, fake_client):
+    fake_client.on_query = _reply("ok")
+    await _turn(harness)
+    fake_client.on_query = lambda client, messages: None  # the compaction never answers
+    compacting = asyncio.create_task(harness.compact("ctx"))
+    for _ in range(50):
+        if len(fake_client.instances[0].queries) == 2:
+            break
+        await asyncio.sleep(0.01)
+
+    assert await harness.cancel("ctx")  # no run: a compaction registers none
+    with pytest.raises(ValueError, match="stopped"):
+        await compacting
+    assert fake_client.instances[0].interrupted
+
+
+async def test_a_compaction_that_never_ends_is_stopped(harness, fake_client, monkeypatch):
+    monkeypatch.setattr(cc, "COMPACT_SECONDS", 0.2)
+    fake_client.on_query = _reply("ok")
+    await _turn(harness)
+    fake_client.on_query = lambda client, messages: None
+
+    with pytest.raises(ValueError, match="too long"):
+        await harness.compact("ctx")
+    assert fake_client.instances[0].interrupted
+
+
 async def test_a_turn_that_goes_idle_without_a_result_still_ends(harness, fake_client):
     fake_client.on_query = lambda client, messages: client.send(_state("running"), _state("idle"))
     events = await _turn(harness)
@@ -781,18 +808,16 @@ async def test_a_tool_that_raises_is_an_error_result():
 
 
 def test_tool_images_become_mcp_image_blocks():
-    assert mcp_content("") == [{"type": "text", "text": "(no output)"}]
-    assert mcp_content(
-        [
+    outcome = ToolOutcome(
+        blocks=("shot", ToolImage(media_type="image/png", data="AAA")), error=False
+    )
+    assert mcp_content(outcome) == {
+        "content": [
             {"type": "text", "text": "shot"},
-            {"type": "image", "base64": "AAA", "mime_type": "image/png"},
-            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,BBB"}},
-        ]
-    ) == [
-        {"type": "text", "text": "shot"},
-        {"type": "image", "data": "AAA", "mimeType": "image/png"},
-        {"type": "image", "data": "BBB", "mimeType": "image/jpeg"},
-    ]
+            {"type": "image", "data": "AAA", "mimeType": "image/png"},
+        ],
+        "is_error": False,
+    }
 
 
 async def test_bash_runs_through_hushed():
@@ -1060,3 +1085,72 @@ async def test_the_final_output_count_of_the_last_call_is_the_context(harness, f
     )
     fake_client.on_query = _used(final)
     assert (await _turn(harness))[-1].context.used == 30_002 + 1_500
+
+
+async def test_a_record_written_by_an_earlier_version_resumes(harness, fake_client, tmp_path):
+    records = tmp_path / "claude" / "aug-sessions"
+    records.mkdir(parents=True)
+    name = hashlib.sha256(b"ctx").hexdigest()[:32]
+    old = {
+        "context_id": "ctx",
+        "session_id": SESSION,
+        "interface": "rest_api",
+        "prompt": "OLD PROMPT",
+        "skills": ["aug:weather"],
+        "started": True,
+        "conversation_id": "chat",
+        "chat_id": "chat",
+        "context": {
+            "used": 41000,
+            "window": 200000,
+            "compacts_at": 180000,
+            "breakdown": [["messages", 26000], ["system prompt", 6000]],
+            "estimated": False,
+        },
+    }
+    (records / f"{name}.json").write_text(json.dumps(old))
+    sessions = tmp_path / "claude" / "projects" / "-workspace"
+    sessions.mkdir(parents=True)
+    (sessions / f"{SESSION}.jsonl").touch()  # Claude still has the session
+
+    status = await harness.session_status("ctx")
+    assert status.context == ContextUsage(
+        used=41000,
+        window=200000,
+        compacts_at=180000,
+        breakdown=(("messages", 26000), ("system prompt", 6000)),
+    )
+    assert await harness.session_prompt("ctx", "rest_api") == "OLD PROMPT"
+    fake_client.on_query = _reply("hi")
+    await _turn(harness)
+    assert fake_client.instances[0].options.resume == SESSION
+    assert json.loads((records / f"{name}.json").read_text())["skills"] == ["aug:weather"]
+
+
+async def test_status_while_a_first_turn_ends_keeps_the_session_started(
+    harness, fake_client, monkeypatch
+):
+    """A /status reading the record while the first turn marks it started must not
+    write its stale copy back over that."""
+    fake_client.on_query = _used()
+    store = harness._records
+    real_read = store._read
+    reads = 0
+
+    def slow_read(context_id):
+        nonlocal reads
+        reads += 1
+        record = real_read(context_id)
+        if reads == 1:
+            time.sleep(0.05)  # the status read, overtaken by the turn's update
+        return record
+
+    await _turn(harness)  # makes the record, started
+    record = await store.load("ctx")
+    await store.save(replace(record, started=False))
+    monkeypatch.setattr(store, "_read", slow_read)
+    await asyncio.gather(
+        harness._remember("ctx", ContextUsage(used=1, window=2)), harness._mark_started("ctx")
+    )
+    stored = await store.load("ctx")
+    assert stored.started and stored.context == ContextUsage(used=1, window=2)

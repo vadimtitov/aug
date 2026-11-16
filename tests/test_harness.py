@@ -1030,3 +1030,23 @@ async def test_langgraph_without_a_known_window_reports_no_context() -> None:
     harness, _ = _harness(AIMessage(content="hello"))
     events = await _collect(harness.run(_msg("hi"), "c1", TURN))
     assert events[-1].context is None
+
+
+async def test_an_unsolicited_turn_registers_no_run():
+    harness = ScriptedHarness()
+    seen = []
+
+    async def inner():
+        seen.append(run_registry.get("c9"))
+        yield TurnEnded()
+
+    message = Message(parts=[TextPart(text="bg")], sender=Sender(interface="rest_api", user_id=""))
+    turn = TurnContext(reply_to=Address(interface="rest_api", conversation_id="x"), attended=False)
+    async for _ in harness._turn(message, "c9", turn, inner(), unsolicited=True):
+        pass
+    assert seen == [None]
+
+    async for _ in harness._turn(message, "c9", turn, inner()):
+        pass
+    assert seen[1] is not None and not seen[1].active  # registered for it, then released
+    assert run_registry.get("c9") is None

@@ -102,7 +102,7 @@ def harness(workspace, tmp_path, monkeypatch, api):
     monkeypatch.setattr("aug.core.transcript.TRANSCRIPTS_DIR", tmp_path / "transcripts")
     # No hushed here: the rewrite is marked instead, so the test sees it happen.
     monkeypatch.setattr(
-        "aug.core.harness.claude_code.tools.hushed_command", lambda c: f"echo REWRITTEN; {c}"
+        "aug.core.harness.claude_code.guard.hushed_command", lambda c: f"echo REWRITTEN; {c}"
     )
 
     def no_token(name: str) -> str:

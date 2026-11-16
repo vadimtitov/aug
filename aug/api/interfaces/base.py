@@ -580,8 +580,9 @@ class BaseInterface[ContextT](ABC):
         """Compact the message history for *context_id*, waiting for any turn in flight.
 
         Returns True if compaction ran, False if there was nothing to compact.
-        Raises ValueError if the agent has no compaction_model configured, or if a
-        tool is waiting for approval (the turn holds the run lock until it is answered).
+        Raises ValueError if the agent has no compaction_model configured, if a tool
+        is waiting for approval (the turn holds the run lock until it is answered), or
+        if the compaction was stopped; its message is what to tell the user.
         """
         if pending_approvals.for_context(context_id):
             raise ValueError(APPROVAL_PENDING_COMPACT_MESSAGE)

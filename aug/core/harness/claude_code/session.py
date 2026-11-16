@@ -52,7 +52,7 @@ from aug.core.harness.types import (
     TurnEnded,
     Usage,
 )
-from aug.core.prompts import CLAUDE_COMPACTED_STATUS
+from aug.core.prompts import HARNESS_COMPACTED_STATUS
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +237,11 @@ class ChatSession:
         """A turn the CLI started by itself is in flight."""
         return self._turn is not None and self._turn.unsolicited
 
+    @property
+    def turn_open(self) -> bool:
+        """A turn is in flight: the user's, a compaction, or one the CLI started."""
+        return self._turn is not None
+
     async def interrupt(self) -> bool:
         """Stop the turn in flight.  It ends with TurnEnded(cancelled=True), here if
         the CLI does not answer the interrupt."""
@@ -306,7 +311,7 @@ class ChatSession:
             case SystemMessage(subtype="compact_boundary"):
                 self._context_tokens = None
                 self.needs_report = True
-                self._put(StatusUpdate(text=CLAUDE_COMPACTED_STATUS))
+                self._put(StatusUpdate(text=HARNESS_COMPACTED_STATUS))
 
     def _on_state(self, state: str | None) -> None:
         """A turn ends when the CLI goes idle after running for it, result or not."""

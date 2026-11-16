@@ -10,8 +10,10 @@ ToolContext per turn and hands it to its tools.
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from uuid import uuid4
+
+from langchain_core.runnables.config import RunnableConfig
 
 from aug.core.harness.types import (
     AgentEvent,
@@ -21,6 +23,7 @@ from aug.core.harness.types import (
     ApprovalResolved,
     FileEmitted,
     ModelTier,
+    StatusUpdate,
     TurnContext,
 )
 from aug.utils.storage import StoredFile
@@ -123,6 +126,32 @@ class ToolContext:
         if self._oneshot is None:
             raise RuntimeError("no model call available in this context")
         return await self._oneshot(prompt, tier, system=system)
+
+    def runnable_config(self) -> RunnableConfig:
+        """The LangChain config a tool is invoked with: this context, and who it runs
+        for, where the tools look for them."""
+        return {
+            "configurable": {
+                "thread_id": self.context_id,
+                "interface": self.turn.reply_to.interface,
+                "sender_id": self.turn.reply_to.chat_id,
+                TOOL_CONTEXT_CONFIG_KEY: self,
+            }
+        }
+
+    def under(self, tool_id: str) -> "ToolContext":
+        """This context with every event it emits filed under the tool call *tool_id*
+        (status lines excepted: they belong to the turn)."""
+        emit = self._emit
+
+        async def emit_under(event: AgentEvent) -> None:
+            if emit is None:
+                return
+            if not isinstance(event, StatusUpdate) and event.parent_id is None:
+                event = replace(event, parent_id=tool_id)
+            await emit(event)
+
+        return replace(self, _emit=emit_under)
 
     async def send_file(self, stored: StoredFile, caption: str = "") -> None:
         """Send *stored* (already in the outbox) to the user, under the calling tool."""
