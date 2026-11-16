@@ -47,6 +47,7 @@ from aug.core.tools.run_ssh import download_ssh_file, list_ssh_targets, run_ssh,
 from aug.core.tools.skills import delete_skill, get_skill, save_skill, write_skill_file
 from aug.core.tools.subagent import make_run_subagent_tool
 from aug.core.tools.tasks import create_task, delete_task, list_tasks, update_task
+from aug.core.tools.web_fetch import web_fetch
 from aug.dev.scripted import SCRIPTED_TOOLS, build_scripted_agent
 from aug.utils.file_settings import load_settings, save_settings
 
@@ -103,20 +104,27 @@ _TOOLS = [
     upload_ssh_file,
 ]
 # Claude Code's profile: AUG's tools except those Claude has its own of (run_bash: Bash,
-# fetch_page: WebFetch, brave_search: WebSearch, get_skill: Skill).
-_CLAUDE_TOOLS = [t for t in _TOOLS if t not in (run_bash, fetch_page, brave_search, get_skill)]
+# brave_search: WebSearch, get_skill: Skill).  web_fetch replaces Claude's WebFetch: the
+# same contract, on fetching that gets past bot protection.
+_CLAUDE_TOOLS = [
+    web_fetch if t is fetch_page else t
+    for t in _TOOLS
+    if t not in (run_bash, brave_search, get_skill)
+]
 # AUG's tools Claude keeps loaded; the rest it looks up through ToolSearch when needed.
-_CLAUDE_ALWAYS_LOADED = frozenset({"respond_with_file", "note", "create_task", "list_tasks"})
+_CLAUDE_ALWAYS_LOADED = frozenset(
+    {"respond_with_file", "note", "create_task", "list_tasks", "web_fetch"}
+)
 # Claude's own tools a profile may use.  Anything else, including a tool a new CLI
 # version adds, stays blocked: Claude's cron and wake-ups (scheduling is AUG's), remote
-# triggers, peer messaging (it could carry text between chats), worktrees.
+# triggers, peer messaging (it could carry text between chats), worktrees, and WebFetch
+# (AUG's web_fetch reads pages instead).
 _CLAUDE_BUILTIN_TOOLS = (
     "Bash",
     "Read",
     "Write",
     "Edit",
     "WebSearch",
-    "WebFetch",
     "Task",
     "TaskStop",
     "Monitor",
@@ -170,7 +178,7 @@ _HA_REFLEX = HomeAssistantReflex()
 def base_tool_names() -> set[str]:
     """Names of the profiles' non-MCP tools: seeds MCPManager's collision check so a
     server can never shadow a native AUG tool."""
-    return {t.name for t in [*_TOOLS, *_MCP_MANAGEMENT_TOOLS, *SCRIPTED_TOOLS]} | {
+    return {t.name for t in [*_TOOLS, web_fetch, *_MCP_MANAGEMENT_TOOLS, *SCRIPTED_TOOLS]} | {
         "run_subagent",
         "describe_image",
     }

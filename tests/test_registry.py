@@ -206,8 +206,10 @@ def test_the_claude_code_profile_runs_on_claude_code_with_its_own_tools():
     assert isinstance(harness, ClaudeCodeHarness)
     assert profile.model == "claude-opus-5-5" and profile.effort == "high"
     names = {t.name for t in profile.tools}
-    # Claude has its own shell, fetch, search and skill loading.
-    assert not names & {"run_bash", "fetch_page", "brave_search", "get_skill", "browser"}
+    # Claude has its own shell, search and skill loading; AUG's web_fetch replaces WebFetch.
+    assert not names & {"run_bash", "brave_search", "get_skill", "browser", "fetch_page"}
+    assert "web_fetch" in names and "web_fetch" in profile.always_loaded
+    assert "WebFetch" not in profile.builtin_tools
     assert {"respond_with_file", "generate_image", "save_skill", "install_mcp_server"} <= names
     blocked = {"CronCreate", "ScheduleWakeup", "RemoteTrigger", "SendMessage", "ListAgents"}
     assert not blocked & set(profile.builtin_tools)

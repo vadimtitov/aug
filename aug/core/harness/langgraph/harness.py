@@ -222,6 +222,7 @@ class LangGraphHarness(Harness):
                     turn=turn,
                     stopped=run.user_requested_stop,
                     _emit=dispatch,
+                    _oneshot=self.oneshot,
                 ),
             }
         }

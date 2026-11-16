@@ -38,7 +38,8 @@ aug/
 │   │   │   └── fake_agent.py   ← Hardcoded response, no LLM (for testing)
 │   │   └── tools/
 │   │       ├── brave_search.py ← Web search via Brave API
-│   │       ├── fetch_page.py   ← URL content extraction
+│   │       ├── fetch_page.py   ← Returns web pages' text (markdown), up to 12k chars a page
+│   │       ├── web_fetch.py    ← WebFetch's contract: url + prompt → a small model's answer
 │   │       ├── run_bash.py     ← Shell access with secret injection + blocklist
 │   │       ├── note.py         ← Mid-conversation memory capture
 │   │       └── memory.py       ← Legacy key-value memory tools (remember/recall/forget)
@@ -54,6 +55,10 @@ aug/
 │       ├── logging.py          ← JSON (prod) / human-readable (dev) structured logging
 │       ├── data.py             ← DATA_DIR, WORKSPACE_DIR and the paths inside it, read_data_file() / write_data_file()
 │       ├── homeassistant.py    ← HomeAssistantClient: typed HA REST+WebSocket client with entity cache
+│       ├── stealth_browser.py  ← StealthBrowserClient: the stealth-browser sidecar's HTTP API
+│       ├── fetching/           ← Fetching web pages for fetch_page and web_fetch
+│       │   ├── fetcher.py      ← tiers (curl_cffi, then the stealth browser), domain memory, redirects
+│       │   └── page_content.py ← page classification (ok/blocked/thin) + markdown extraction
 │       └── user_settings.py    ← per-user settings; get_setting() / set_setting() with nested path
 ├── tests/
 ├── docs/
@@ -64,6 +69,7 @@ aug/
 ├── Makefile
 ├── pyproject.toml
 ├── Dockerfile
+├── stealth-browser/            ← sidecar: Camoufox behind POST /fetch, for aug/utils/fetching
 ├── docker-compose.yml          ← local dev: aug + postgres
 └── docker-compose.prod.yml     ← production: aug only
 ```
@@ -287,6 +293,12 @@ only when there is a clear, immediate reason.
 
 ## Module and class design
 
+- **A folder's name is a promise about every file in it.** In `tools/`, each file is a
+  tool. Never put a helper module next to the things a folder is named for: a tool that
+  needs its own helpers becomes a package (`tools/<name>/` with `__init__.py`,
+  `tool.py` and the helpers), and code shared by several tools goes where its layer
+  belongs, not loose in `tools/` (`fetch_page` and `web_fetch` share `utils/fetching/`).
+
 - **Separate concerns by layer.** Client code (how to talk to an API) belongs in `utils/`. Orchestration code (what to do with the data) belongs in `core/`. When both live in the same file, neither is clean. See `aug/utils/homeassistant.py` + `aug/core/reflexes/homeassistant.py` as the canonical example.
 
 - **State belongs to objects, not modules.** If you find yourself writing `_thing: SomeType`, `_thing_at: float`, and `_thing_lock: asyncio.Lock | None` at module level — stop. Those are instance variables. Create a class.
@@ -314,6 +326,7 @@ only when there is a clear, immediate reason.
 | `BRAVE_API_KEY` | No | Web search tool disabled if absent |
 | `PORTAINER_URL` | No | Portainer instance URL, e.g. `http://portainer:9000` |
 | `PORTAINER_API_TOKEN` | No | Portainer API token (generate in Portainer → Account Settings) |
+| `STEALTH_BROWSER_URL` | No | stealth-browser sidecar, `http://stealth-browser:8100` (compose sets it). Unset: page fetching makes plain requests only |
 | `STARTUP_ANNOUNCEMENT` | No | `true` (default) → announce every boot on each interface with a push channel. Set `false` in local dev (`docker-compose.yml` already does) so `--reload` doesn't spam Telegram. |
 | `BASE_URL` | For OAuth | Public origin for OAuth links and redirect URIs. Must be `https://` when `DEBUG=false` — the app refuses to boot otherwise. |
 | `OAUTH_ENCRYPTION_KEY` | For OAuth | 32 bytes base64 (`openssl rand -base64 32`). Encrypts stored tokens. Keep it durable — losing it means re-authorizing every provider. |

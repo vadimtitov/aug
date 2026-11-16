@@ -32,6 +32,7 @@ services:
       PORTAINER_URL: ${PORTAINER_URL:-}
       PORTAINER_API_TOKEN: ${PORTAINER_API_TOKEN:-}
       BROWSER_CDP_URL: http://chromium:9222
+      STEALTH_BROWSER_URL: http://stealth-browser:8100
       # Public HTTPS origin. Required: the app refuses to boot without it when
       # DEBUG is false, because every OAuth link is built from it.
       BASE_URL: ${BASE_URL:?BASE_URL must be set, e.g. https://aug.example.com}
@@ -88,6 +89,13 @@ services:
       - /opt/aug/chrome-profile:/config
       - /opt/aug/browser-downloads:/app/browser-downloads
     shm_size: 1g
+    restart: unless-stopped
+
+  stealth-browser:
+    # fetch_page and web_fetch's stealth browser (Camoufox).  Internal only: no host port.
+    build: ./stealth-browser
+    shm_size: 1g
+    mem_limit: 3g
     restart: unless-stopped
 
 volumes:

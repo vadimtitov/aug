@@ -25,11 +25,13 @@ def _first_arg(args: dict) -> str:
 
 
 def _fetch_page_fmt(args: dict) -> str:
-    urls = args.get("urls", [])
+    urls = args.get("urls") or ([args["url"]] if args.get("url") else [])
     if isinstance(urls, str):
         urls = [urls]
     hosts = [urlparse(u).netloc or u for u in urls[:2]]
     text = ", ".join(hosts)
+    if args.get("offset"):
+        text += f" @{args['offset']}"
     return text[:_ARG_TRUNCATE] + "…" if len(text) > _ARG_TRUNCATE else text
 
 
@@ -49,6 +51,7 @@ def _prompt_fmt(args: dict) -> str:
 _REGISTRY: dict[str, tuple[str, object]] = {
     "brave_search": ("🔍 Search", _first_arg),
     "fetch_page": ("🌐 Fetch", _fetch_page_fmt),
+    "web_fetch": ("🌐 Fetch", _fetch_page_fmt),
     "run_bash": ("💻 Bash", _first_arg),
     "browser": ("🖥️ Browser", _first_arg),
     "note": ("📝 Note", _first_arg),

@@ -1,7 +1,8 @@
 """What a tool gets from the harness running it: who it runs for, and a way to talk back.
 
 A tool reports progress with ``ctx.emit()``, sends the user a file with
-``ctx.send_file()`` and asks for approval with ``await ctx.request_approval()``; the
+``ctx.send_file()``, makes a plain model call with ``await ctx.oneshot()`` and asks for
+approval with ``await ctx.request_approval()``; the
 approval is awaited inside the tool, so the turn never pauses.  Every harness builds a
 ToolContext per turn and hands it to its tools.
 """
@@ -19,6 +20,7 @@ from aug.core.harness.types import (
     ApprovalRequested,
     ApprovalResolved,
     FileEmitted,
+    ModelTier,
     TurnContext,
 )
 from aug.utils.storage import StoredFile
@@ -29,6 +31,9 @@ APPROVAL_TIMEOUT_SECONDS = 30 * 60
 
 # Where a LangGraph run carries the ToolContext in its config's configurable dict.
 TOOL_CONTEXT_CONFIG_KEY = "tool_context"
+
+# Harness.oneshot(prompt, tier, system=…): a plain model call on the harness's models.
+Oneshot = Callable[..., Awaitable[str]]
 
 
 @dataclass(frozen=True)
@@ -103,11 +108,21 @@ class ToolContext:
     turn: TurnContext
     stopped: asyncio.Event = field(default_factory=asyncio.Event)
     _emit: Callable[[AgentEvent], Awaitable[None]] | None = None
+    _oneshot: Oneshot | None = None
 
     async def emit(self, event: AgentEvent) -> None:
         """Add *event* to the turn's stream, under the tool call that emits it."""
         if self._emit is not None:
             await self._emit(event)
+
+    async def oneshot(
+        self, prompt: str, tier: ModelTier = ModelTier.STRONG, *, system: str = ""
+    ) -> str:
+        """A plain model call (no tools, no history) on the running harness's model for
+        *tier*.  Raises RuntimeError when the harness gave the turn none."""
+        if self._oneshot is None:
+            raise RuntimeError("no model call available in this context")
+        return await self._oneshot(prompt, tier, system=system)
 
     async def send_file(self, stored: StoredFile, caption: str = "") -> None:
         """Send *stored* (already in the outbox) to the user, under the calling tool."""

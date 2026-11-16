@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     # Browser tool — CDP URL of the remote Chromium instance
     BROWSER_CDP_URL: str | None = None
 
+    # The stealth browser sidecar (stealth-browser/) fetch_page and web_fetch use,
+    # e.g. http://stealth-browser:8100.  Unset: plain requests only, and they say so when
+    # a site blocks them.
+    STEALTH_BROWSER_URL: str | None = None
+
     # Home Assistant (optional — HA reflex disabled if absent)
     # Accepts HASS_URL, HA_URL, or HOMEASSISTANT_URL; HASS_TOKEN or HOMEASSISTANT_TOKEN
     HASS_URL: str | None = None

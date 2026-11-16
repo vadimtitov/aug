@@ -1,59 +1,56 @@
-"""Web page fetching tool — extracts readable content from URLs.
-
-Fetches multiple pages simultaneously using async HTTP, then extracts
-clean readable text via trafilatura (strips ads, nav, boilerplate).
-"""
+"""fetch_page — reads web pages, including bot-protected and JavaScript-rendered ones,
+and returns their text as markdown.  The fetching itself is aug/utils/fetching."""
 
 import asyncio
-import logging
 
-import httpx
-import trafilatura
 from langchain_core.tools import tool
 
-logger = logging.getLogger(__name__)
+from aug.utils.fetching.fetcher import FetchedPage, browser_client, fetch_url
 
-_MAX_CHARS_PER_PAGE = 10_000
-_TIMEOUT = 15.0
-_HEADERS = {"User-Agent": ("Mozilla/5.0 (compatible; AUG/1.0; +https://github.com/aug)")}
+MAX_CHARS_PER_PAGE = 12_000
 
 
 @tool
-async def fetch_page(urls: list[str]) -> str:
-    """Fetch and extract readable content from one or more web pages simultaneously.
+async def fetch_page(urls: list[str], offset: int = 0) -> str:
+    """Read web pages: fetch one or more URLs in parallel and return their content as markdown.
 
-    Use this to read the actual content of a URL — articles, documentation,
-    search results pages, etc. Provide multiple URLs to fetch them in parallel.
+    This is the tool for reading any web page — articles, docs, product and search pages.
+    It handles bot-protected and JavaScript-rendered sites itself (a slower stealth browser
+    takes over when a plain request is blocked), so a site that blocks other fetchers
+    usually works here.  Each page shows up to 12,000 characters; when a page is longer
+    its last line says so and gives the offset to call again with to read on.
 
     Args:
-        urls: List of URLs to fetch. All are fetched simultaneously.
+        urls: URLs to fetch, all at once.
+        offset: Character offset into each page's text, to continue a truncated page.
     """
-    logger.info("fetch_page fetching %d url(s): %s", len(urls), urls)
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        results = await asyncio.gather(*[_fetch_one(client, url) for url in urls])
-    return "\n\n---\n\n".join(results)
+    browser = browser_client()
+    pages = await asyncio.gather(*[fetch_url(url, browser) for url in urls])
+    return "\n\n---\n\n".join(render(page, offset) for page in pages)
 
 
-async def _fetch_one(client: httpx.AsyncClient, url: str) -> str:
-    """Fetch a single URL and return extracted readable text."""
-    try:
-        response = await client.get(url, headers=_HEADERS, follow_redirects=True)
-        response.raise_for_status()
-        text = trafilatura.extract(
-            response.text,
-            include_links=True,
-            include_tables=True,
-            no_fallback=False,
+def render(page: FetchedPage, offset: int = 0) -> str:
+    """The page as the model reads it: a header line, then a window of its text."""
+    status = f"HTTP {page.status}" if page.status else "no response"
+    header = f"[{page.url}] (via {page.tier or 'nothing'}, {status})"
+    if page.final_url and page.final_url.rstrip("/") != page.url.rstrip("/"):
+        header += f"\nredirected to {page.final_url}"
+    if page.note:
+        header += f"\n{page.note}"
+    text = page.text
+    if not text:
+        return header
+    total = len(text)
+    start = max(offset, 0)
+    if start >= total:
+        return f"{header}\n[offset {start} is past the end of the page ({total} chars)]"
+    end = min(start + MAX_CHARS_PER_PAGE, total)
+    body = text[start:end]
+    if end < total:
+        body += (
+            f"\n\n[truncated: showing chars {start}-{end} of {total}; "
+            f"call fetch_page again with offset={end}]"
         )
-        if not text:
-            return f"[{url}]: could not extract readable content."
-        if len(text) > _MAX_CHARS_PER_PAGE:
-            text = text[:_MAX_CHARS_PER_PAGE] + f"\n... [truncated at {_MAX_CHARS_PER_PAGE} chars]"
-        logger.info("fetch_page url=%s extracted %d chars", url, len(text))
-        return f"[{url}]\n{text}"
-    except httpx.HTTPStatusError as e:
-        logger.warning("fetch_page url=%s HTTP %d", url, e.response.status_code, exc_info=True)
-        return f"[{url}]: HTTP error {e.response.status_code}."
-    except Exception as e:
-        logger.warning("fetch_page url=%s error: %s", url, e, exc_info=True)
-        return f"[{url}]: failed to fetch — {e}."
+    elif start:
+        body += f"\n\n[end of page: showed chars {start}-{end} of {total}]"
+    return f"{header}\n{body}"

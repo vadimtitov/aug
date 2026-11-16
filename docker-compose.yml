@@ -7,6 +7,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://aug:password@postgres:5432/aug
       HUSHED_DIR: /app/data/.hushed
       BROWSER_CDP_URL: http://chromium:9222
+      STEALTH_BROWSER_URL: http://stealth-browser:8100
       BASE_URL: ${BASE_URL:-http://YOUR_HOST:8012}
       OAUTH_ENCRYPTION_KEY: ${OAUTH_ENCRYPTION_KEY:-}
       DEV_AUTH_BYPASS: "true"
@@ -76,6 +77,13 @@ services:
     command: ["npm", "run", "dev"]
     depends_on:
       - aug
+
+  stealth-browser:
+    # fetch_page and web_fetch's stealth browser (Camoufox).  Internal only: no host port.
+    build: ./stealth-browser
+    shm_size: 1g
+    mem_limit: 3g
+    restart: unless-stopped
 
 volumes:
   postgres_data:
