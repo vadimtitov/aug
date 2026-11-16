@@ -51,7 +51,6 @@ from aug.core.harness.types import (
     LimitUsage,
     Message,
     ModelTier,
-    Sender,
     SessionStatus,
     TextPart,
     TurnContext,
@@ -59,7 +58,6 @@ from aug.core.harness.types import (
     UnsolicitedSink,
 )
 from aug.core.prompts import (
-    HARNESS_BACKGROUND_TURN,
     HARNESS_COMPACT_STOPPED,
     HARNESS_COMPACT_TIMED_OUT,
     USER_FILE_HINT,
@@ -184,7 +182,6 @@ class ClaudeCodeHarness(Harness):
         self._sessions: dict[str, ChatSession] = {}
         self._opening: dict[str, asyncio.Lock] = {}
         self._early: dict[str, list[Content]] = {}  # injected before the session took it
-        self._sink: UnsolicitedSink | None = None
         self._limits: dict[str, LimitUsage] = {}  # the plan's usage windows, latest seen
 
     # -- Harness -----------------------------------------------------------------------
@@ -405,7 +402,7 @@ class ClaudeCodeHarness(Harness):
                     calls,
                     fingerprint=fingerprint,
                     reply_to=reply_to,
-                    on_unsolicited=lambda events: self._unsolicited(context_id, events),
+                    on_unsolicited=lambda events: self._deliver_unsolicited(context_id, events),
                     oneshot=self.oneshot,
                     limits=self._limits,
                 )
@@ -473,27 +470,9 @@ class ClaudeCodeHarness(Harness):
             logger.debug("no %s in hushed: the CLI uses its own login", TOKEN_SECRET)
         return env
 
-    async def _unsolicited(self, context_id: str, events: AsyncIterator[HarnessEvent]) -> None:
-        """Deliver a turn the CLI started by itself, logged like any other.  One that
-        ended before anything happened (a user's turn took it over) is not sent."""
-        first = await anext(events)
-        if isinstance(first, TurnEnded):
-            return
-        events = _prepend(first, events)
+    def _reply_to(self, context_id: str) -> Address | None:
         session = self._sessions.get(context_id)
-        if session is None or self._sink is None:
-            async for _ in events:
-                pass
-            logger.warning("claude turn dropped context=%s: nowhere to deliver it", context_id)
-            return
-        reply_to = session.reply_to
-        message = Message(
-            parts=[TextPart(text=HARNESS_BACKGROUND_TURN)],
-            sender=Sender(interface=reply_to.interface, user_id=""),
-        )
-        turn = TurnContext(reply_to=reply_to, attended=False)
-        events = self._turn(message, context_id, turn, events, unsolicited=True)
-        await self._sink(reply_to, context_id, events)
+        return session.reply_to if session is not None else None
 
     async def _evict_forever(self) -> None:
         while True:
@@ -606,11 +585,3 @@ async def _render(message: Message) -> Content:
                     }
                 )
     return blocks
-
-
-async def _prepend(
-    first: HarnessEvent, rest: AsyncIterator[HarnessEvent]
-) -> AsyncIterator[HarnessEvent]:
-    yield first
-    async for event in rest:
-        yield event

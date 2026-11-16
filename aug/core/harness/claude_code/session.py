@@ -569,7 +569,7 @@ def _assistant_error(message: AssistantMessage) -> HarnessError:
     logger.warning("claude assistant error %s: %.200s", message.error, text)
     match message.error:
         case "authentication_failed":
-            return HarnessError(kind="login")
+            return HarnessError(kind="login", login_with="claude")
         case "billing_error":
             return HarnessError(kind="auth")
         case "rate_limit":
@@ -594,7 +594,7 @@ def _result_error(message: ResultMessage) -> HarnessError:
     if status == 429:
         return HarnessError(kind="rate_limited")
     if status in (401, 403):
-        return HarnessError(kind="login")
+        return HarnessError(kind="login", login_with="claude")
     if status is not None and status >= 500:
         return HarnessError(kind="unavailable")
     return HarnessError(kind="internal")

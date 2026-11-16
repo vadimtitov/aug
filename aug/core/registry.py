@@ -1,8 +1,9 @@
 """Agent registry: one entry per profile (agent version).
 
 ``v13_kimi`` (kimi-k3) and ``v13_glm`` (glm-5.3) run on LangGraph; ``v14_claude_code``
-(Claude Opus 5.5) runs on Claude Code.  ``v15_kimi``, ``v15_glm`` and
-``v15_claude_code`` are the same three with the Home Assistant reflex.  All are built
+(Claude Opus 5.5) runs on Claude Code and ``v14_codex`` (GPT-6.1 Sol) on Codex.
+``v15_kimi``, ``v15_glm``, ``v15_claude_code`` and ``v15_codex`` are the same four
+with the Home Assistant reflex.  All are built
 by ``_build_profiles()``, since their tool lists include whichever MCP servers
 connected at startup.  The ``browser`` tool's code stays but no profile exposes it.
 """
@@ -18,6 +19,7 @@ from aug.core.agents.chat_agent import AugAgent
 from aug.core.agents.fake_agent import FakeAgent
 from aug.core.harness.base import Harness
 from aug.core.harness.claude_code.harness import ClaudeCodeHarness, ClaudeCodeProfile
+from aug.core.harness.codex.harness import CodexHarness, CodexProfile
 from aug.core.harness.langgraph.harness import LangGraphHarness
 from aug.core.harness.types import ModelTier
 from aug.core.reflexes import Reflex
@@ -63,6 +65,9 @@ _VISION_DESCRIPTION_MODEL = _KIMI
 _CLAUDE_STRONG = "claude-opus-5-5"
 _CLAUDE_FAST = "claude-haiku-5-5"
 
+_CODEX_STRONG = "gpt-6.1-sol"
+_CODEX_FAST = "gpt-6-luna"
+
 # What a conversation with no agent selected (and no parent conversation's to inherit)
 # runs on.
 NEW_CONVERSATION_PROFILE = "v14_claude_code"
@@ -103,18 +108,18 @@ _TOOLS = [
     download_ssh_file,
     upload_ssh_file,
 ]
-# Claude Code's profile: AUG's tools except those Claude has its own of (run_bash: Bash,
-# brave_search: WebSearch, get_skill: Skill).  web_fetch replaces Claude's WebFetch: the
-# same contract, on fetching that gets past bot protection.
-_CLAUDE_TOOLS = [
+# The agent CLIs' profiles (Claude Code, Codex): AUG's tools except those the CLI has
+# its own of (run_bash: its shell, brave_search: its web search, get_skill: its skills).
+# web_fetch reads pages, in place of Claude's WebFetch (the same contract, on fetching
+# that gets past bot protection); Codex has no fetch tool of its own.
+_AGENT_CLI_TOOLS = [
     web_fetch if t is fetch_page else t
     for t in _TOOLS
     if t not in (run_bash, brave_search, get_skill)
 ]
-# AUG's tools Claude keeps loaded; the rest it looks up through ToolSearch when needed.
-_CLAUDE_ALWAYS_LOADED = frozenset(
-    {"respond_with_file", "note", "create_task", "list_tasks", "web_fetch"}
-)
+# AUG's tools the agent CLIs keep loaded; the rest they look up when needed (Claude
+# through ToolSearch, Codex in its "aug" namespace).
+_ALWAYS_LOADED = frozenset({"respond_with_file", "note", "create_task", "list_tasks", "web_fetch"})
 # Claude's own tools a profile may use.  Anything else, including a tool a new CLI
 # version adds, stays blocked: Claude's cron and wake-ups (scheduling is AUG's), remote
 # triggers, peer messaging (it could carry text between chats), worktrees, and WebFetch
@@ -218,8 +223,8 @@ def migrate_conversations() -> list[str]:
     return moved
 
 
-# A profile: a LangGraph agent, or a Claude Code profile.
-Profile = BaseAgent | ClaudeCodeProfile
+# A profile: a LangGraph agent, a Claude Code profile or a Codex profile.
+Profile = BaseAgent | ClaudeCodeProfile | CodexProfile
 
 _REGISTRY: dict[str, Profile] = {
     "fake": FakeAgent(),
@@ -267,9 +272,9 @@ class _Harnesses:
     """One harness per agent version, built on first use.
 
     Keyed by the agent object too: configure_mcp_tools() rebuilds the profiles, and a
-    LangGraph harness must never keep running the version it replaced.  A Claude Code
-    harness is kept and given the new profile instead, so its warm processes are never
-    orphaned.
+    LangGraph harness must never keep running the version it replaced.  A Claude Code or
+    Codex harness is kept and given the new profile instead: it was entered into
+    running() and holds warm processes or threads, which must never be orphaned.
     """
 
     def __init__(self) -> None:
@@ -286,15 +291,16 @@ class _Harnesses:
         if built is not None and built[0] is agent:
             return built[1]
         harness: Harness
-        if isinstance(agent, ClaudeCodeProfile) and built is not None:
+        if isinstance(agent, ClaudeCodeProfile | CodexProfile) and built is not None:
             # The same harness takes the new profile: it was entered into running()
-            # and holds warm processes, which restart on their next turn if the
-            # tools changed.
+            # and holds warm processes or threads, which must never be orphaned.
             harness = built[1]
-            assert isinstance(harness, ClaudeCodeHarness)
+            assert isinstance(harness, ClaudeCodeHarness | CodexHarness)
             harness.profile = agent
         elif isinstance(agent, ClaudeCodeProfile):
             harness = ClaudeCodeHarness(agent)
+        elif isinstance(agent, CodexProfile):
+            harness = CodexHarness(agent)
         elif self._checkpointer is None:
             raise RuntimeError("configure_harnesses() has not run yet")
         else:
@@ -354,9 +360,19 @@ def _build_profiles(mcp_tools: list[BaseTool]) -> dict[str, Profile]:
             model=_CLAUDE_STRONG,
             effort="high",
             builtin_tools=_CLAUDE_BUILTIN_TOOLS,
-            tools=[*_CLAUDE_TOOLS, *_MCP_MANAGEMENT_TOOLS, *mcp_tools, *dev_tools],
-            always_loaded=_CLAUDE_ALWAYS_LOADED,
+            tools=[*_AGENT_CLI_TOOLS, *_MCP_MANAGEMENT_TOOLS, *mcp_tools, *dev_tools],
+            always_loaded=_ALWAYS_LOADED,
             models={ModelTier.STRONG: _CLAUDE_STRONG, ModelTier.FAST: _CLAUDE_FAST},
+            reflexes=tuple(reflexes),
+        )
+
+    def codex(reflexes: list[Reflex]) -> CodexProfile:
+        return CodexProfile(
+            model=_CODEX_STRONG,
+            effort="medium",
+            tools=[*_AGENT_CLI_TOOLS, *_MCP_MANAGEMENT_TOOLS, *mcp_tools, *dev_tools],
+            always_loaded=_ALWAYS_LOADED,
+            models={ModelTier.STRONG: _CODEX_STRONG, ModelTier.FAST: _CODEX_FAST},
             reflexes=tuple(reflexes),
         )
 
@@ -364,9 +380,11 @@ def _build_profiles(mcp_tools: list[BaseTool]) -> dict[str, Profile]:
         "v13_kimi": kimi([]),
         "v13_glm": glm([]),
         "v14_claude_code": claude_code([]),
+        "v14_codex": codex([]),
         "v15_kimi": kimi([_HA_REFLEX]),
         "v15_glm": glm([_HA_REFLEX]),
         "v15_claude_code": claude_code([_HA_REFLEX]),
+        "v15_codex": codex([_HA_REFLEX]),
     }
 
 

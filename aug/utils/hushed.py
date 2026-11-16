@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -22,10 +23,49 @@ _READER_SCRIPT = (
     "fd = int(sys.argv[1])\n"
     "os.write(fd, os.environb.get(sys.argv[2].encode(), b''))\n"
 )
+# Runs the command ($1) with its output in temp files, then prints them.  hushed relays
+# (and redacts) output only once every process holding it has let go, so a background
+# job started by the command would otherwise keep the call open until it exits.  With
+# the files, it inherits those instead, and the call returns when the command does.
+#
+# The files hold output before hushed redacts it, so they are deleted as soon as they
+# are open and read back through the open descriptors: a /stop (SIGKILL) leaves nothing
+# on disk.  They live in /dev/shm (RAM) where there is one, so a full disk can't swallow
+# the output of the very command that diagnoses it.  If no file can be made, the command
+# runs on the pipe directly, as before.
+_WRAPPER = """\
+d=/dev/shm; [ -d "$d" ] && [ -w "$d" ] || d=${TMPDIR:-/tmp}
+o=$(mktemp "$d/aug-bash.XXXXXX") && e=$(mktemp "$d/aug-bash.XXXXXX") || exec bash -c "$1"
+exec 3>"$o" 4<"$o" 5>"$e" 6<"$e"; rm -f "$o" "$e"
+bash -c "$1" >&3 2>&5 3>&- 4<&- 5>&- 6<&-; s=$?
+exec 3>&- 5>&-; cat <&4; cat <&6 >&2; exit $s
+"""
 
 
 class HushedError(Exception):
     """A secret could not be read from hushed."""
+
+
+def hushed_argv(command: str) -> list[str]:
+    """The argv that runs *command* with the user's secrets injected and redacted."""
+    return ["hushed", "run", "--", "bash", "-c", _WRAPPER, "bash", command]
+
+
+def hushed_command(command: str) -> str:
+    """*command* rewritten as one shell line that runs it through hushed_argv()."""
+    return shlex.join(hushed_argv(command))
+
+
+def unhushed(line: str) -> str | None:
+    """The command inside *line* if it is a hushed_command(), else None."""
+    prefix = hushed_argv("")[:-1]
+    try:
+        argv = shlex.split(line)
+    except ValueError:
+        return None
+    if len(argv) == len(prefix) + 1 and argv[: len(prefix)] == prefix:
+        return argv[-1]
+    return None
 
 
 async def list_secret_names() -> set[str]:

@@ -475,13 +475,21 @@ HARNESS_ERROR_MESSAGES = {
     "context_full": "Context window is full. Use /clear to start a fresh conversation.",
     "rate_limited": "The model is rate-limited right now. Please try again in a minute.",
     "auth": "The model provider rejected AUG's credentials. Check the model login or API key.",
-    "login": "The Claude login is missing, expired or revoked. Send /claude_login to sign in.",
+    "login": "The model login is missing, expired or revoked. Sign in again.",
     "unavailable": (
         "The model or a service AUG depends on is unavailable right now. "
         "Please try again in a moment."
     ),
     "step_limit": "The agent got stuck in a loop and was stopped. Try rephrasing your request.",
     "internal": "Sorry, something went wrong.",
+}
+# A login error's message, keyed by HarnessError.login_with; "login" above when unknown.
+HARNESS_LOGIN_MESSAGES = {
+    "claude": "The Claude login is missing, expired or revoked. Send /claude_login to sign in.",
+    "codex": (
+        "The ChatGPT login Codex runs on is missing, expired or revoked. "
+        "Send /codex_login to sign in."
+    ),
 }
 # Appended to a rate_limited message when the harness knows when the limit resets.
 HARNESS_RETRY_AT_SUFFIX = " The limit resets at {time} UTC."
@@ -559,6 +567,12 @@ HARNESS_TOOL_ERROR_RESULT = "Tool error: {error}"
 HARNESS_BACKGROUND_TURN = "(background work finished)"
 # The status line for a compaction that finished.
 HARNESS_COMPACTED_STATUS = "Conversation compacted."
+# Codex: what the namespace holding AUG's deferred tools says about them.
+CODEX_AUG_NAMESPACE_DESCRIPTION = "AUG's other tools, loaded when needed."
+# Codex: a call to a tool the thread was started with that AUG no longer has.
+CODEX_TOOL_GONE_RESULT = "The tool {name} is no longer available."
+# Codex: why the guard refused a call it could not judge (or failed on).
+CODEX_GUARD_FAILED = "AUG's guard could not check this call, so it was refused."
 
 USER_IMAGE_HINT = "[Image from user: {path}]"
 # Stands in for an image a tool returned, for a model that cannot take images.

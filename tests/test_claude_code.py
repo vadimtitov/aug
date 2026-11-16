@@ -63,8 +63,7 @@ from aug.core.harness.tool_bridge import ToolImage, ToolOutcome
 from aug.core.harness.tool_context import ToolContext
 from aug.core.run import AgentRun, run_registry
 from aug.core.tools.context import current_tool_context
-from aug.core.tools.run_bash import hushed_command
-from aug.utils.hushed import HushedError
+from aug.utils.hushed import HushedError, hushed_command
 
 SESSION = "11111111-2222-3333-4444-555555555555"
 ADDR = Address(interface="rest_api", conversation_id="chat", chat_id="chat")

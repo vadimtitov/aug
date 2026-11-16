@@ -9,6 +9,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from aug.core.agents.chat_agent import AugAgent
 from aug.core.harness.claude_code.harness import ClaudeCodeHarness
+from aug.core.harness.codex.harness import CodexHarness
 from aug.core.harness.types import ModelTier
 from aug.core.reflexes.homeassistant import HomeAssistantReflex
 from aug.core.registry import (
@@ -43,15 +44,22 @@ def test_only_the_current_profiles_are_registered():
         "fake",
         *PROFILES,
         "v14_claude_code",
+        "v14_codex",
         "v15_kimi",
         "v15_glm",
         "v15_claude_code",
+        "v15_codex",
     ]
 
 
 @pytest.mark.parametrize(
     ("name", "base"),
-    [("v15_kimi", "v13_kimi"), ("v15_glm", "v13_glm"), ("v15_claude_code", "v14_claude_code")],
+    [
+        ("v15_kimi", "v13_kimi"),
+        ("v15_glm", "v13_glm"),
+        ("v15_claude_code", "v14_claude_code"),
+        ("v15_codex", "v14_codex"),
+    ],
 )
 def test_v15_is_its_base_profile_plus_the_home_assistant_reflex(name, base):
     configure_harnesses(MemorySaver())
@@ -221,4 +229,35 @@ def test_mcp_tools_reach_the_same_claude_code_harness():
     configure_mcp_tools([_fake_mcp_tool])
 
     assert get_harness("v14_claude_code") is harness  # its warm processes stay owned
+    assert "_fake_mcp_tool" in {t.name for t in harness.profile.tools}
+
+
+def test_the_codex_profile_runs_on_codex_with_its_own_tools():
+    configure_harnesses(MemorySaver())
+    harness = get_harness("v14_codex")
+    profile = get_agent("v14_codex")
+
+    assert isinstance(harness, CodexHarness)
+    assert profile.model == "gpt-6.1-sol"
+    assert not profile.reflexes
+    names = {t.name for t in profile.tools}
+    # Codex has its own shell, search and skill loading; no fetch tool of its own.
+    assert not names & {
+        "run_bash",
+        "brave_search",
+        "get_skill",
+        "fetch_page",
+        "browser",
+        "run_subagent",
+    }
+    assert {"respond_with_file", "web_fetch", "generate_image", "install_mcp_server"} <= names
+    assert profile.always_loaded <= names
+
+
+def test_mcp_tools_reach_the_same_codex_harness():
+    configure_harnesses(MemorySaver())
+    harness = get_harness("v15_codex")
+    configure_mcp_tools([_fake_mcp_tool])
+
+    assert get_harness("v15_codex") is harness  # its threads stay owned
     assert "_fake_mcp_tool" in {t.name for t in harness.profile.tools}

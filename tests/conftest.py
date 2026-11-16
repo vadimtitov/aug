@@ -1,6 +1,8 @@
 """Test configuration — set required env vars before any aug module is imported."""
 
 import os
+import shlex
+from pathlib import Path
 
 import pytest
 
@@ -74,3 +76,17 @@ def workspace(tmp_path, monkeypatch):
     monkeypatch.setattr("aug.core.tools.skills.SKILLS_DIR", paths["SKILLS_DIR"])
     monkeypatch.setattr("aug.utils.skills.SKILLS_DIR", paths["SKILLS_DIR"])
     return root
+
+
+@pytest.fixture
+def fake_hushed(tmp_path, monkeypatch) -> Path:
+    """A `hushed` on PATH that runs the command it is given (`hushed run -- CMD...`).
+    Returns the file it logs each command it runs to, one line each."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "hushed.log"
+    script = bin_dir / "hushed"
+    script.write_text(f'#!/bin/sh\necho "$*" >> {shlex.quote(str(log))}\nshift 2\nexec "$@"\n')
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    return log

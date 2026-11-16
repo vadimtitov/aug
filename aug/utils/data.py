@@ -13,8 +13,9 @@ MEMORY_DIR = WORKSPACE_DIR / "memory"
 MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
 SKILLS_DIR = WORKSPACE_DIR / "skills"
 FILES_DIR = WORKSPACE_DIR / "files"
-# Claude Code's home: its settings and every chat's session.
+# The agent CLIs' homes: their logins, settings and every chat's session.
 CLAUDE_DIR = DATA_DIR / "claude"
+CODEX_DIR = DATA_DIR / "codex"
 
 
 def read_data_file(name: str) -> str:

@@ -3,32 +3,14 @@
 import asyncio
 import logging
 import os
-import shlex
 import signal
 
 from langchain_core.tools import tool
 
 from aug.core.tools.blocked_paths import command_block_reason
+from aug.utils.hushed import hushed_argv
 
 logger = logging.getLogger(__name__)
-
-# Runs the command ($1) with its output in temp files, then prints them.  hushed relays
-# (and redacts) output only once every process holding it has let go, so a background
-# job started by the command would otherwise keep the call open until it exits.  With
-# the files, it inherits those instead, and the call returns when the command does.
-#
-# The files hold output before hushed redacts it, so they are deleted as soon as they
-# are open and read back through the open descriptors: a /stop (SIGKILL) leaves nothing
-# on disk.  They live in /dev/shm (RAM) where there is one, so a full disk can't swallow
-# the output of the very command that diagnoses it.  If no file can be made, the command
-# runs on the pipe directly, as before.
-_WRAPPER = """\
-d=/dev/shm; [ -d "$d" ] && [ -w "$d" ] || d=${TMPDIR:-/tmp}
-o=$(mktemp "$d/aug-bash.XXXXXX") && e=$(mktemp "$d/aug-bash.XXXXXX") || exec bash -c "$1"
-exec 3>"$o" 4<"$o" 5>"$e" 6<"$e"; rm -f "$o" "$e"
-bash -c "$1" >&3 2>&5 3>&- 4<&- 5>&- 6<&-; s=$?
-exec 3>&- 5>&-; cat <&4; cat <&6 >&2; exit $s
-"""
 
 
 @tool
@@ -81,16 +63,6 @@ async def run_bash(command: str) -> str:
         logger.debug("run_bash exit_code=0")
     output = (out + err).strip()
     return output or "(no output)"
-
-
-def hushed_argv(command: str) -> list[str]:
-    """The argv that runs *command* with the user's secrets injected and redacted."""
-    return ["hushed", "run", "--", "bash", "-c", _WRAPPER, "bash", command]
-
-
-def hushed_command(command: str) -> str:
-    """*command* rewritten as one shell line that runs it through hushed_argv()."""
-    return shlex.join(hushed_argv(command))
 
 
 def _kill_group(proc: asyncio.subprocess.Process) -> None:
