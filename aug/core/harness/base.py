@@ -97,7 +97,7 @@ class Harness(ABC):
     @abstractmethod
     async def cancel(self, context_id: str) -> bool:
         """Stop the turn and its running tool; it ends with TurnEnded(cancelled=True).
-        False if nothing is running."""
+        False if this harness has nothing running there (another harness may)."""
 
     @abstractmethod
     async def compact(self, context_id: str) -> bool:
@@ -167,6 +167,12 @@ class Harness(ABC):
     def _close_turn(self, context_id: str) -> None:  # noqa: B027 — optional hook
         """Called once the turn is over, however it ended, before its AgentRun goes."""
 
+    def _active_run(self, context_id: str) -> AgentRun | None:
+        """The AgentRun of this harness's turn in flight for *context_id*, if any: the
+        registry holds every harness's turns, and one never acts on another's."""
+        run = run_registry.get(context_id)
+        return run if run is not None and run.active and run.owner is self else None
+
     async def _turn(
         self,
         message: Message,
@@ -189,7 +195,7 @@ class Harness(ABC):
         not_granted: set[str] = set()  # tool ids whose approval was not granted
         text = ""
         ended: TurnEnded | None = None
-        run = None if unsolicited else _register_run(context_id, turn)
+        run = None if unsolicited else _register_run(context_id, turn, self)
         try:
             if run is not None:
                 self._open_turn(context_id, turn)
@@ -307,11 +313,11 @@ def _log_tool_end(name: str, error: bool, started: float | None) -> None:
         logger.info("tool_end tool=%s duration=%.2fs", name, elapsed)
 
 
-def _register_run(context_id: str, turn: TurnContext) -> AgentRun:
+def _register_run(context_id: str, turn: TurnContext, owner: Harness) -> AgentRun:
     existing = run_registry.get(context_id)
     if existing is not None and existing.active:
         existing.request_stop()  # the run lock should rule this out; never leave two
-    run = AgentRun(accepts_injection=turn.attended)
+    run = AgentRun(accepts_injection=turn.attended, owner=owner)
     run_registry.set(context_id, run)
     return run
 

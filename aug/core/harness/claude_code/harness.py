@@ -66,7 +66,6 @@ from aug.core.prompts import (
     USER_IMAGE_HINT,
 )
 from aug.core.reflexes import Reflex
-from aug.core.run import run_registry
 from aug.core.workspace import session_prompt
 from aug.utils.data import CLAUDE_DIR, SKILLS_DIR, WORKSPACE_DIR
 from aug.utils.hushed import HushedError, read_secret
@@ -197,7 +196,7 @@ class ClaudeCodeHarness(Harness):
     async def _run(
         self, message: Message, context_id: str, turn: TurnContext
     ) -> AsyncIterator[HarnessEvent]:
-        run = run_registry.get(context_id)
+        run = self._active_run(context_id)
         stopped = run.user_requested_stop if run is not None else asyncio.Event()
         try:
             content = await _render(message)
@@ -218,7 +217,8 @@ class ClaudeCodeHarness(Harness):
             await self._mark_started(context_id)
 
     async def inject(self, message: Message, context_id: str) -> bool:
-        if not run_registry.accepting(context_id):
+        run = self._active_run(context_id)
+        if run is None or not run.accepting:
             return False
         content = await _render(message)
         session = self._sessions.get(context_id)
@@ -231,9 +231,9 @@ class ClaudeCodeHarness(Harness):
         return True
 
     async def cancel(self, context_id: str) -> bool:
-        run = run_registry.get(context_id)
+        run = self._active_run(context_id)
         session = self._sessions.get(context_id)
-        if run is None or not run.active:
+        if run is None:
             # A turn no run owns (one the CLI started, a /compact) stops all the same.
             if session is not None and session.turn_open:
                 logger.info("cancel context=%s (no run)", context_id)

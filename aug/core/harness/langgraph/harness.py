@@ -57,7 +57,7 @@ from aug.core.prompts import (
     USER_FILE_HINT,
 )
 from aug.core.reflexes import Reflex
-from aug.core.run import AGENT_RUN_CONFIG_KEY, MessageContent, run_registry
+from aug.core.run import AGENT_RUN_CONFIG_KEY, MessageContent
 from aug.core.state import AgentState
 from aug.utils.media import MODEL_IMAGE_TYPES, image_marker
 
@@ -110,14 +110,15 @@ class LangGraphHarness(Harness):
         )
 
     async def inject(self, message: Message, context_id: str) -> bool:
-        if not run_registry.accepting(context_id):
+        run = self._active_run(context_id)
+        if run is None or not run.accepting:
             return False
-        run_registry.get(context_id).inject_message(_render(message))  # type: ignore[union-attr]
+        run.inject_message(_render(message))
         return True
 
     async def cancel(self, context_id: str) -> bool:
-        run = run_registry.get(context_id)
-        if run is None or not run.active:
+        run = self._active_run(context_id)
+        if run is None:
             return False
         logger.info("cancel context=%s run=%s", context_id, run.id)
         run.request_stop()
@@ -192,7 +193,7 @@ class LangGraphHarness(Harness):
         turn: TurnContext,
     ) -> AsyncIterator[HarnessEvent]:
         """Stream the graph across tool-round pauses, injecting queued messages."""
-        run = run_registry.get(context_id)
+        run = self._active_run(context_id)
         assert run is not None, "Harness._turn registers the run before the stream starts"
         tool_context = ToolContext(
             context_id=context_id,

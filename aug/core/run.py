@@ -1,9 +1,14 @@
 """Agent run registry — one AgentRun per in-flight agent thread."""
 
+from __future__ import annotations
+
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from aug.core.harness.base import Harness
 
 # Preprocessed message content ready for the LLM:
 # either a plain string or a list of OpenAI-style content blocks
@@ -29,6 +34,9 @@ class AgentRun:
     accepts_injection        — False for unattended turns (pushes): a user message then
                                waits for its own turn instead of joining one nobody
                                renders to the user.
+    owner                    — the harness that started the run: /stop and injected
+                               messages go to it.  None for a run no harness started
+                               (tests); nothing stops or injects into it.
     """
 
     id: str = field(default_factory=lambda: str(uuid4())[:8])
@@ -36,6 +44,7 @@ class AgentRun:
     pending_agent_injection: asyncio.Queue[MessageContent] = field(default_factory=asyncio.Queue)
     active: bool = True
     accepts_injection: bool = True
+    owner: Harness | None = None
 
     def inject_message(self, content: MessageContent) -> None:
         """Queue user content for injection at the next agent pause point."""
@@ -44,6 +53,12 @@ class AgentRun:
     def request_stop(self) -> None:
         """Signal the run to stop at the earliest opportunity."""
         self.user_requested_stop.set()
+
+    @property
+    def accepting(self) -> bool:
+        """True while the run can still take an injected message: in flight, open to
+        injection, and not asked to stop."""
+        return self.active and self.accepts_injection and not self.user_requested_stop.is_set()
 
 
 class RunRegistry:
@@ -87,12 +102,7 @@ class RunRegistry:
         """True while a turn is in flight for *context_id* and can still take an
         injected message (it has not been asked to stop)."""
         run = self._runs.get(context_id)
-        return (
-            run is not None
-            and run.active
-            and run.accepts_injection
-            and not run.user_requested_stop.is_set()
-        )
+        return run is not None and run.accepting
 
     def clear(self) -> None:
         self._runs.clear()

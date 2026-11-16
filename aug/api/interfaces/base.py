@@ -424,8 +424,13 @@ class BaseInterface[ContextT](ABC):
             # message itself then joins the turn.  A live-location update is not a reply.
             if not all(isinstance(p, LocationContent) for p in incoming.parts):
                 pending_approvals.deny_all(incoming.context_id, ApprovalDecision.REPLIED)
-            harness = _harness_for(incoming.agent_version)
-            if harness is not None and await harness.inject(message, incoming.context_id):
+            # To the harness running the turn, even if /version picked another since.
+            run = run_registry.get(incoming.context_id)
+            if (
+                run is not None
+                and run.owner is not None
+                and await run.owner.inject(message, incoming.context_id)
+            ):
                 return
 
             # A location is about to start a run.  Stamp the throttle here, under the
@@ -568,9 +573,14 @@ class BaseInterface[ContextT](ABC):
     async def stop_run(self, context_id: str) -> bool:
         """Stop the turn in flight for *context_id*.  Returns True if there was one.
 
-        Asks every harness rather than the one selected in settings: the turn may have
-        been started with an explicit agent (REST) or before a /version switch.
+        The harness that started the turn stops it, whichever agent is selected now: the
+        turn may have been started with an explicit agent (REST) or before a /version
+        switch.  A turn no AgentRun owns (one the agent CLI started by itself, a
+        /compact) is stopped by whichever harness has it open.
         """
+        run = run_registry.get(context_id)
+        if run is not None and run.active and run.owner is not None:
+            return await run.owner.cancel(context_id)
         for harness in harnesses():
             if await harness.cancel(context_id):
                 return True

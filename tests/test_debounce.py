@@ -7,7 +7,7 @@ import pytest
 
 from aug.api.interfaces.base import IncomingMessage, TextContent, _merge_messages
 from aug.core.harness import Message, Sender, TextPart
-from aug.core.run import RunRegistry
+from aug.core.run import AgentRun, RunRegistry
 from tests.harness_fakes import ScriptedHarness
 
 _SENDER = Sender(interface="telegram", user_id="1")
@@ -129,8 +129,9 @@ async def test_rapid_messages_merged_into_one_run(interface) -> None:
     assert {p.text for p in merged.parts} == {"msg1", "msg2", "msg3"}
 
 
-async def test_message_during_active_run_is_injected(interface, harness) -> None:
+async def test_message_during_active_run_is_injected(interface, harness, isolated_registry) -> None:
     harness.accept_inject = True
+    isolated_registry.set("tg-1-0", AgentRun(owner=harness))
 
     with patch("aug.api.interfaces.base._preprocess", _as_message):
         await interface.run("inject me")

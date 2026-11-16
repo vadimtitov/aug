@@ -868,6 +868,26 @@ async def test_stop_run_cancels_whatever_agent_the_turn_uses() -> None:
     assert after.cancelled == []  # one harness owns the turn; the rest aren't asked
 
 
+async def test_stop_goes_to_the_harness_that_runs_the_turn() -> None:
+    """Every harness's turns share one registry: /stop reaches the turn's owner
+    whatever order harnesses are listed in, and no other harness acts on it."""
+    other, _ = _harness()
+    harness, _ = _harness(_call("slow", {"seconds": 5}), AIMessage(content="never"))
+
+    async def stop_soon() -> bool:
+        await asyncio.sleep(0.1)
+        assert await other.cancel("rest-x") is False
+        with patch("aug.api.interfaces.base.harnesses", return_value=[other, harness]):
+            return await RestApiInterface().stop_run("rest-x")
+
+    events, stopped = await asyncio.wait_for(
+        asyncio.gather(_collect(harness.run(_msg("go"), "rest-x", TURN)), stop_soon()), 3
+    )
+
+    assert stopped is True
+    assert events[-1].cancelled is True
+
+
 async def test_unattended_turns_are_capped_at_a_few_steps() -> None:
     """A push that loops on tools stops at its low cap with step_limit."""
     loop = [_call("slow", {"seconds": 0}, f"c{i}") for i in range(30)]
