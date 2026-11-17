@@ -17,7 +17,7 @@ AUG reads environment variables at startup: from `.env` with the installer or Co
 | Variable | |
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | From @BotFather. Without it, the bot is off and the REST API still works |
-| `TELEGRAM_ALLOWED_CHAT_IDS` | Comma-separated Telegram user ids allowed to talk to the bot. **Empty means everyone.** Your id: @userinfobot |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | Comma-separated Telegram user ids allowed to use the bot and the mini app. Empty means nobody: the bot then answers any message with the sender's id |
 | `STARTUP_ANNOUNCEMENT` | `true` (default): send "AUG is up" to your chats at each start |
 
 ## Optional integrations

@@ -119,7 +119,7 @@ write_env() {
     say "Now send any message to your bot from your own Telegram account..."
     user_id=$(telegram_user_id "$token") ||
       user_id=$(ask "No message arrived. Your Telegram user id (from @userinfobot):")
-    [ -n "$user_id" ] || fail "AUG needs the user id: without it anyone could use your bot."
+    [ -n "$user_id" ] || fail "AUG needs your user id: until it has one, the bot lets nobody in."
     say "${green}Only Telegram user $user_id will be able to use this bot.${reset}"
   fi
 

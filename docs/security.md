@@ -10,7 +10,7 @@ So the decision that matters is what you let the container reach. The standalone
 
 ## Who can talk to it
 
-- **Telegram.** Only the user ids in `TELEGRAM_ALLOWED_CHAT_IDS` get through. The check is on the sender, so it holds in groups too. If the list is empty, everyone gets through, so the installer won't set up a bot without it.
+- **Telegram.** Only the user ids in `TELEGRAM_ALLOWED_CHAT_IDS` get through. The check is on the sender, so it holds in groups too. If the list is empty, nobody does: the bot only replies with the sender's id, and the mini app turns everyone away.
 - **REST API.** Every route needs `API_KEY` or a mini app session. The exceptions are `/health`, the mini app's sign-in and the OAuth callbacks, and a callback does nothing without a valid single-use state.
 - **The mini app** authenticates with Telegram's signed init data. `DEV_AUTH_BYPASS` turns that check off and is for development only.
 

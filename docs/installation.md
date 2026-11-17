@@ -101,13 +101,13 @@ The settings `docker-compose.standalone.yml` reads from `.env` are listed in [Co
 API_KEY=<random string>            # REST API key
 OAUTH_ENCRYPTION_KEY=<openssl rand -base64 32>
 TELEGRAM_BOT_TOKEN=<from @BotFather>
-TELEGRAM_ALLOWED_CHAT_IDS=<your user id, from @userinfobot>
+TELEGRAM_ALLOWED_CHAT_IDS=<your user id>
 LLM_BASE_URL=https://api.openai.com/v1
 LLM_API_KEY=                       # empty: no voice notes, no image generation
 BASE_URL=http://localhost:8012
 ```
 
-Leave `TELEGRAM_ALLOWED_CHAT_IDS` empty and anyone who finds your bot gets a shell. Don't.
+Don't know your user id? Leave `TELEGRAM_ALLOWED_CHAT_IDS` empty, start AUG and message the bot. Until the list is set, it lets nobody in and only replies with your id. Put it in `.env` and run `./augctl up`.
 
 ## Portainer and production
 
