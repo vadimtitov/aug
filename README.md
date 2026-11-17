@@ -21,7 +21,7 @@ Runs in Docker on your Mac or a Linux server, with no open ports. [Read the scri
 
 ## Why
 
-Claude Code and Codex are the best agent harnesses there are, and your plan already includes them. But they're built for code. AUG turns the same harness into a personal assistant.
+Claude Code and Codex are excellent agent harnesses, and they come with your subscription, along with top-tier models. But they're built for code. AUG turns the same harness into a personal assistant.
 
 ## What it does
 
