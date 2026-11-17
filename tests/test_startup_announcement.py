@@ -108,7 +108,7 @@ async def test_telegram_announces_to_allowed_users_dms():
 
 
 @pytest.mark.asyncio
-async def test_telegram_falls_back_to_known_dm_conversations():
+async def test_telegram_announces_to_nobody_without_an_allow_list():
     from aug.api.interfaces.telegram.interface import TelegramInterface
     from aug.utils.file_settings import AppSettings, ConversationSettings
 
@@ -133,7 +133,7 @@ async def test_telegram_falls_back_to_known_dm_conversations():
     ):
         threads = await iface.announcement_threads()
 
-    assert threads == ["tg-555-0"]
+    assert threads == []
 
 
 @pytest.mark.asyncio

@@ -117,10 +117,21 @@ def test_auth_telegram_valid_init_data_returns_token(client: TestClient) -> None
     with patch("aug.api.routers.auth.get_settings") as mock_settings:
         mock_settings.return_value.TELEGRAM_BOT_TOKEN = _BOT_TOKEN
         mock_settings.return_value.DEV_AUTH_BYPASS = False
-        mock_settings.return_value.allowed_chat_ids = set()
+        mock_settings.return_value.allowed_chat_ids = {1}
         response = client.post("/auth/telegram", json={"init_data": init_data})
     assert response.status_code == 200
     assert "token" in response.json()
+
+
+def test_auth_telegram_empty_allowlist_returns_403(client: TestClient) -> None:
+    """No allow-list lets nobody into the mini app."""
+    init_data = _make_init_data()
+    with patch("aug.api.routers.auth.get_settings") as mock_settings:
+        mock_settings.return_value.TELEGRAM_BOT_TOKEN = _BOT_TOKEN
+        mock_settings.return_value.DEV_AUTH_BYPASS = False
+        mock_settings.return_value.allowed_chat_ids = set()
+        response = client.post("/auth/telegram", json={"init_data": init_data})
+    assert response.status_code == 403
 
 
 def test_auth_telegram_user_not_in_allowlist_returns_403(client: TestClient) -> None:

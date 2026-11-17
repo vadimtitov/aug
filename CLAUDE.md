@@ -330,7 +330,7 @@ only when there is a clear, immediate reason.
 | `LLM_BASE_URL` | Yes | LiteLLM proxy URL, e.g. `http://litellm:4000` |
 | `DATABASE_URL` | Yes | `postgresql+asyncpg://user:pass@host:5432/dbname` |
 | `TELEGRAM_BOT_TOKEN` | No | Bot disabled if absent |
-| `TELEGRAM_ALLOWED_CHAT_IDS` | No | Comma-separated chat IDs allowed to use the bot. If unset, all chats are allowed. Get your ID from `@userinfobot` |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | No | Comma-separated user IDs allowed to use the bot and the mini app. If unset, nobody is: the bot answers each message with the sender's ID to put here |
 | `BRAVE_API_KEY` | No | Web search tool disabled if absent |
 | `PORTAINER_URL` | No | Portainer instance URL, e.g. `http://portainer:9000` |
 | `PORTAINER_API_TOKEN` | No | Portainer API token (generate in Portainer → Account Settings) |

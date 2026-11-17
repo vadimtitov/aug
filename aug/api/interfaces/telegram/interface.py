@@ -38,6 +38,7 @@ from telegram.constants import ChatAction, MessageLimit
 from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
@@ -729,15 +730,10 @@ class TelegramInterface(
         """Return the current DM thread of every user allowed to use the bot.
 
         Service announcements go to people rather than to rooms: the allow-list is
-        the set of owners, and a Telegram user ID is also their DM chat ID.  When
-        no allow-list is configured (any chat may talk to the bot) there is no
-        owner to address, so the DM chats already seen in settings are used.
-        Group and forum chats — negative IDs — are never announced to.
+        the set of owners, and a Telegram user ID is also their DM chat ID.  Group
+        and forum chats — negative IDs — are never announced to.
         """
         chat_ids = {cid for cid in get_settings().allowed_chat_ids if cid > 0}
-        if not chat_ids:
-            known = (parse_chat_conversation(c) for c in load_settings().conversations)
-            chat_ids = {cid for cid in known if cid is not None and cid > 0}
         return [get_context_id(cid, None) for cid in sorted(chat_ids)]
 
     async def send_proactive_stream(
@@ -914,6 +910,10 @@ class TelegramInterface(
         if base_url:
             builder = builder.base_url(f"{base_url}/bot").base_file_url(f"{base_url}/file/bot")
         bot_app = builder.concurrent_updates(True).build()
+        # Ahead of every other handler: with no allow-list, a message gets only its IDs.
+        bot_app.add_handler(
+            MessageHandler(filters.UpdateType.MESSAGE, self._handle_unconfigured), group=-1
+        )
         bot_app.add_handler(CommandHandler("clear", self._handle_clear))
         bot_app.add_handler(CommandHandler("stop", self._handle_stop))
         bot_app.add_handler(CommandHandler("context_id", self._handle_context_id))
@@ -1079,6 +1079,22 @@ class TelegramInterface(
     async def _before_turn(self, context_id: str) -> None:
         # A message sent with an album waits for it, so both make one turn.
         await self._albums.settled(context_id)
+
+    async def _handle_unconfigured(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """With TELEGRAM_ALLOWED_CHAT_IDS empty, answer a message with the IDs to put
+        there and stop it.  Otherwise let it through to the other handlers."""
+        if get_settings().allowed_chat_ids:
+            return
+        msg, user, chat = update.effective_message, update.effective_user, update.effective_chat
+        if msg and user and chat:
+            ids = f"{user.id}" if chat.id == user.id else f"{user.id} (this chat: {chat.id})"
+            logger.warning("telegram_unconfigured user_id=%s chat_id=%s", user.id, chat.id)
+            await msg.reply_text(
+                f"Your Telegram ID: {ids}. Add it to TELEGRAM_ALLOWED_CHAT_IDS and restart AUG."
+            )
+        raise ApplicationHandlerStop
 
     async def _handle_live_location(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
