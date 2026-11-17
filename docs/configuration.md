@@ -50,7 +50,6 @@ Claude Code and Codex never use `LLM_BASE_URL`. These do:
 | Voice note transcription | `whisper-1` |
 | Image generation and editing | `IMAGE_GEN_MODEL` |
 | The Kimi and GLM agents | `accounts/fireworks/models/kimi-k3`, `glm-5p3`, `glm-5p3-flash` |
-| Memory consolidation | runs on `v13_kimi` |
 | Home Assistant reflex | `gpt-6-luna` (OpenAI's Decisions API) |
 
 An OpenAI key covers the first two. For all of them, run [LiteLLM](https://github.com/BerriAI/litellm) with OpenAI and Fireworks behind it, and point `LLM_BASE_URL` at it.

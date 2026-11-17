@@ -37,18 +37,18 @@ Each chat runs on an agent you choose with `/version`, and you can switch at any
 
 | Agent | Runs on | Signs in with |
 |---|---|---|
-| `v14_claude_code` (default) | Claude Code · Claude Opus 5.5 | your Claude plan (`/claude_login`) |
-| `v14_codex` | Codex · GPT-6.1 Sol | your ChatGPT plan (`/codex_login`) |
+| `v15_claude_code` (default) | Claude Code · Claude Opus 5.5 | your Claude plan (`/claude_login`) |
+| `v15_codex` | Codex · GPT-6.1 Sol | your ChatGPT plan (`/codex_login`) |
 | `v13_kimi`, `v13_glm` | AUG's own loop · Kimi K3, GLM-5.3 | an API endpoint you pay per token |
 
-The `v15_*` versions add a Home Assistant reflex: they switch the devices you've labelled for AUG the moment you ask, before the agent replies.
+The `v15_*` versions carry a Home Assistant reflex: when it's set up, they switch the devices you've labelled for AUG the moment you ask, before the agent replies. The `v14_*` versions are the same agents without it.
 
 Claude Code and Codex keep their own strengths: tool use, subagents, context compaction, skills and web search. AUG adds its tools, the memory, the schedule and the chat. It switches off the parts that don't belong in a personal assistant. [How the agents are run →](docs/agents.md)
 
 ## What it costs
 
 - **Chat and work:** your Claude or ChatGPT plan, through its usage limits. `/status` shows where you stand.
-- **Optional, pay per use:** voice notes and image generation need an OpenAI API key. The nightly memory consolidation and the Kimi and GLM agents need an endpoint serving those models. The Home Assistant reflex needs one with OpenAI's Decisions API. Without these, the rest works. Notes are still kept, but not consolidated. [Details](docs/configuration.md#the-openai-compatible-endpoint).
+- **Optional, pay per use:** voice notes and image generation need an OpenAI API key. The Kimi and GLM agents need an endpoint serving those models. The Home Assistant reflex needs one with OpenAI's Decisions API. Without these, the rest works. [Details](docs/configuration.md#the-openai-compatible-endpoint).
 
 AUG runs the official, unmodified CLIs, logged in as you, for you alone. Anthropic and OpenAI decide how their plans may be used this way, and their terms change. Read yours, and don't share one install between people.
 

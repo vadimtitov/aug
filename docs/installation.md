@@ -45,7 +45,7 @@ Prefer to read scripts before you run them? Clone the repo and run `./augctl set
 
 Both can also be done from Telegram, later or from your phone: `/claude_login` and `/codex_login` in a private chat with the bot.
 
-New chats start on Claude Code. On Codex only? Send `/version` and pick `v14_codex`.
+New chats start on Claude Code. On Codex only? Send `/version` and pick `v15_codex`.
 
 ### Everyday commands
 
@@ -141,7 +141,6 @@ make check         # lint, format check, tests
 
 - **`./augctl logs`** first. Then `/status` in Telegram, which shows the model, the context and the plan's limits.
 - **"The Claude login is missing, expired or revoked."** Run `./augctl login claude`, or send `/claude_login`.
-- **`job dream_deep failed` at startup.** Memory consolidation runs on the Kimi agent ([why](agents.md#model-tiers)). Without an endpoint for it, the job fails and retries at its next run. Nothing else is affected.
 - **Port already allocated.** Set `AUG_PORT` in `.env` and run `./augctl up`.
 
 ## Uninstalling

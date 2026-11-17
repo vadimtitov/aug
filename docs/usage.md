@@ -55,7 +55,7 @@ Everything the assistant is and knows lives in `data/workspace/`. These are plai
 | `memory/context.md` | What's going on now: plans, events, recent activity. Pruned hard |
 | `memory/self.md` | The assistant's sense of itself |
 
-Every night a consolidation pass (the "dream") folds the notes into the other files. Once a week a deeper pass looks across all of them. Both run on the `v13_kimi` agent: see [Agents](agents.md#model-tiers).
+Every night a consolidation pass (the "dream") folds the notes into the other files. Once a week a deeper pass looks across all of them. Both run on the default agent, through your Claude plan.
 
 A session's prompt is built once, when it starts, and stays fixed for the whole conversation, so the prompt cache holds. Edits show up from the next `/clear`. [Memory design](design/memory-design.md).
 

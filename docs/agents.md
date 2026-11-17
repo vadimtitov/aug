@@ -1,14 +1,15 @@
 # Agents
 
-An *agent* in AUG is a profile: a model, its tools and the engine that runs it. AUG calls that engine a *harness*. Every chat (a Telegram DM, a forum topic, a REST `context_id`) uses one agent. `/version` switches it; new chats start on `v14_claude_code`.
+An *agent* in AUG is a profile: a model, its tools and the engine that runs it. AUG calls that engine a *harness*. Every chat (a Telegram DM, a forum topic, a REST `context_id`) uses one agent. `/version` switches it; new chats start on `v15_claude_code`.
 
 | Agent | Harness | Model | Sign-in |
 |---|---|---|---|
-| `v14_claude_code` | Claude Code | Claude Opus 5.5, high effort | Claude plan |
-| `v14_codex` | Codex | GPT-6.1 Sol, medium effort | ChatGPT plan |
+| `v15_claude_code` | Claude Code | Claude Opus 5.5, high effort | Claude plan |
+| `v15_codex` | Codex | GPT-6.1 Sol, medium effort | ChatGPT plan |
 | `v13_kimi` | LangGraph (AUG's own loop) | Kimi K3 | OpenAI-compatible endpoint |
 | `v13_glm` | LangGraph | GLM-5.3 | OpenAI-compatible endpoint |
-| `v15_*` | as above | as above | plus the [Home Assistant reflex](#home-assistant-reflex) |
+
+The `v15_*` agents carry the [Home Assistant reflex](#home-assistant-reflex). `v14_claude_code` and `v14_codex` are the same agents without it; `v15_kimi` and `v15_glm` are Kimi and GLM with it.
 
 Every interface talks to all three harnesses the same way: Telegram, the REST API, scheduled tasks and background jobs. Switching a chat's agent changes nothing else. Memory, skills, files and secrets are shared.
 
@@ -49,7 +50,7 @@ Background work asks for a tier, not a model, and each harness picks its own:
 
 `web_fetch` reads pages with the fast tier of the agent that called it.
 
-**Memory consolidation** (the nightly and weekly "dream") runs on `v13_kimi`, so it needs the endpoint above. Without one, notes still pile up in `memory/notes.md`, where the agent can read them, but they aren't folded into the memory files.
+**Memory consolidation** (the nightly and weekly "dream") runs on the default agent, `v15_claude_code`, so it needs only the Claude login.
 
 ## Usage and limits
 
