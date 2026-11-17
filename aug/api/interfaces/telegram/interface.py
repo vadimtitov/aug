@@ -107,8 +107,8 @@ logger = logging.getLogger(__name__)
 
 _SPINNER = ["🌑", "🌘", "🌗", "🌖", "🌕", "🌔", "🌓", "🌒"]
 _NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
-_MAX_TOOL_ENTRIES = 6  # max top-level tool entries shown before "…" truncation
-_MAX_SUBLINES = 5  # max nested sub-tool lines shown per subagent block
+_MAX_TOOL_ENTRIES = 2  # max top-level tool entries shown before "…" truncation
+_MAX_SUBLINES = 1  # max nested sub-tool lines shown per subagent block
 # Tools with no status line: the file they send is the sign they ran.
 _SILENT_TOOLS = {"respond_with_file"}
 # In chats without draft support each update is a real editMessageText (rate-limited),
