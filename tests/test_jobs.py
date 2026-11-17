@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from aug.core.jobs import _JOB_FUNCTIONS, JOBS, JobRunner, JobSpec, _is_due
-from aug.core.registry import list_agents
+from aug.core.registry import NEW_CONVERSATION_PROFILE, list_agents
 from aug.utils.state import AppState
 
 _DAILY = JobSpec(job="daily", cron="0 3 * * *", profile="p1")
@@ -52,6 +52,11 @@ def test_every_listed_job_exists_and_runs_on_a_registered_profile():
     assert {spec.job for spec in JOBS} == set(_JOB_FUNCTIONS)
     assert all(spec.profile in list_agents() for spec in JOBS)
     assert len({spec.job for spec in JOBS}) == len(JOBS)
+
+
+def test_jobs_run_on_the_default_profile():
+    """The dreams need nothing beyond the login a new chat already uses."""
+    assert {spec.profile for spec in JOBS} == {NEW_CONVERSATION_PROFILE}
 
 
 async def test_each_job_is_scheduled_and_caught_up_once_with_two_profiles_live(state):

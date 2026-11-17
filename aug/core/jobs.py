@@ -21,7 +21,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from aug.core.harness.base import Harness
 from aug.core.memory import run_deep_consolidation, run_light_consolidation
-from aug.core.registry import get_harness
+from aug.core.registry import NEW_CONVERSATION_PROFILE, get_harness
 from aug.utils.state import load_state, save_state
 
 logger = logging.getLogger(__name__)
@@ -37,8 +37,8 @@ class JobSpec:
 
 
 JOBS: list[JobSpec] = [
-    JobSpec(job="dream_light", cron="0 3 * * *", profile="v13_kimi"),
-    JobSpec(job="dream_deep", cron="0 4 * * sun", profile="v13_kimi"),
+    JobSpec(job="dream_light", cron="0 3 * * *", profile=NEW_CONVERSATION_PROFILE),
+    JobSpec(job="dream_deep", cron="0 4 * * sun", profile=NEW_CONVERSATION_PROFILE),
 ]
 
 _JOB_FUNCTIONS: dict[str, Job] = {

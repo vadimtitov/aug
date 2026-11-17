@@ -163,6 +163,9 @@ its `oneshot()` models per tier (see `docs/design/harness-design.md`). A Codex p
 is a `CodexProfile`: model and effort, AUG's tools, which of them Codex keeps loaded
 (the rest wait in its `aug` namespace), and its `oneshot()` models per tier.
 
+A new Claude Code version becomes the default: point `NEW_CONVERSATION_PROFILE` at it.
+New chats and the background jobs (the dreams) run on that profile.
+
 A deleted version needs no cleanup: at startup `migrate_conversations()` moves every
 chat set to it onto `v13_kimi` (`v13_glm` for a glm version).
 
