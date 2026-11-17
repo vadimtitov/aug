@@ -49,7 +49,7 @@ Background work asks for a tier, not a model, and each harness picks its own:
 
 `web_fetch` reads pages with the fast tier of the agent that called it.
 
-**Memory consolidation** (the nightly and weekly "dream") runs on `v13_kimi`, so it needs the endpoint above. Without one, notes are still written and shown to the agent, but they aren't folded into the memory files.
+**Memory consolidation** (the nightly and weekly "dream") runs on `v13_kimi`, so it needs the endpoint above. Without one, notes still pile up in `memory/notes.md`, where the agent can read them, but they aren't folded into the memory files.
 
 ## Usage and limits
 

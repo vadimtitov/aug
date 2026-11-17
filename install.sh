@@ -17,7 +17,10 @@ done
 
 if [ -d "$dir/.git" ]; then
   echo "Updating $dir"
-  git -C "$dir" pull --ff-only
+  git -C "$dir" pull --ff-only || {
+    echo "error: git could not update $dir (above). Local changes? git stash, then retry." >&2
+    exit 1
+  }
 elif [ -e "$dir" ]; then
   echo "error: $dir exists and is not an AUG checkout. Set AUG_DIR to install elsewhere." >&2
   exit 1

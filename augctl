@@ -11,10 +11,18 @@
 #   ./augctl shell           a shell in the app's container
 #
 # AUG_PORT (default 8012) moves the local API port; COMPOSE_PROJECT_NAME runs a second
-# copy beside the first.
+# copy beside the first.  setup saves both in .env, so later commands find them.
 set -euo pipefail
 
 cd "$(dirname "$0")"
+
+# A setting from .env, or nothing.
+env_value() { if [ -f .env ]; then sed -n "s/^$1=//p" .env | tail -n 1; fi; }
+
+AUG_PORT=${AUG_PORT:-$(env_value AUG_PORT)}
+export AUG_PORT=${AUG_PORT:-8012}
+COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-$(env_value COMPOSE_PROJECT_NAME)}
+if [ -n "$COMPOSE_PROJECT_NAME" ]; then export COMPOSE_PROJECT_NAME; else unset COMPOSE_PROJECT_NAME; fi
 
 bold=$'\033[1m' dim=$'\033[2m' red=$'\033[31m' green=$'\033[32m' reset=$'\033[0m'
 [ -t 1 ] || { bold='' dim='' red='' green='' reset=''; }
@@ -80,7 +88,12 @@ cmd_setup() {
   cmd_up
   step "Sign in"
   say "AUG's agents run on Claude Code (the default) or Codex, signed in with your own plan."
-  case "$(ask "Sign in now: claude, codex, both or skip?" claude)" in
+  local default=claude
+  if signed_in claude || signed_in codex; then
+    say "${dim}Already signed in to:$(signed_in claude && printf ' claude')$(signed_in codex && printf ' codex').${reset}"
+    default=skip
+  fi
+  case "$(ask "Sign in now: claude, codex, both or skip?" "$default")" in
     claude) cmd_login claude ;;
     codex) cmd_login codex ;;
     both) cmd_login claude && cmd_login codex ;;
@@ -134,7 +147,11 @@ BRAVE_API_KEY=
 
 # Where the links AUG sends you (account sign-ins) point. On a server behind a domain,
 # set the https address.
-BASE_URL=http://localhost:${AUG_PORT:-8012}
+BASE_URL=http://localhost:$AUG_PORT
+
+# Read by ./augctl and Docker Compose: the local API port${COMPOSE_PROJECT_NAME:+ and the stack's name}.
+AUG_PORT=$AUG_PORT
+${COMPOSE_PROJECT_NAME:+COMPOSE_PROJECT_NAME=$COMPOSE_PROJECT_NAME}
 EOF
   say "${dim}Wrote .env (readable by you only).${reset}"
 }
@@ -144,12 +161,13 @@ cmd_up() {
   [ -f .env ] || fail "No .env yet: run ./augctl setup."
   mkdir -p data
   step "Building and starting (the first build takes several minutes)"
-  compose up -d --build
+  compose up -d --build ||
+    fail "Docker could not start AUG (above). If port $AUG_PORT is taken, set AUG_PORT in .env."
   wait_healthy
 }
 
 wait_healthy() {
-  local port=${AUG_PORT:-8012}
+  local port=$AUG_PORT
   for _ in $(seq 1 90); do
     if curl -fsS "http://127.0.0.1:$port/health" 2> /dev/null | grep -q '"status":"ok"'; then
       say "${green}AUG is up on http://127.0.0.1:$port${reset}"
@@ -166,13 +184,18 @@ cmd_login() {
   case "${1:-}" in
     claude)
       step "Claude"
-      say "Open the link below, sign in, and paste the code back here. Claude then prints a"
-      say "long token (sk-ant-oat...), valid for a year."
-      say "${dim}Already have Claude Code here? 'claude setup-token' on this machine works too.${reset}"
-      in_app -it aug sh -c '"$(python -c "import claude_agent_sdk, pathlib; print(pathlib.Path(claude_agent_sdk.__file__).parent / \"_bundled\" / \"claude\")")" setup-token' || true
-      say "Paste the token (sk-ant-oat...). It is stored in hushed, never shown again."
-      in_app -it aug hushed add CLAUDE_CODE_OAUTH_TOKEN
-      say "${green}Claude is signed in.${reset}"
+      say "AUG signs in with a one-year token from 'claude setup-token'. If Claude Code is"
+      say "installed on this machine, run that in another terminal and paste the token here."
+      local token
+      token=$(ask_secret "Token (or press Enter to sign in from here):")
+      if [ -z "$token" ]; then
+        say "Open the link below, sign in, and paste the code back. Claude then prints the token."
+        in_app -it aug sh -c '"$(python -c "import claude_agent_sdk, pathlib; print(pathlib.Path(claude_agent_sdk.__file__).parent / \"_bundled\" / \"claude\")")" setup-token' || true
+        token=$(ask_secret "Paste the token (sk-ant-oat...):")
+      fi
+      [ -n "$token" ] || fail "No token: Claude is not signed in."
+      printf '%s' "$token" | in_app -T aug sh -c 'hushed add CLAUDE_CODE_OAUTH_TOKEN "$(cat)" > /dev/null'
+      say "${green}Claude is signed in.${reset} The token is in hushed and is never shown again."
       ;;
     codex)
       step "Codex"
@@ -187,11 +210,19 @@ cmd_login() {
   esac
 }
 
+signed_in() {
+  case "$1" in
+    claude) in_app -T aug hushed list 2> /dev/null | grep -qx CLAUDE_CODE_OAUTH_TOKEN ;;
+    codex) in_app -T aug test -f /app/data/codex/auth.json 2> /dev/null ;;
+  esac
+}
+
 cmd_update() {
   need_docker
   if [ -d .git ]; then
     step "Pulling the latest code"
-    git pull --ff-only
+    git pull --ff-only ||
+      fail "git could not update this checkout (above). Local changes? git stash, then retry."
   fi
   cmd_up
 }
@@ -199,7 +230,7 @@ cmd_update() {
 cmd_status() {
   compose ps
   printf '\n'
-  curl -fsS "http://127.0.0.1:${AUG_PORT:-8012}/health" || say "The API does not answer."
+  curl -fsS "http://127.0.0.1:$AUG_PORT/health" || say "The API does not answer."
   printf '\n'
 }
 
@@ -216,5 +247,5 @@ case "${1:-}" in
     in_app -it aug hushed add "$2"
     ;;
   shell) in_app -it aug bash ;;
-  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac

@@ -94,7 +94,7 @@ The container also has Python with pandas and matplotlib, Node, ffmpeg, pandoc, 
 
 ## REST API
 
-Everything Telegram does is also an API, authenticated with `X-API-Key: <API_KEY>`. The interactive reference is at `http://localhost:8012/docs`.
+Everything Telegram does is also an API, authenticated with `X-API-Key: <API_KEY>` (it's in `.env`). The interactive reference is at `http://localhost:8012/docs`, or on whatever `AUG_PORT` you chose.
 
 ```bash
 curl -s http://localhost:8012/chat/invoke \

@@ -39,7 +39,7 @@ Prefer to read scripts before you run them? Clone the repo and run `./augctl set
 ./augctl login codex     # Codex agents
 ```
 
-**Claude.** Open the link, sign in and paste the code back. Claude prints a token that's valid for a year, and you paste it once more, into AUG's secret store. If Claude Code is already installed on your machine, `claude setup-token` there gives you the same token.
+**Claude.** If Claude Code is installed on your machine, run `claude setup-token` there and paste the token it prints. Otherwise press Enter: AUG shows a sign-in link, you paste the code back, and Claude prints the token for you to paste once more. Either way it's valid for a year and goes straight into AUG's secret store.
 
 **Codex.** Open the link, sign in to ChatGPT and enter the short code shown. Codex refreshes this login on its own.
 
@@ -58,7 +58,9 @@ New chats start on Claude Code. On Codex only? Send `/version` and pick `v14_cod
 ./augctl shell           # a shell inside the app's container
 ```
 
-`AUG_PORT` changes the API port (8012 by default). `COMPOSE_PROJECT_NAME` runs a second copy beside the first.
+`AUG_PORT` changes the API port (8012 by default). `COMPOSE_PROJECT_NAME` runs a second copy beside the first. Set them when you first run `setup`: it saves both in `.env`, where later commands find them.
+
+Running the installer again updates the code and keeps your `.env`. It only offers to sign in again when nothing is signed in yet.
 
 ### Where things live
 
@@ -134,6 +136,13 @@ cp .env.example .env
 make run           # build, start, follow logs
 make check         # lint, format check, tests
 ```
+
+## When something's off
+
+- **`./augctl logs`** first. Then `/status` in Telegram, which shows the model, the context and the plan's limits.
+- **"The Claude login is missing, expired or revoked."** Run `./augctl login claude`, or send `/claude_login`.
+- **`job dream_deep failed` at startup.** Memory consolidation runs on the Kimi agent ([why](agents.md#model-tiers)). Without an endpoint for it, the job fails and retries at its next run. Nothing else is affected.
+- **Port already allocated.** Set `AUG_PORT` in `.env` and run `./augctl up`.
 
 ## Uninstalling
 
