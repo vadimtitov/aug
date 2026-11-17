@@ -56,7 +56,9 @@ Background work asks for a tier, not a model, and each harness picks its own:
 
 `/status` shows the chat's model, how full its context is, and your plan's five-hour and weekly windows. A turn that hits a limit ends with the time it resets. Claude Code and Codex compact their context themselves, and `/compact` does it on demand.
 
-Each AUG install is one person's assistant, running the vendors' own CLIs with that person's login. How that use counts against your plan is set by Anthropic's and OpenAI's terms, which change. Check yours.
+On Claude, AUG's use counts as Agent SDK use. It draws on the monthly Agent SDK credit that comes with your plan, not on the limits of interactive Claude Code, and pauses when the credit runs out unless you've turned on extra usage. On ChatGPT, Codex counts against your plan's Codex limits.
+
+Each AUG install is one person's assistant, running the vendors' own CLIs with that person's login. Anthropic's and OpenAI's terms decide how a plan may be used, and they change. Check yours.
 
 ## Home Assistant reflex
 
