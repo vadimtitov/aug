@@ -17,7 +17,7 @@ You talk to it in Telegram. It remembers you, keeps your schedule, writes to you
 curl -fsSL https://raw.githubusercontent.com/vadimtitov/aug/main/install.sh | bash
 ```
 
-Runs in Docker on a Mac, a Linux box or a home server. Telegram needs no open ports, so nothing is exposed to the internet. [Read the script first](install.sh), or see [other ways to install](docs/installation.md).
+Runs in Docker on your Mac or a Linux server. Telegram needs no open ports, so nothing is exposed to the internet. [Read the script first](install.sh), or see [other ways to install](docs/installation.md).
 
 ## Why
 
@@ -77,7 +77,7 @@ Claude Code and Codex work on their own, which is the point of an assistant. Wha
 
 ## Who it's for
 
-One person who pays for Claude or ChatGPT and has somewhere to run Docker: a laptop to try it on, a home server to keep it on. It talks in Telegram today. Interfaces are pluggable, and WhatsApp or a native iOS app is next.
+One person with a Claude or ChatGPT plan and somewhere to run Docker: a laptop to try it on, a home server to keep it on. It talks in Telegram today. Interfaces are pluggable, and WhatsApp or a native iOS app is next.
 
 ## Documentation
 
