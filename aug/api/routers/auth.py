@@ -74,8 +74,7 @@ async def auth_telegram(body: TelegramAuthRequest) -> TelegramAuthResponse:
         user_id = ""
 
     if not settings.DEV_AUTH_BYPASS:
-        allowed = settings.allowed_chat_ids
-        if allowed and user_id not in {str(i) for i in allowed}:
+        if user_id not in {str(i) for i in settings.allowed_chat_ids}:
             logger.warning("telegram_auth_rejected user_id=%s reason=not_in_allowlist", user_id)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

@@ -19,8 +19,8 @@ _CHAT_CONVERSATION_RE = re.compile(r"^tg-(-?\d+)$")
 
 
 def is_allowed(user_id: int) -> bool:
-    allowed = get_settings().allowed_chat_ids
-    return not allowed or user_id in allowed
+    """Whether *user_id* may use the bot.  An empty allow-list lets nobody in."""
+    return user_id in get_settings().allowed_chat_ids
 
 
 def restricted(handler: Callable) -> Callable:

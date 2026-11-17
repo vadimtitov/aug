@@ -26,7 +26,10 @@ SENT_TS = SENT.timestamp()
 
 @pytest.fixture(autouse=True)
 def allow_all_chats():
-    with patch("aug.api.interfaces.telegram.interface.is_allowed", return_value=True):
+    with (
+        patch("aug.api.interfaces.telegram.interface.is_allowed", return_value=True),
+        patch("aug.api.interfaces.telegram.utils.is_allowed", return_value=True),
+    ):
         yield
 
 
@@ -473,8 +476,7 @@ def test_claim_location_run_stamps_and_then_throttles(telegram_interface):
 def _matching_handlers(bot_app, update):
     return [
         h.callback.__name__
-        for group in bot_app.handlers.values()
-        for h in group
+        for h in bot_app.handlers[0]  # group -1 holds only the unconfigured-bot guard
         if h.check_update(update) not in (False, None)
     ]
 
