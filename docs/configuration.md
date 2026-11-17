@@ -1,6 +1,6 @@
 # Configuration
 
-AUG reads environment variables at startup: from `.env` with the installer or Compose, or from Portainer's environment settings. Behaviour you change while it runs (agent per chat, approval rules, the bash blocklist) lives in `data/settings.json`. You can edit that file through the mini app or by hand.
+Environment variables, read at startup from `.env` or Portainer. What changes at runtime lives in `data/settings.json`.
 
 ## Required
 
@@ -43,7 +43,7 @@ Never set `DEV_AUTH_BYPASS` outside development. It turns off the mini app's Tel
 
 ## The OpenAI-compatible endpoint
 
-Claude Code and Codex never use `LLM_BASE_URL`. These do:
+Claude Code and Codex don't use it. These do:
 
 | Feature | Model it asks for |
 |---|---|
@@ -52,11 +52,11 @@ Claude Code and Codex never use `LLM_BASE_URL`. These do:
 | The Kimi and GLM agents | `accounts/fireworks/models/kimi-k3`, `glm-5p3`, `glm-5p3-flash` |
 | Home Assistant reflex | `gpt-6-luna` (OpenAI's Decisions API) |
 
-An OpenAI key covers the first two. For all of them, run [LiteLLM](https://github.com/BerriAI/litellm) with OpenAI and Fireworks behind it, and point `LLM_BASE_URL` at it.
+An OpenAI key covers the first two. For all four, put [LiteLLM](https://github.com/BerriAI/litellm) in front of OpenAI and Fireworks.
 
 ## Secrets
 
-The compose files load the API, database, Telegram and other keys into [hushed](https://github.com/vadimtitov/hushed) at each start, and run AUG under `hushed run`. Add your own with `/secret` in Telegram or `./augctl secret NAME`. The agent sees their names and can use them as `$NAME` in commands; their values are redacted from all output.
+AUG's own keys go into [hushed](https://github.com/vadimtitov/hushed) at each start. Add yours with `/secret` or `./augctl secret NAME`. The agent uses them as `$NAME`; the values never show.
 
 ## settings.json
 
