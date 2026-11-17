@@ -21,7 +21,7 @@ Runs in Docker on a Mac, a Linux box or a home server. Telegram needs no open po
 
 ## Why
 
-Claude Code and Codex are the best agent harnesses there are, and a Claude or ChatGPT plan already pays for them. But they're coding agents. Remote Control and Codex cloud put a session on your phone, and it's still a coding session: tied to a repository, and blind to what a phone is good for, like a voice note or where you are.
+Claude Code and Codex are the best agent harnesses there are, and they come with a Claude or ChatGPT plan. But they're coding agents. Remote Control and Codex cloud put a session on your phone, and it's still a coding session: tied to a repository, and blind to what a phone is good for, like a voice note or where you are.
 
 AUG runs the same harnesses as a personal assistant:
 
