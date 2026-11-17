@@ -158,7 +158,7 @@ async def test_version_selection_is_scoped_to_one_topic(telegram_interface):
 def test_a_new_chat_runs_on_the_new_conversation_profile(telegram_interface):
     """A chat nobody has picked a version for, outside any group, starts on Claude Code."""
     with patch("aug.api.interfaces.base.load_settings", return_value=AppSettings()):
-        assert telegram_interface.get_agent_version("tg-555-0") == "v14_claude_code"
+        assert telegram_interface.get_agent_version("tg-555-0") == "v15_claude_code"
     assert NEW_CONVERSATION_PROFILE in list_agents()
 
 

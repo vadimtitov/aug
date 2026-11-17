@@ -69,8 +69,8 @@ _CODEX_STRONG = "gpt-6.1-sol"
 _CODEX_FAST = "gpt-6-luna"
 
 # What a conversation with no agent selected (and no parent conversation's to inherit)
-# runs on.
-NEW_CONVERSATION_PROFILE = "v14_claude_code"
+# runs on, and what the background jobs run on: the newest Claude Code version.
+NEW_CONVERSATION_PROFILE = "v15_claude_code"
 
 # Profiles a chat on a deleted agent version is moved to: glm versions to v13_glm,
 # every other one to v13_kimi.
