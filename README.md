@@ -4,7 +4,7 @@
 
 # AUG
 
-Your own assistant, built on Claude Code or Codex and paid for by the Claude or ChatGPT plan you already have.
+Your own assistant, built on Claude Code or Codex, with your current Claude or ChatGPT plan.
 
 You talk to it in Telegram. It remembers you, keeps your schedule, writes to you when something needs you, and gets work done on a Linux machine of its own.
 
@@ -49,7 +49,7 @@ AUG runs the same harnesses as a personal assistant:
 
 Each chat picks its agent with `/version`, and you can switch at any time. Memory, skills, files and secrets are shared.
 
-| Harness | Agents | Model | Paid by |
+| Harness | Agents | Model | Runs on |
 |---|---|---|---|
 | Claude Code | `v15_claude_code` (default), `v14_claude_code` | Claude Opus 5.5 | your Claude plan |
 | Codex | `v15_codex`, `v14_codex` | GPT-6.1 Sol | your ChatGPT plan |
@@ -59,7 +59,7 @@ The `v15` agents add the Home Assistant reflex. Claude Code and Codex keep what 
 
 ## What it costs
 
-Nothing beyond your plan. AUG drives the official Claude Code and Codex, signed in as you, so there's no API bill for the main thing. On Claude, this counts as Agent SDK use and draws on the monthly credit your plan includes for it. By default, it pauses when that runs out instead of billing you. `/status` shows where you stand.
+Nothing beyond your plan. AUG drives the official Claude Code and Codex, signed in as you, so there's no API bill for the main thing. `/status` shows where you stand on your plan's limits.
 
 An OpenAI API key, if you add one, turns on voice notes and image generation. The Kimi and GLM agents bill per token. The rest needs nothing more.
 

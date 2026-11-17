@@ -4,7 +4,7 @@ AUG runs in Docker. The container is the agent's sandbox: Claude Code and Codex 
 
 You need:
 
-- **Docker** with Compose v2. On a Mac that means Docker Desktop, OrbStack or Colima. About 7 GB of disk; the first build takes 5–15 minutes.
+- **Docker** with Compose v2. On a Mac that means Docker Desktop, OrbStack or Colima. The first build takes 5–15 minutes.
 - **A Claude or ChatGPT plan** for the Claude Code or Codex agents (Pro, Max, Plus, Team…).
 - **A Telegram bot** (optional but recommended): message [@BotFather](https://t.me/BotFather), send `/newbot`, copy the token.
 
