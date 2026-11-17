@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# augctl: run AUG on this machine with docker-compose.standalone.yml.
+#
+#   ./augctl setup           write .env (asks a few questions), then start
+#   ./augctl up | down       start (building as needed) | stop
+#   ./augctl update          pull the latest code, rebuild, restart
+#   ./augctl login claude    sign the Claude agents in with your Claude plan
+#   ./augctl login codex     sign the Codex agents in with your ChatGPT plan
+#   ./augctl status | logs   containers and health | follow the app's log
+#   ./augctl secret NAME     store a secret the agent can use but never read
+#   ./augctl shell           a shell in the app's container
+#
+# AUG_PORT (default 8012) moves the local API port; COMPOSE_PROJECT_NAME runs a second
+# copy beside the first.
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+bold=$'\033[1m' dim=$'\033[2m' red=$'\033[31m' green=$'\033[32m' reset=$'\033[0m'
+[ -t 1 ] || { bold='' dim='' red='' green='' reset=''; }
+
+say() { printf '%s\n' "$*"; }
+step() { printf '\n%s%s%s\n' "$bold" "$*" "$reset"; }
+fail() { printf '%serror:%s %s\n' "$red" "$reset" "$*" >&2; exit 1; }
+
+compose() { docker compose -f docker-compose.standalone.yml "$@"; }
+in_app() { compose exec "$@"; }
+
+# Read a line from the terminal, even when this script's stdin is a pipe (curl | bash).
+ask() {
+  local prompt=$1 default=${2:-} reply
+  if [ -n "$default" ]; then prompt="$prompt ${dim}[$default]${reset}"; fi
+  printf '%s ' "$prompt" > /dev/tty
+  IFS= read -r reply < /dev/tty || true
+  printf '%s' "${reply:-$default}"
+}
+
+ask_secret() {
+  local reply
+  printf '%s ' "$1" > /dev/tty
+  IFS= read -rs reply < /dev/tty || true
+  printf '\n' > /dev/tty
+  printf '%s' "$reply"
+}
+
+need_docker() {
+  command -v docker > /dev/null || fail "Docker is not installed: https://docs.docker.com/get-docker/"
+  docker compose version > /dev/null 2>&1 || fail "Docker Compose v2 is missing (docker compose)."
+  docker info > /dev/null 2>&1 || fail "Docker is not running, or this user cannot use it."
+}
+
+random_key() { openssl rand -base64 32 2> /dev/null || head -c 32 /dev/urandom | base64; }
+
+# The Telegram user id of whoever messages the bot next, from the Bot API's getUpdates.
+telegram_user_id() {
+  local token=$1 updates id
+  for _ in $(seq 1 60); do
+    updates=$(curl -fsS "https://api.telegram.org/bot$token/getUpdates?timeout=5" 2> /dev/null || true)
+    id=$(printf '%s' "$updates" | grep -o '"from":{"id":[0-9]*' | tail -n 1 | grep -o '[0-9]*$' || true)
+    if [ -n "$id" ]; then
+      printf '%s' "$id"
+      return 0
+    fi
+  done
+  return 1
+}
+
+cmd_setup() {
+  need_docker
+  if [ -f .env ]; then
+    say ".env exists; keeping it. Delete it to start over."
+  else
+    write_env
+  fi
+  mkdir -p data
+  # The app runs as UID 1000. On Linux a bind-mounted folder keeps the host's owner.
+  if [ "$(uname -s)" = Linux ] && [ "$(stat -c %u data)" != 1000 ]; then
+    docker run --rm -v "$PWD/data:/data" alpine chown 1000:1000 /data > /dev/null
+  fi
+  cmd_up
+  step "Sign in"
+  say "AUG's agents run on Claude Code (the default) or Codex, signed in with your own plan."
+  case "$(ask "Sign in now: claude, codex, both or skip?" claude)" in
+    claude) cmd_login claude ;;
+    codex) cmd_login codex ;;
+    both) cmd_login claude && cmd_login codex ;;
+    *) say "Later: ./augctl login claude (or codex), or /claude_login in Telegram." ;;
+  esac
+  step "Done"
+  if grep -q '^TELEGRAM_BOT_TOKEN=.' .env; then
+    say "Message your bot in Telegram. /version switches agent, /status shows usage."
+  else
+    say "Talk to it over the API: docs/usage.md#rest-api (the key is API_KEY in .env)."
+  fi
+  say "Your assistant's files are in ./data/workspace. Start with AGENTS.md."
+}
+
+write_env() {
+  step "Telegram"
+  say "Create a bot with @BotFather and paste its token. Leave empty to use the API only."
+  local token user_id="" openai
+  token=$(ask_secret "Bot token:")
+  if [ -n "$token" ]; then
+    curl -fsS "https://api.telegram.org/bot$token/getMe" > /dev/null 2>&1 ||
+      fail "Telegram does not accept that token."
+    say "Now send any message to your bot from your own Telegram account..."
+    user_id=$(telegram_user_id "$token") ||
+      user_id=$(ask "No message arrived. Your Telegram user id (from @userinfobot):")
+    [ -n "$user_id" ] || fail "AUG needs the user id: without it anyone could use your bot."
+    say "${green}Only Telegram user $user_id will be able to use this bot.${reset}"
+  fi
+
+  step "Other models (optional)"
+  say "Voice messages and image generation use an OpenAI API key. Leave empty to skip."
+  openai=$(ask_secret "OpenAI API key:")
+
+  umask 077
+  cat > .env << EOF
+# Written by ./augctl setup. Every setting: docs/configuration.md
+API_KEY=$(random_key)
+OAUTH_ENCRYPTION_KEY=$(random_key)
+
+# Telegram: the bot, and who may use it.
+TELEGRAM_BOT_TOKEN=$token
+TELEGRAM_ALLOWED_CHAT_IDS=$user_id
+
+# An OpenAI-compatible endpoint: voice transcription, image generation, the Kimi and GLM
+# agents. The Claude Code and Codex agents do not use it.
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_API_KEY=$openai
+
+# Web search for the Kimi and GLM agents (Claude Code and Codex search on their own).
+BRAVE_API_KEY=
+
+# Where the links AUG sends you (account sign-ins) point. On a server behind a domain,
+# set the https address.
+BASE_URL=http://localhost:${AUG_PORT:-8012}
+EOF
+  say "${dim}Wrote .env (readable by you only).${reset}"
+}
+
+cmd_up() {
+  need_docker
+  [ -f .env ] || fail "No .env yet: run ./augctl setup."
+  mkdir -p data
+  step "Building and starting (the first build takes several minutes)"
+  compose up -d --build
+  wait_healthy
+}
+
+wait_healthy() {
+  local port=${AUG_PORT:-8012}
+  for _ in $(seq 1 90); do
+    if curl -fsS "http://127.0.0.1:$port/health" 2> /dev/null | grep -q '"status":"ok"'; then
+      say "${green}AUG is up on http://127.0.0.1:$port${reset}"
+      return 0
+    fi
+    sleep 2
+  done
+  say "AUG did not report healthy in 3 minutes. The log:"
+  compose logs --tail 40 aug
+  return 1
+}
+
+cmd_login() {
+  case "${1:-}" in
+    claude)
+      step "Claude"
+      say "Open the link below, sign in, and paste the code back here. Claude then prints a"
+      say "long token (sk-ant-oat...), valid for a year."
+      say "${dim}Already have Claude Code here? 'claude setup-token' on this machine works too.${reset}"
+      in_app -it aug sh -c '"$(python -c "import claude_agent_sdk, pathlib; print(pathlib.Path(claude_agent_sdk.__file__).parent / \"_bundled\" / \"claude\")")" setup-token' || true
+      say "Paste the token (sk-ant-oat...). It is stored in hushed, never shown again."
+      in_app -it aug hushed add CLAUDE_CODE_OAUTH_TOKEN
+      say "${green}Claude is signed in.${reset}"
+      ;;
+    codex)
+      step "Codex"
+      say "Open the link, sign in to ChatGPT and enter the code shown."
+      in_app -it -e CODEX_HOME=/app/data/codex aug sh -c 'mkdir -p "$CODEX_HOME" && "$(python -c "import codex_cli_bin; print(codex_cli_bin.bundled_codex_path())")" login --device-auth -c cli_auth_credentials_store=file'
+      # The app's one Codex server reads the login when it starts.
+      compose restart aug > /dev/null
+      wait_healthy > /dev/null
+      say "${green}Codex is signed in.${reset} Pick a Codex agent with /version in Telegram."
+      ;;
+    *) fail "usage: ./augctl login claude|codex" ;;
+  esac
+}
+
+cmd_update() {
+  need_docker
+  if [ -d .git ]; then
+    step "Pulling the latest code"
+    git pull --ff-only
+  fi
+  cmd_up
+}
+
+cmd_status() {
+  compose ps
+  printf '\n'
+  curl -fsS "http://127.0.0.1:${AUG_PORT:-8012}/health" || say "The API does not answer."
+  printf '\n'
+}
+
+case "${1:-}" in
+  setup) cmd_setup ;;
+  up) cmd_up ;;
+  down) compose down ;;
+  update) cmd_update ;;
+  login) cmd_login "${2:-}" ;;
+  status) cmd_status ;;
+  logs) compose logs -f --tail 100 aug ;;
+  secret)
+    [ -n "${2:-}" ] || fail "usage: ./augctl secret NAME"
+    in_app -it aug hushed add "$2"
+    ;;
+  shell) in_app -it aug bash ;;
+  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+esac

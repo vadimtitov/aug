@@ -1,119 +1,68 @@
-# 🦾 AUG 
-
 <table>
   <tr>
     <td>
 
-**Aug** is a self-hosted personal AI assistant that talks to you via Telegram or REST, ships with powerful tools, doesn't reveal your secrets to the LLM ([hushed](https://github.com/vadimtitov/hushed)), and has a persistent memory system that builds a real picture of you and itself across time. Works with any OpenAI-compatible API.
+# AUG
 
-*Work in progress.*
+A personal assistant you host yourself. You talk to it in Telegram. It runs on **Claude Code** or **Codex**, signed in with the Claude or ChatGPT plan you already have.
+
+It remembers you between conversations, does real work in its own container, and keeps your keys out of the transcript.
 
   </td>
-    <td><img src="https://github.com/user-attachments/assets/2cf5088d-433e-4ca5-b6e1-3f6fc1909b00" width="250"></td>
+    <td><img src="https://github.com/user-attachments/assets/2cf5088d-433e-4ca5-b6e1-3f6fc1909b00" width="220"></td>
   </tr>
 </table>
 
-
-## Memory
-
-Everything the agent knows and is lives in one workspace folder, `/app/data/workspace/`: `AGENTS.md` (its persona and approach — yours to edit), `memory/` (what it remembers), `skills/` and `files/`. Each session's system prompt is built once from it, when the session starts, and stays fixed for the whole chat so prompt caching holds; changes show from the next session.
-
-| File in `memory/` | What it is | Updated |
-|------|------------|---------|
-| `MEMORY.md` | The index: one line per memory file, shown in every session's prompt | Nightly + Weekly |
-| `notes.md` | Raw notes captured mid-conversation, pending consolidation | During conversation |
-| `user.md` | Who you are — stable facts, preferences, rules, behavioural patterns | Nightly |
-| `context.md` | Timestamped active situations, upcoming events, recent activity. Pruned aggressively | Nightly |
-| `self.md` | The agent's sense of itself as it evolves | Nightly + Weekly |
-
-The `note` tool is the write mechanism during a conversation. A nightly job folds notes into `context.md`, `user.md`, and `self.md` — all in one cross-file-aware pass. A weekly deep consolidation reflects across the full picture and evolves files where something has genuinely shifted.
-
-
-
-## Tools
-
-| Tool | What it does |
-|------|-------------|
-| Web search | Search the web via [Brave Search API](https://brave.com/search/api/) |
-| Browser | Control a real Chrome browser — log in, fill forms, navigate, screenshot, download files. Powered by [browser-use](https://github.com/browser-use/browser-use). See [setup guide](docs/browser-tool.md). |
-| Shell | Run bash commands inside the container with secret injection and a command blocklist |
-| SSH | Run commands on remote machines. Targets are provisioned via `/ssh` in Telegram — generates an Ed25519 keypair, installs it on the server, and pins the host fingerprint. Commands require explicit approval before execution. |
-| Gmail | Search, read, send, and draft emails across multiple accounts. See [setup guide](docs/gmail-setup.md). |
-| Image generation | Generate images from text (`IMAGE_GEN_MODEL`, default: gpt-image-1.5) |
-| Image editing | Transform or edit an image you've sent |
-| Files | Send files to the agent, it saves them to disk, processes via shell tools, and can send files back |
-| Reminders | Set one-off or recurring reminders |
-| Skills | User-defined persistent instructions following the [agentskills.io](https://agentskills.io/specification) spec. See [design doc](docs/skills-design.md). |
-| Home Assistant | The v15 profiles switch labelled devices the moment you ask, before the agent answers (a reflex on OpenAI's Decisions API). See [design and evaluation](docs/design/home-assistant-reflex.md). |
-| Portainer | List, inspect, and manage Docker containers and stacks. See [setup guide](docs/portainer-setup.md). |
-
-
-## Installation
-
-**Portainer (intended for production)**
-
-The primary deployment path. Add the repo in Portainer under *Stacks → Repository*, point it at `docker-compose.prod.yml`, and supply env vars via the Portainer UI. Portainer builds and runs the container directly from source — no registry needed. Assumes an external PostgreSQL database and a host directory at `/opt/aug/data` owned by UID 1000.
-
-**Local / Docker**
-
-Includes a Postgres container, good for development:
-
 ```bash
-git clone https://github.com/vadimtitov/aug.git
-cd aug
-cp .env.example .env  # fill in API_KEY, LLM_*, DATABASE_URL
-docker compose up --build
+curl -fsSL https://raw.githubusercontent.com/vadimtitov/aug/main/install.sh | bash
 ```
 
-Interactive docs at `http://localhost:8000/docs`.
+Needs Docker. Works on a Mac, a Linux box or a home server. Nothing listens on the network: Telegram needs no open port. [Other ways to install →](docs/installation.md)
 
+## Why AUG
 
+Claude Code and Codex are excellent agents, and they run on a plan you may already pay for. But they live in a terminal: they forget you when the session ends, and they can't message you first.
 
-## API
+AUG keeps those agents and gives them what an assistant needs:
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Liveness check |
-| `POST` | `/chat/invoke` | Single-turn, full JSON response |
-| `POST` | `/chat/stream` | SSE streaming response |
-| `POST` | `/threads` | Create thread |
-| `GET` | `/threads/{id}` | Thread metadata + history |
-| `DELETE` | `/threads/{id}` | Delete thread |
-| `POST` | `/files/upload` | Upload file |
-| `GET` | `/files/{id}` | File metadata |
+- **One conversation everywhere.** Telegram on your phone, with voice notes, photos, files and locations. Forum topics give you parallel threads. A REST API is there for everything else.
+- **Memory.** It writes notes as you talk and folds them into plain Markdown files every night. They're yours to read and edit.
+- **Time.** It sets reminders, runs recurring tasks and messages you first when something's done.
+- **Hands.** It has a shell, Python and common CLI tools in its own container, web search and a page reader that gets past bot protection. It connects to Gmail, SSH hosts, Home Assistant, Portainer and any MCP server.
+- **Keys out of the transcript.** Secrets sit in [hushed](https://github.com/vadimtitov/hushed). The agent can use them in commands, and their values are redacted from everything it reads back.
 
-## Configuration
+## The agents
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `API_KEY` | Yes | Shared secret for `X-API-Key` auth |
-| `LLM_API_KEY` | Yes | API key for your LLM provider |
-| `LLM_BASE_URL` | Yes | Any OpenAI-compatible endpoint, e.g. `https://api.openai.com/v1` |
-| `DATABASE_URL` | Yes | `postgresql+asyncpg://user:password@host:5432/dbname` |
-| `TELEGRAM_BOT_TOKEN` | No | Telegram bot; disabled if absent. See [forum topics setup](docs/setup-guides/telegram-forum-setup.md) for multi-thread usage. |
-| `TELEGRAM_ALLOWED_CHAT_IDS` | No | Comma-separated allowed user IDs. Unset = all users allowed. Get yours from `@userinfobot`. |
-| `BRAVE_API_KEY` | No | Enables web search |
-| `IMAGE_GEN_MODEL` | No | Image generation model via LiteLLM (default: `gpt-image-1.5`) |
-| `GMAIL_CLIENT_ID` | No | Gmail OAuth client ID (pair with `GMAIL_CLIENT_SECRET`) |
-| `GMAIL_CLIENT_SECRET` | No | Gmail OAuth client secret |
-| `BROWSER_CDP_URL` | No | Chrome DevTools Protocol URL for browser tool, e.g. `ws://chrome:9222` |
-| `PORTAINER_URL` | No | Portainer instance URL |
-| `PORTAINER_API_TOKEN` | No | Portainer API token |
-| `HASS_URL` | No | Home Assistant URL |
-| `HASS_TOKEN` | No | Home Assistant long-lived access token |
-| `DEBUG` | No | `true` → human-readable logs; `false` (default) → JSON |
+Each chat runs on an agent you choose with `/version`, and you can switch at any time.
 
+| Agent | Runs on | Signs in with |
+|---|---|---|
+| `v14_claude_code` (default) | Claude Code · Claude Opus 5.5 | your Claude plan (`/claude_login`) |
+| `v14_codex` | Codex · GPT-6.1 Sol | your ChatGPT plan (`/codex_login`) |
+| `v13_kimi`, `v13_glm` | AUG's own loop · Kimi K3, GLM-5.3 | an OpenAI-compatible endpoint you provide |
 
-## Make targets
+The `v15_*` versions are the same agents with a Home Assistant reflex: they switch your lights the moment you ask, before the agent answers.
 
-| Target | Description |
-|--------|-------------|
-| `make run` | Build and start, stream logs |
-| `make rebuild` | Stop, rebuild, start |
-| `make down` | Stop and remove containers |
-| `make test` | Run pytest |
-| `make lint` | ruff check |
-| `make format` | ruff format |
-| `make check` | Lint + format check + tests |
-| `make logs` | Tail aug container logs |
-| `make shell` | Shell into running aug container |
+Claude Code and Codex keep their own strengths: tool use, subagents, context compaction, skills and web search. AUG gives them their tools, the memory, the schedule and the chat, and keeps the parts that would break a personal assistant switched off. [How the agents are run →](docs/agents.md)
+
+## Compared with
+
+- **Claude Code or Codex on a server.** You keep the same agent. AUG adds a phone interface, sessions that survive restarts, memory across conversations, scheduled work and secret redaction.
+- **OpenClaw and other gateways.** Those connect many chat apps to many models, mostly through API keys. AUG does one thing: it runs the vendors' own agents on your subscription, in a sandboxed container, behind Telegram.
+- **ChatGPT and Claude apps.** Their memory and tools live in the vendors' clouds. AUG runs on your machine: it can reach your network, and its memory is files you own.
+
+## Documentation
+
+| | |
+|---|---|
+| [Installation](docs/installation.md) | Laptop, server, Portainer; updating and backups |
+| [Agents](docs/agents.md) | Claude Code, Codex and the rest: sign-in, models, what's on and off |
+| [Using AUG](docs/usage.md) | Telegram commands, memory, skills, tasks, tools, the REST API |
+| [Configuration](docs/configuration.md) | Every setting |
+| [Security](docs/security.md) | What the agent can and cannot do, and where the limits are |
+
+## Notes
+
+AUG is one person's daily assistant, published as it grows. It runs the official Claude Code and Codex CLIs for one person: you. How that use counts against your plan is up to Anthropic's and OpenAI's terms. Read yours.
+
+MIT licensed.

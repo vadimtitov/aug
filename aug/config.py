@@ -1,6 +1,7 @@
 """Application settings loaded from environment variables / .env file."""
 
 from functools import lru_cache
+from urllib.parse import urlparse
 
 from pydantic import computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -114,10 +115,12 @@ class Settings(BaseSettings):
             )
         # Every OAuth link and redirect URI is built from BASE_URL, and it defaults to
         # empty.  Failing the boot beats minting hostless links nobody notices until a
-        # user taps one — and providers reject a non-HTTPS redirect URI anyway.
-        if not self.DEBUG and not self.BASE_URL.startswith("https://"):
+        # user taps one — and providers reject a non-HTTPS redirect URI anyway, except
+        # one on the machine itself, which is where a laptop install's links point.
+        if not self.DEBUG and not _secure_origin(self.BASE_URL):
             raise ValueError(
-                f"BASE_URL must start with https:// when DEBUG is false (got {self.BASE_URL!r})"
+                "BASE_URL must start with https:// (or be http://localhost or "
+                f"http://127.0.0.1) when DEBUG is false (got {self.BASE_URL!r})"
             )
         return self
 
@@ -128,3 +131,11 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return the application settings, loaded lazily and cached."""
     return Settings()  # type: ignore[call-arg]
+
+
+def _secure_origin(url: str) -> bool:
+    """https, or plain http to this machine (localhost, 127.0.0.1)."""
+    parsed = urlparse(url)
+    if parsed.scheme == "https":
+        return bool(parsed.hostname)
+    return parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1")
