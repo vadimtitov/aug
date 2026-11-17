@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 from urllib.parse import urlparse
 
-_ARG_TRUNCATE = 40
+_ARG_TRUNCATE = 25
 # MCP tools are named "{server}__{tool}", where the server's config name ends in
 # a 6-hex-char publisher hash (see McpRegistryServer.slug) — noise in a status line.
 _MCP_TOOL_RE = re.compile(r"^(?P<server>.+?)(?:-[0-9a-f]{6})?__(?P<tool>.+)$")

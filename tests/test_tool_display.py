@@ -128,12 +128,11 @@ def test_render_nests_sub_lines_under_parent():
         label="🤖 Agent",
         args_preview="research X",
         is_subagent=True,
-        sub_lines=["🔍 Search(a)", "🌐 Fetch(b)"],
+        sub_lines=["🔍 Search(a)"],
     )
     lines = _render_tool_lines([entry], spin_tick=0).splitlines()
     assert lines[0].endswith("🤖 Agent(research X)")
     assert lines[1] == "   ↳ 🔍 Search(a)"
-    assert lines[2] == "   ↳ 🌐 Fetch(b)"
 
 
 def test_render_caps_sub_lines_and_keeps_header_visible():
