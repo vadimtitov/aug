@@ -114,4 +114,4 @@ curl -s http://localhost:8012/chat/invoke \
 | `POST /hooks/push` | Push a message into a chat |
 | `GET /health` | Liveness and database check |
 
-Pass `"agent": "v14_codex"` to pick an agent per request. Without it, the chat's own agent is used.
+Pass `"agent": "v15_codex"` to pick an agent per request. Without it, the chat's own agent is used.
