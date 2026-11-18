@@ -9,7 +9,7 @@ Your own assistant, built on Claude Code or Codex, with your current Claude or C
 Talk to it in Telegram. It remembers you, keeps your schedule, messages you first and does real work on a Linux machine of its own.
 
   </td>
-    <td><img src="https://github.com/user-attachments/assets/2cf5088d-433e-4ca5-b6e1-3f6fc1909b00" width="220"></td>
+    <td><img src="docs/assets/demo.gif" width="220"></td>
   </tr>
 </table>
 
