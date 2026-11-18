@@ -17,7 +17,7 @@ Talk to it in Telegram. It remembers you, keeps your schedule, messages you firs
 curl -fsSL https://raw.githubusercontent.com/vadimtitov/aug/main/install.sh | bash
 ```
 
-Runs in Docker on your Mac or a Linux server, with no open ports. [Read the script first](install.sh) · [Other ways to install](docs/installation.md)
+Runs in Docker on your Mac or a Linux server. [Read the script first](install.sh) · [Other ways to install](docs/installation.md)
 
 ## Why
 
