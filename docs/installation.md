@@ -10,7 +10,7 @@ Why Docker? The agent works without asking, so it gets a machine of its own rath
 curl -fsSL https://raw.githubusercontent.com/vadimtitov/aug/main/install.sh | bash
 ```
 
-It clones AUG into `~/aug` (`AUG_DIR` to change) and walks you through setup: your bot token, a message to the bot so it learns your Telegram id, an optional OpenAI key for voice and images, then the sign-in. The first build takes 5–15 minutes.
+It clones AUG into `~/aug` (`AUG_DIR` to change) and walks you through setup: your bot token, a message to the bot so it learns your Telegram id, an optional OpenAI key for voice and images, then the sign-in. The first start downloads a few GB of prebuilt images.
 
 Then say hello to your bot.
 
@@ -34,7 +34,7 @@ New chats start on Claude Code. Codex only? `/version` → `v15_codex`.
 ```bash
 ./augctl status     # containers and health
 ./augctl logs       # follow the log
-./augctl update     # pull, rebuild, restart
+./augctl update     # pull code and images, restart
 ./augctl down       # stop; your data stays
 ./augctl secret K   # a key the agent can use but never read
 ./augctl shell      # a shell in the container

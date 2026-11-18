@@ -1,10 +1,11 @@
 # AUG on one machine: the app, its own Postgres and the stealth browser.
 #
-# Made for ./augctl (and install.sh, which runs it): settings come from .env, the
+# Made for ./augctl (and install.sh, which runs it): images come prebuilt from GHCR
+# (built from this repository on every push to main), settings come from .env, the
 # assistant's files live in ./data, and the API listens on localhost only.  Telegram
 # needs no inbound port, so nothing here is reachable from the network.
 #
-#   ./augctl up        build and start
+#   ./augctl up        pull the images and start
 #   ./augctl logs      follow the app's log
 #
 # docs/installation.md covers this file and the other ways to run AUG.
@@ -13,7 +14,7 @@ name: aug
 
 services:
   aug:
-    build: .
+    image: ghcr.io/vadimtitov/aug:latest
     restart: unless-stopped
     stop_grace_period: 30s
     env_file: .env
@@ -61,7 +62,7 @@ services:
 
   stealth-browser:
     # web_fetch's and fetch_page's browser for bot-protected pages.  Internal only.
-    build: ./stealth-browser
+    image: ghcr.io/vadimtitov/aug-stealth-browser:latest
     restart: unless-stopped
     shm_size: 1g
     mem_limit: 3g

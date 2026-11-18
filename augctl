@@ -2,8 +2,8 @@
 # augctl: run AUG on this machine with docker-compose.standalone.yml.
 #
 #   ./augctl setup           write .env (asks a few questions), then start
-#   ./augctl up | down       start (building as needed) | stop
-#   ./augctl update          pull the latest code, rebuild, restart
+#   ./augctl up | down       pull the latest images and start | stop
+#   ./augctl update          pull the latest code and images, restart
 #   ./augctl login claude    sign the Claude agents in with your Claude plan
 #   ./augctl login codex     sign the Codex agents in with your ChatGPT plan
 #   ./augctl status | logs   containers and health | follow the app's log
@@ -160,8 +160,10 @@ cmd_up() {
   need_docker
   [ -f .env ] || fail "No .env yet: run ./augctl setup."
   mkdir -p data
-  step "Building and starting (the first build takes several minutes)"
-  compose up -d --build ||
+  step "Pulling the images"
+  compose pull || say "${red}Could not pull the images (above).${reset} Starting the ones already here."
+  step "Starting"
+  compose up -d ||
     fail "Docker could not start AUG (above). If port $AUG_PORT is taken, set AUG_PORT in .env."
   wait_healthy
 }
