@@ -1,0 +1,71 @@
+# AUG on one machine: the app, its own Postgres and the stealth browser.
+#
+# Made for ./augctl (and install.sh, which runs it): settings come from .env, the
+# assistant's files live in ./data, and the API listens on localhost only.  Telegram
+# needs no inbound port, so nothing here is reachable from the network.
+#
+#   ./augctl up        build and start
+#   ./augctl logs      follow the app's log
+#
+# docs/installation.md covers this file and the other ways to run AUG.
+
+name: aug
+
+services:
+  aug:
+    build: .
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://aug:aug@postgres:5432/aug
+      HUSHED_DIR: /app/data/.hushed
+      STEALTH_BROWSER_URL: http://stealth-browser:8100
+      DEV_AUTH_BYPASS: "false"
+      UV_CACHE_DIR: /app/.uv-cache
+    ports:
+      - "127.0.0.1:${AUG_PORT:-8012}:8000"
+    volumes:
+      - ./data:/app/data
+      - uv_cache:/app/.uv-cache
+    # Secrets go into hushed, and the app runs under "hushed run", which redacts their
+    # values from every process's output: they never reach the model's context.
+    command: >
+      sh -c '
+      hushed add API_KEY "$$API_KEY" &&
+      hushed add LLM_API_KEY "$$LLM_API_KEY" &&
+      hushed add DATABASE_URL "$$DATABASE_URL" &&
+      hushed add TELEGRAM_BOT_TOKEN "$$TELEGRAM_BOT_TOKEN" &&
+      hushed add BRAVE_API_KEY "$$BRAVE_API_KEY" &&
+      hushed add OAUTH_ENCRYPTION_KEY "$$OAUTH_ENCRYPTION_KEY" &&
+      exec hushed run -- uvicorn aug.app:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 25
+      '
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aug
+      POSTGRES_PASSWORD: aug
+      POSTGRES_DB: aug
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aug -d aug"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  stealth-browser:
+    # web_fetch's and fetch_page's browser for bot-protected pages.  Internal only.
+    build: ./stealth-browser
+    restart: unless-stopped
+    shm_size: 1g
+    mem_limit: 3g
+
+volumes:
+  postgres:
+  uv_cache:

@@ -5,7 +5,7 @@ to empty. Left unchecked, a misconfigured deployment mints links with no host an
 nobody finds out until a user taps one.
 
 Behaviors under test:
-  - production requires an https BASE_URL
+  - production requires an https BASE_URL, or plain http to the machine itself
   - development is unaffected
 """
 
@@ -48,3 +48,20 @@ def test_development_is_unaffected():
         "http://localhost:8012"
     )
     assert _settings(DEBUG=True, BASE_URL="").base_url == ""
+
+
+@pytest.mark.parametrize(
+    "url", ["http://localhost", "http://localhost:8012", "http://127.0.0.1:8012/"]
+)
+def test_production_accepts_plain_http_to_this_machine(url):
+    """A laptop install: its links open on the same machine, where providers allow http."""
+    assert _settings(DEBUG=False, BASE_URL=url).base_url == url.rstrip("/")
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://", "http://192.168.1.10:8012", "http://localhost.example.com", "ftp://localhost"],
+)
+def test_production_rejects_other_origins(url):
+    with pytest.raises(ValueError, match="BASE_URL"):
+        _settings(DEBUG=False, BASE_URL=url)
