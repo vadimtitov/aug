@@ -1,10 +1,13 @@
 """Unit tests for Gmail tools."""
 
+import base64
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from aug.core.tools.gmail import (
+    _PREVIEW_CHARS,
+    _THREAD_BODY_CHARS,
     _decode_body,
     _format_message,
     gmail_draft,
@@ -54,6 +57,19 @@ def _patch_service(svc):
     return patch("aug.core.tools.gmail._service", return_value=svc)
 
 
+def _b64(text: str) -> str:
+    return base64.urlsafe_b64encode(text.encode()).decode()
+
+
+def _message(payload: dict, snippet: str = "") -> dict:
+    headers = [
+        {"name": "From", "value": "news@example.com"},
+        {"name": "Subject", "value": "Newsletter"},
+        {"name": "Date", "value": "2024-01-03"},
+    ]
+    return {"snippet": snippet, "payload": {**payload, "headers": headers}}
+
+
 def _patch_no_token(account="primary"):
     return patch(
         "aug.core.tools.gmail.load_token",
@@ -89,6 +105,48 @@ def test_decode_body_multipart():
 
 def test_decode_body_empty():
     assert _decode_body({"mimeType": "text/html", "body": {}}) == ""
+
+
+def test_decode_body_html_only_is_converted_to_markdown():
+    html = (
+        "<html><head><title>Ignored</title><style>p {color: red}</style></head>"
+        "<body><h1>Big sale</h1><p>Everything&nbsp;is <b>half</b> price.</p>"
+        '<img src="https://t.example/pixel.gif"><a href="https://shop.example">Shop now</a>'
+        "</body></html>"
+    )
+    payload = {
+        "mimeType": "multipart/alternative",
+        "parts": [{"mimeType": "text/html", "body": {"data": _b64(html)}}],
+    }
+    body = _decode_body(payload)
+    assert "# Big sale" in body
+    assert "Everything is **half** price." in body
+    assert "[Shop now](https://shop.example)" in body
+    assert "Ignored" not in body
+    assert "color" not in body
+    assert "pixel.gif" not in body
+
+
+def test_decode_body_prefers_plain_over_html():
+    payload = {
+        "mimeType": "multipart/alternative",
+        "parts": [
+            {"mimeType": "text/html", "body": {"data": _b64("<p>html version</p>")}},
+            {"mimeType": "text/plain", "body": {"data": _b64("plain version")}},
+        ],
+    }
+    assert _decode_body(payload) == "plain version"
+
+
+def test_decode_body_cleans_whitespace_and_placeholders():
+    raw = (
+        "Hello\u00a0\u00a0 \tthere\u200b\u200c friend\r\n"
+        "[Image]\n\n\n\n\n"
+        "  [Header]  \n"
+        "Second\t\tparagraph   \n\n\n\nThird [Image] inline stays"
+    )
+    body = _decode_body({"mimeType": "text/plain", "body": {"data": _b64(raw)}})
+    assert body == "Hello there friend\n\nSecond paragraph\n\nThird [Image] inline stays"
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +189,16 @@ def test_format_message_falls_back_to_snippet():
     assert "just a snippet" in result
 
 
+def test_format_message_preview_stays_short():
+    words = "word " * 1000
+    result = _format_message(_message({"mimeType": "text/plain", "body": {"data": _b64(words)}}))
+    body = result.split("\n\n", 1)[1]
+    preview, marker = body.rsplit("\n", 1)
+    assert len(preview) <= _PREVIEW_CHARS
+    assert preview.endswith("word")
+    assert marker == f"[truncated, {len(words.strip()) - len(preview)} more chars]"
+
+
 # ---------------------------------------------------------------------------
 # gmail_search
 # ---------------------------------------------------------------------------
@@ -143,6 +211,15 @@ async def test_gmail_search_returns_results():
         result = await gmail_search.ainvoke({"query": "is:unread"})
     assert "msg1" in result
     assert "Found 1 message(s)" in result
+
+
+@pytest.mark.asyncio
+async def test_gmail_search_lists_headers_only():
+    svc = _make_service(messages=[{"id": "msg1"}])
+    with _patch_service(svc):
+        result = await gmail_search.ainvoke({"query": "is:unread"})
+    assert len(result) < _PREVIEW_CHARS
+    assert svc.users().messages().get.call_args.kwargs["format"] == "metadata"
 
 
 @pytest.mark.asyncio
@@ -200,6 +277,43 @@ async def test_gmail_read_thread_returns_content():
         result = await gmail_read_thread.ainvoke({"thread_id": "thread123"})
     assert "thread123" in result
     assert "bob@example.com" in result
+
+
+@pytest.mark.asyncio
+async def test_gmail_read_thread_keeps_long_plain_body():
+    body = " ".join(f"word{i}" for i in range(1000))  # ~6.9k chars
+    thread = {"messages": [_message({"mimeType": "text/plain", "body": {"data": _b64(body)}})]}
+    with _patch_service(_make_service(thread=thread)):
+        result = await gmail_read_thread.ainvoke({"thread_id": "t1"})
+    assert body in result
+    assert "truncated" not in result
+
+
+@pytest.mark.asyncio
+async def test_gmail_read_thread_html_only_body():
+    html = "<p>" + "Only HTML here. " * 50 + "</p><p>The end.</p>"
+    thread = {
+        "messages": [
+            _message({"mimeType": "text/html", "body": {"data": _b64(html)}}, snippet="snip")
+        ]
+    }
+    with _patch_service(_make_service(thread=thread)):
+        result = await gmail_read_thread.ainvoke({"thread_id": "t1"})
+    assert "The end." in result
+    assert "snip" not in result
+
+
+@pytest.mark.asyncio
+async def test_gmail_read_thread_marks_truncation_of_huge_body():
+    body = "word " * 10_000  # 50k chars
+    thread = {"messages": [_message({"mimeType": "text/plain", "body": {"data": _b64(body)}})]}
+    with _patch_service(_make_service(thread=thread)):
+        result = await gmail_read_thread.ainvoke({"thread_id": "t1"})
+    text = result.split("Subject: Newsletter\n\n", 1)[1]
+    kept, marker = text.rsplit("\n", 1)
+    assert _PREVIEW_CHARS < len(kept) <= _THREAD_BODY_CHARS
+    assert kept.endswith("word")
+    assert marker == f"[truncated, {len(body.strip()) - len(kept)} more chars]"
 
 
 @pytest.mark.asyncio
