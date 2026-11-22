@@ -4,6 +4,7 @@ Requires a valid OAuth token on disk (run the /auth/gmail flow first).
 """
 
 import logging
+import re
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from email.mime.text import MIMEText
 
@@ -13,6 +14,9 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from langchain_core.tools import tool
+from lxml import etree
+from lxml import html as lxml_html
+from markdownify import markdownify
 
 from aug.config import get_settings
 from aug.utils.gmail_credentials import load_token, save_token
@@ -20,6 +24,15 @@ from aug.utils.gmail_credentials import load_token, save_token
 logger = logging.getLogger(__name__)
 
 _SCOPES = ["https://mail.google.com/"]
+
+# Body characters kept per message: a short preview, and a full read in gmail_read_thread.
+_PREVIEW_CHARS = 500
+_THREAD_BODY_CHARS = 20_000
+
+_INVISIBLE = re.compile("[\u00ad\u034f\u200b-\u200d\u2060\ufeff]")
+_SPACES = re.compile(r"[ \t\u00a0\u2007\u202f]+")
+_PLACEHOLDER_LINE = re.compile(r"^\[(?:image|header)\]$", re.IGNORECASE)
+_BLANK_LINES = re.compile(r"\n{3,}")
 
 
 class GmailAuthError(Exception):
@@ -83,28 +96,23 @@ def _service(account: str):
 
 
 def _decode_body(payload: dict) -> str:
-    """Recursively extract plain text body from a Gmail message payload."""
-    mime_type = payload.get("mimeType", "")
-    if mime_type == "text/plain":
-        data = payload.get("body", {}).get("data", "")
-        return urlsafe_b64decode(data + "==").decode("utf-8", errors="replace") if data else ""
-    if mime_type.startswith("multipart/"):
-        for part in payload.get("parts", []):
-            text = _decode_body(part)
-            if text:
-                return text
-    return ""
+    """A message's body as text: its text/plain part, else its text/html part as markdown."""
+    plain = _find_part(payload, "text/plain")
+    if plain.strip():
+        return _clean_text(plain)
+    html = _find_part(payload, "text/html")
+    return _clean_text(_html_to_markdown(html)) if html.strip() else ""
 
 
-def _format_message(msg: dict) -> str:
+def _format_message(msg: dict, max_chars: int = _PREVIEW_CHARS) -> str:
     headers = {h["name"].lower(): h["value"] for h in msg.get("payload", {}).get("headers", [])}
     subject = headers.get("subject", "(no subject)")
     sender = headers.get("from", "unknown")
     date = headers.get("date", "")
     snippet = msg.get("snippet", "")
     body = _decode_body(msg.get("payload", {}))
-    body_preview = body[:500].strip() if body else snippet
-    return f"From: {sender}\nDate: {date}\nSubject: {subject}\n\n{body_preview}"
+    text = _truncate(body, max_chars) if body else snippet
+    return f"From: {sender}\nDate: {date}\nSubject: {subject}\n\n{text}"
 
 
 @tool
@@ -181,7 +189,8 @@ async def gmail_read_thread(thread_id: str, account: str = "primary") -> str:
             return f"Thread {thread_id!r} is empty."
         parts = [f"Thread ID: {thread_id} ({len(messages)} message(s))\n{'=' * 60}"]
         for i, msg in enumerate(messages, 1):
-            parts.append(f"\n--- Message {i} ---\n{_format_message(msg)}")
+            body = _format_message(msg, max_chars=_THREAD_BODY_CHARS)
+            parts.append(f"\n--- Message {i} ---\n{body}")
         return "\n".join(parts)
     except Exception as e:
         if _is_auth_error(e):
@@ -241,3 +250,49 @@ async def gmail_draft(to: str, subject: str, body: str, account: str = "primary"
             return _auth_error_message(account)
         logger.exception("gmail_draft failed")
         return f"Failed to create draft: {e}"
+
+
+def _find_part(payload: dict, mime_type: str) -> str:
+    """The decoded data of the first part of this MIME type, searching nested multiparts."""
+    part_type = payload.get("mimeType", "")
+    if part_type == mime_type:
+        data = payload.get("body", {}).get("data", "")
+        return urlsafe_b64decode(data + "==").decode("utf-8", errors="replace") if data else ""
+    if part_type.startswith("multipart/"):
+        for part in payload.get("parts", []):
+            text = _find_part(part, mime_type)
+            if text.strip():
+                return text
+    return ""
+
+
+def _html_to_markdown(html: str) -> str:
+    try:
+        doc = lxml_html.fromstring(html)
+    except (etree.ParserError, ValueError):
+        return ""
+    for node in doc.xpath("//head|//script|//style|//noscript"):
+        node.drop_tree()
+    return markdownify(
+        lxml_html.tostring(doc, encoding="unicode"), heading_style="ATX", strip=["img"]
+    )
+
+
+def _clean_text(text: str) -> str:
+    """Collapse the whitespace and drop the image placeholders marketing emails are full of."""
+    text = _INVISIBLE.sub("", text.replace("\r\n", "\n").replace("\r", "\n"))
+    lines = (_SPACES.sub(" ", line).strip() for line in text.split("\n"))
+    kept = "\n".join(line for line in lines if not _PLACEHOLDER_LINE.match(line))
+    return _BLANK_LINES.sub("\n\n", kept).strip()
+
+
+def _truncate(text: str, max_chars: int) -> str:
+    """At most max_chars of text, cut at a word boundary, saying how much was left out."""
+    if len(text) <= max_chars:
+        return text
+    head = text[:max_chars]
+    boundary = max(head.rfind(" "), head.rfind("\n"))
+    if boundary > max_chars // 2:
+        head = head[:boundary]
+    head = head.rstrip()
+    return f"{head}\n[truncated, {len(text) - len(head)} more chars]"
