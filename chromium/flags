@@ -1,0 +1,6 @@
+# Sourced by Debian's /usr/bin/chromium before launch (see /etc/chromium.d/README).
+#
+# Chromium builds apply field-trial *testing* configs by default; since ~142 these
+# break Dice browser sign-in ("Missing authorization code due to OAuth outage in
+# Dice") and can sign Gmail out right after login. Official Chrome never applies them.
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-field-trial-config"
